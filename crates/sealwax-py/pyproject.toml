@@ -1,0 +1,41 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sealwax"
+description = "A PDF library written in Rust: reading, flattening, PDF/A-3 conversion and PAdES signatures."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT OR Apache-2.0"
+# sealwax's licences, the notices of what was copied into it, and the licences of the Rust crates
+# compiled into the module (licenses/DEPENDENCIES.md, written by cargo-about when releasing).
+license-files = ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
+authors = [{ name = "Sylvain Boily and the sealwax contributors" }]
+keywords = ["pdf", "pdfa", "pades", "signature", "xfdf"]
+dynamic = ["version"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Office/Business",
+    "Topic :: Security :: Cryptography",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/sealwax/sealwax"
+Issues = "https://github.com/sealwax/sealwax/issues"
+Changelog = "https://github.com/sealwax/sealwax/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = ["pytest>=8", "cryptography>=44"]
+
+[tool.maturin]
+module-name = "sealwax._native"
+python-source = "python"
+features = []

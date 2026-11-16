@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sealwax",
+    "crates/sealwax-core",
+    "crates/sealwax-text",
+    "crates/sealwax-pdfa",
+    "crates/sealwax-annots",
+    "crates/sealwax-raster",
+    "crates/sealwax-sign",
+    "crates/sealwax-cli",
+    "crates/sealwax-py",
+]
+# Built with nightly by cargo-fuzz, in its own workspace.
+exclude = ["fuzz"]
+default-members = [
+    "crates/sealwax",
+    "crates/sealwax-core",
+    "crates/sealwax-text",
+    "crates/sealwax-pdfa",
+    "crates/sealwax-annots",
+    "crates/sealwax-raster",
+    "crates/sealwax-sign",
+    "crates/sealwax-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sealwax/sealwax"
+authors = ["Sylvain Boily and the sealwax contributors"]
+readme = "README.md"
+keywords = ["pdf", "pdfa", "pades", "signature", "xfdf"]
+categories = ["parser-implementations", "encoding", "cryptography"]
+
+[workspace.dependencies]
+sealwax-core = { path = "crates/sealwax-core", version = "0.1.0" }
+sealwax = { path = "crates/sealwax", version = "0.1.0" }
+sealwax-text = { path = "crates/sealwax-text", version = "0.1.0" }
+sealwax-pdfa = { path = "crates/sealwax-pdfa", version = "0.1.0" }
+sealwax-annots = { path = "crates/sealwax-annots", version = "0.1.0" }
+sealwax-raster = { path = "crates/sealwax-raster", version = "0.1.0" }
+sealwax-sign = { path = "crates/sealwax-sign", version = "0.1.0" }
+
+# Reading. Default features off: no image decoders and no `unsafe` feature for now; revisit with
+# measurements.
+hayro-syntax = { version = "0.9", default-features = false, features = ["std"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"

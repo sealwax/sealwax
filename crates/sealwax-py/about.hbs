@@ -1,0 +1,17 @@
+# Licences of the Rust crates compiled into sealwax
+
+The native module of this package is compiled from sealwax's crates and the crates below. Each
+licence is given once, with the crates under it.
+
+{{#each licenses}}
+## {{{name}}}
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

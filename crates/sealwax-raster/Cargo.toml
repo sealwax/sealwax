@@ -1,0 +1,29 @@
+[package]
+name = "sealwax-raster"
+description = "PDF pages rendered to images: the grayscale PDF of a fax."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sealwax-core.workspace = true
+sealwax-annots.workspace = true
+# The rasterizer of the hayro family (MIT OR Apache-2.0): pure Rust, as hayro-syntax which reads
+# the documents. Kept out of the other crates.
+hayro = "0.9"
+flate2 = "1"
+# Encodes rendered pages (MIT OR Apache-2.0); hayro already depends on it.
+png = "0.18"
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+flate2 = "1"

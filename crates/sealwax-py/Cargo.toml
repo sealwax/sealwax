@@ -1,0 +1,25 @@
+[package]
+name = "sealwax-py"
+description = "Python bindings of sealwax."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lib]
+# The native part of the package `sealwax` (python/sealwax), imported as `sealwax._native`.
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pdf = { package = "sealwax", path = "../sealwax" }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py312"] }
+
+[lints]
+workspace = true

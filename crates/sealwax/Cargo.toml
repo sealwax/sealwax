@@ -1,0 +1,26 @@
+[package]
+name = "sealwax"
+description = "A PDF library: reading, flattening, PDF/A-3a conversion and PAdES signatures."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sealwax-core.workspace = true
+sealwax-annots.workspace = true
+sealwax-pdfa.workspace = true
+sealwax-raster.workspace = true
+sealwax-sign.workspace = true
+sealwax-text.workspace = true
+
+[features]
+serde = ["sealwax-core/serde"]
+
+[lints]
+workspace = true

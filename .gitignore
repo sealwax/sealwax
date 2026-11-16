@@ -1,0 +1,40 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+/dist/
+/build/
+# Native module `maturin develop` builds into the package
+/crates/sealwax-py/python/sealwax/*.so
+/crates/sealwax-py/python/sealwax/*.pyd
+# Licences of the crates compiled into the module, written by cargo-about when releasing
+/crates/sealwax-py/licenses/DEPENDENCIES.md
+
+# Fuzzing
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/
+/fuzz/target/
+
+# Corpora and outputs of the benches: documents are never committed
+/corpus/
+/benchmark/**/*.pdf
+/benchmark/**/*.jsonl
+
+# Secrets
+.env
+*.pfx
+*.p12
+*.key
+
+# Editors and systems
+.DS_Store
+.idea/
+.vscode/

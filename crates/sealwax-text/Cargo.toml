@@ -1,0 +1,27 @@
+[package]
+name = "sealwax-text"
+description = "Text drawn by the content of PDF pages: which glyphs map to Unicode, for PDF/A level a and u."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sealwax-core.workspace = true
+# Interprets content streams, fonts and CMaps. It turns on the `images` and `unsafe` features of
+# hayro-syntax, which sealwax-core keeps off: this crate is kept apart so that opening and saving
+# documents do not depend on them.
+hayro-interpret = "0.9"
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace --exclude sealwax-py
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p sealwax -p sealwax-core -p sealwax-cli
+
+  fuzz:
+    name: Fuzzing (one minute per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # Without the public corpora (not versioned), this mostly proves the target builds and
+      # runs; real fuzzing sessions seed it locally (see fuzz/fuzz_targets/open.rs).
+      # The prebuilt cargo-fuzz is a musl binary and would target musl, which the sanitizer refuses.
+      - name: Fuzz the open target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu open -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the save target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu save -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the text target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu text -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the pdfa target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu pdfa -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the annots target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu annots -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the xfdf target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu xfdf -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the merge target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu merge -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the raster target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu raster -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the timestamp target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu timestamp -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the revocation target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu revocation -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the verify target
+        working-directory: fuzz
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu verify -- -max_total_time=60 -max_len=65536
+
+  deny:
+    name: Licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  python:
+    name: Python bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Build and test
+        working-directory: crates/sealwax-py
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python maturin pytest cryptography mypy
+          VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop
+          .venv/bin/python -m mypy --strict python/sealwax
+          .venv/bin/python -m pytest -q tests

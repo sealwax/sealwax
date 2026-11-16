@@ -1,0 +1,100 @@
+[package]
+name = "sealwax-fuzz"
+description = "Fuzz targets of sealwax (cargo-fuzz, nightly)."
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sealwax-core = { path = "../crates/sealwax-core" }
+sealwax-text = { path = "../crates/sealwax-text" }
+sealwax-pdfa = { path = "../crates/sealwax-pdfa" }
+sealwax-annots = { path = "../crates/sealwax-annots" }
+sealwax-raster = { path = "../crates/sealwax-raster" }
+sealwax-sign = { path = "../crates/sealwax-sign" }
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "save"
+path = "fuzz_targets/save.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfa"
+path = "fuzz_targets/pdfa.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "annots"
+path = "fuzz_targets/annots.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xfdf"
+path = "fuzz_targets/xfdf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merge"
+path = "fuzz_targets/merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raster"
+path = "fuzz_targets/raster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "timestamp"
+path = "fuzz_targets/timestamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "revocation"
+path = "fuzz_targets/revocation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify"
+path = "fuzz_targets/verify.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: fuzzing builds with nightly and sanitizer flags the main workspace never uses.
+[workspace]
+members = ["."]

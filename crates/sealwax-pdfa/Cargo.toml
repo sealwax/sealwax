@@ -1,0 +1,41 @@
+[package]
+name = "sealwax-pdfa"
+description = "Conversion of PDF documents to PDF/A-3."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# The ICC profiles under assets/ are CC0-1.0, the fonts BSD-3-Clause (THIRD_PARTY_NOTICES.md).
+include = ["src/**", "assets/**", "Cargo.toml", "LICENSE-*"]
+
+[dependencies]
+sealwax-core.workspace = true
+# Content streams are read with hayro-syntax's operator parser, with the features sealwax-core
+# uses: no `images`, no `unsafe`.
+hayro-syntax.workspace = true
+flate2 = "1"
+# What the content of a page draws, unit by unit, for tagging (level a, N1): it interprets pages
+# with hayro-interpret, which turns on the `images` and `unsafe` features of hayro-syntax.
+sealwax-text.workspace = true
+# `ToUnicode` CMaps as fonts already have them, and the Unicode values of the CIDs of Adobe's
+# character collections (its predefined `UCS2` CMaps, Adobe's cmap-resources, BSD-3-Clause).
+hayro-cmap = { version = "0.1.1", default-features = false, features = ["std", "embed-cmaps"] }
+# Glyph names (Adobe Glyph List, ITC Zapf Dingbats), CFF standard strings, and the glyphs of
+# embedded programs: names, `cmap`, outlines.
+read-fonts = { version = "0.46", features = ["agl"] }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+flate2 = "1"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

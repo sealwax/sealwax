@@ -1,0 +1,31 @@
+[package]
+name = "sealwax-sign"
+description = "PAdES signatures of PDF documents: certification and approval, signed outside (an HSM), with RFC 3161 timestamps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sealwax-core.workspace = true
+# CMS (RFC 5652) and X.509, the stable RustCrypto line (der 0.7).
+cms = { version = "0.2.3", default-features = false, features = ["std"] }
+x509-cert = "0.2.5"
+der = { version = "0.7", features = ["alloc", "oid", "derive"] }
+const-oid = { version = "0.9", features = ["db"] }
+sha2 = "0.10"
+# Signature values checked (timestamp tokens, certificate paths) and nonces drawn. The RustCrypto
+# rsa and p256 lines carry open advisories (RUSTSEC-2023-0071, RUSTSEC-2026-0387).
+ring = "0.17.14"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+x509-cert = { version = "0.2.5", features = ["std"] }
+
+[lints]
+workspace = true
