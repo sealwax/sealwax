@@ -631,8 +631,10 @@ impl Document {
     /// field gets the text, and an appearance drawn for it (an empty text clears it); a button
     /// shows the state named, given as bytes exactly as `button_states` spells it or as text
     /// (its UTF-8 bytes), `Off` when it has no such state. Signature fields and push buttons are
-    /// left alone. Returns `occurrences` (written) and `characters_replaced` (characters the
-    /// appearance's font does not have, drawn as `?`; the value keeps them).
+    /// left alone. Returns `occurrences` (written), `characters_replaced` (characters the
+    /// appearance's font does not have, drawn as `?`; the value keeps them) and `unmatched` (the
+    /// check boxes and radio buttons given a state none of their widgets has, by name: they show
+    /// `Off`; a state given as text when the document spells it otherwise lands here).
     fn fill_fields<'py>(
         &mut self,
         py: Python<'py>,
@@ -655,6 +657,7 @@ impl Document {
         let dict = PyDict::new(py);
         dict.set_item("occurrences", filled.occurrences)?;
         dict.set_item("characters_replaced", filled.characters_replaced)?;
+        dict.set_item("unmatched", filled.unmatched)?;
         Ok(dict)
     }
 

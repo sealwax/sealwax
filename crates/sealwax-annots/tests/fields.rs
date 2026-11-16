@@ -247,6 +247,8 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
     let filled = fill_fields(&mut doc, &values).unwrap();
     // name twice, agree, lang twice, country, bare; never the signature.
     assert_eq!(filled.occurrences, 7);
+    // bare has no appearance, so no state of that name; lang has it on one of its two widgets.
+    assert_eq!(filled.unmatched, ["bare"]);
     let plain = doc
         .save(&SaveOptions::default().xref(sealwax_core::XrefFormat::Table))
         .unwrap();
@@ -284,6 +286,27 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
     let values: HashMap<String, Vec<String>> =
         field_values(&reopened(&doc)).unwrap().into_iter().collect();
     assert_eq!(values["name"], ["", ""]);
+}
+
+#[test]
+fn buttons_given_a_state_none_of_their_widgets_has_are_reported() {
+    let mut doc = form();
+    // A state given as its UTF-8 text while the document spells it in Latin-1, a state the box
+    // does not have, and an empty value (Off, asked for: not reported).
+    let values: HashMap<String, FillValue> = [
+        ("lang", FillValue::Text("Français".into())),
+        ("agree", FillValue::Text("No".into())),
+        ("bare", FillValue::Text(String::new())),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    let filled = fill_fields(&mut doc, &values).unwrap();
+    assert_eq!(filled.unmatched, ["agree", "lang"]);
+    let values: HashMap<String, Vec<String>> =
+        field_values(&reopened(&doc)).unwrap().into_iter().collect();
+    assert_eq!(values["lang"], ["Off", "Off"]);
+    assert_eq!(values["agree"], ["Off"]);
 }
 
 #[test]
