@@ -99,6 +99,7 @@ class Metadata(TypedDict):
 class Filled(TypedDict):
     occurrences: int
     characters_replaced: int
+    unmatched: list[str]
 
 class Coverage(TypedDict):
     certificates: int

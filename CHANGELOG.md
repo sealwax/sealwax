@@ -6,6 +6,12 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
+  (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
+  silently. A state given as text while the document spells it otherwise lands there.
+
 ## [0.1.0] - 2026-11-16
 
 The first release.

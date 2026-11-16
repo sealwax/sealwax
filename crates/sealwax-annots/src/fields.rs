@@ -6,7 +6,7 @@
 //! parents); a button shows the state its widget's `/AS` names. Names of button states are bytes,
 //! kept as the document spells them: a state is written back as it was read, never re-encoded.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Result, decode_text_string};
 
@@ -102,6 +102,10 @@ pub struct Filled {
     /// Characters of text values that WinAnsiEncoding does not have, drawn as `?` in the
     /// appearance (the value itself keeps them).
     pub characters_replaced: usize,
+    /// The check boxes and radio buttons, by full name, given a state none of their widgets has:
+    /// they show `Off`. A name spelled otherwise than the document spells it (`Fran#E7ais` given
+    /// as its UTF-8 text) lands here. In the order of the names' bytes.
+    pub unmatched: Vec<String>,
 }
 
 /// A widget of a page, and the field it belongs to.
@@ -407,7 +411,8 @@ impl FillValue {
 ///   the field's value becomes that name (`Off` for an empty value). The name is written with the
 ///   bytes given, never re-encoded.
 ///
-/// Signature fields and push buttons are left as they are. Returns the occurrences written.
+/// Signature fields and push buttons are left as they are. Returns the occurrences written, and
+/// the buttons given a state none of their widgets has ([`Filled::unmatched`]).
 ///
 /// # Errors
 /// As [`fields`]; [`sealwax_core::Error::LimitExceeded`] when a new object cannot be numbered.
@@ -420,6 +425,8 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
         _ => Dict::new(),
     };
     let mut font: Option<ObjId> = None;
+    // Each button given a state, and whether one of its widgets has it.
+    let mut buttons: BTreeMap<String, bool> = BTreeMap::new();
     for page in doc.page_ids().into_iter().flatten() {
         doc.check_time()?;
         for widget in widgets(doc, page)? {
@@ -437,6 +444,9 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
                     let has_state = states(doc, &widget.dict)?
                         .iter()
                         .any(|state| state == wanted);
+                    if !wanted.is_empty() {
+                        *buttons.entry(widget.name.clone()).or_default() |= has_state;
+                    }
                     let state: &[u8] = if has_state && !wanted.is_empty() {
                         wanted
                     } else {
@@ -487,6 +497,10 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
             filled.occurrences += 1;
         }
     }
+    filled.unmatched = buttons
+        .into_iter()
+        .filter_map(|(name, matched)| (!matched).then_some(name))
+        .collect();
     Ok(filled)
 }
 

@@ -75,7 +75,7 @@ def test_values_written_read_back_with_button_names_kept_to_the_byte():
         "bare": "Yes",
         "sign": "never written",
     })
-    assert filled == {"occurrences": 7, "characters_replaced": 0}
+    assert filled == {"occurrences": 7, "characters_replaced": 0, "unmatched": ["bare"]}
     plain = document.save(xref="table")
     assert b"/Fran#E7ais" in plain, "the state is written with its own bytes"
     reopened = sealwax.Document.from_bytes(document.save())
@@ -93,9 +93,16 @@ def test_values_written_read_back_with_button_names_kept_to_the_byte():
     assert sealwax.Document.from_bytes(reopened.save()).field_values()["name"] == ["", ""]
 
 
+def test_a_state_given_as_text_the_document_spells_otherwise_is_reported():
+    document = sealwax.Document.from_bytes(form())
+    # The document spells the state in Latin-1 (b"Fran\xe7ais"); its UTF-8 text names none.
+    assert document.fill_fields({"lang": "Français"})["unmatched"] == ["lang"]
+    assert document.fill_fields({"lang": b"Fran\xe7ais"})["unmatched"] == []
+
+
 def test_characters_the_font_lacks_are_counted_never_lost():
     document = sealwax.Document.from_bytes(form())
-    assert document.fill_fields({"name": "Ωmega"}) == {"occurrences": 2, "characters_replaced": 2}
+    assert document.fill_fields({"name": "Ωmega"}) == {"occurrences": 2, "characters_replaced": 2, "unmatched": []}
     assert sealwax.Document.from_bytes(document.save()).field_values()["name"] == ["Ωmega", "Ωmega"]
 
 
