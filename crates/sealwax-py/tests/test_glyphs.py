@@ -100,3 +100,29 @@ def test_annotations_are_read_only_when_asked_and_an_empty_page_has_no_glyph():
         pass
     else:
         raise AssertionError("a missing page is refused")
+
+
+def one_font(base_font: str, text: bytes) -> bytes:
+    """One page showing `text` in a font that is object 5, whatever the document."""
+    return build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R "
+        "/Resources << /Font << /F 5 0 R >> >> >>",
+        stream("", b"BT /F 12 Tf 10 10 Td (" + text + b") Tj ET"),
+        f"<< /Type /Font /Subtype /Type1 /BaseFont /{base_font} /Encoding /WinAnsiEncoding >>",
+    ])
+
+
+def test_documents_read_in_turn_never_mix_their_fonts():
+    """Each thread keeps the fonts of the document it read last; another document, whose font is
+    the same object number, gets its own."""
+    first = sealwax.Document.from_bytes(one_font("Helvetica", b"AB"))
+    second = sealwax.Document.from_bytes(one_font("Courier", b"xyz"))
+    for _ in range(2):
+        assert [(g["text"], g["font"]) for g in first.glyphs(0)] == [("A", "Helvetica"), ("B", "Helvetica")]
+        assert [g["font"] for g in second.glyphs(0)] == ["Courier"] * 3
+        assert second.drawings(0) == {"lines": [], "rectangles": [], "quads": []}
+    # Read again after the thread let go of what it kept: the same.
+    sealwax.release_cache()
+    assert [g["text"] for g in first.glyphs(0)] == ["A", "B"]

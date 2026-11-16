@@ -9,11 +9,11 @@ use hayro_interpret::kurbo::{Affine, BezPath, PathEl, Point, Rect};
 use hayro_interpret::pattern::Pattern;
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-    InterpreterCache, InterpreterSettings, Paint, RenderContent, SoftMask, interpret,
-    interpret_page,
+    InterpreterSettings, Paint, RenderContent, SoftMask, interpret, interpret_page,
 };
 use sealwax_core::Document;
 
+use crate::cache::with_cache;
 use crate::drawn::Bounds;
 
 /// How far from the axes, in user space units, a turned rectangle's sides may lean and still
@@ -59,47 +59,51 @@ pub fn drawings(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Drawings> {
-    let pdf = doc.hayro();
-    let pages = pdf.pages();
-    let page = pages
-        .get(page_index)
-        .ok_or(sealwax_core::Error::InvalidArgument { what: "page index" })?;
+    if page_index >= doc.hayro().pages().len() {
+        return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
+    }
     doc.check_page(page_index)?;
-    let cache = InterpreterCache::new();
-    let mut collector = Collector::default();
-    let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
-    // What was read before the interpreter failed, if it did, is kept.
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let mut context = Context::new(
-            Affine::IDENTITY,
-            everywhere,
-            &cache,
-            pdf.xref(),
-            InterpreterSettings::default(),
-        );
-        interpret(
-            page.typed_operations(),
-            page.resources(),
-            &mut context,
-            &mut collector,
-        );
-        if annotations {
-            collector.last_filled = None;
+    let found = with_cache(doc, |pdf, cache| {
+        let pages = pdf.pages();
+        let Some(page) = pages.get(page_index) else {
+            return Drawings::default();
+        };
+        let mut collector = Collector::default();
+        let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
+        // What was read before the interpreter failed, if it did, is kept.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
             let mut context = Context::new(
                 Affine::IDENTITY,
                 everywhere,
-                &cache,
+                cache,
                 pdf.xref(),
-                InterpreterSettings {
-                    render_content: RenderContent::ANNOTATIONS,
-                    ..InterpreterSettings::default()
-                },
+                InterpreterSettings::default(),
             );
-            interpret_page(page, &mut context, &mut collector);
-        }
-    }));
+            interpret(
+                page.typed_operations(),
+                page.resources(),
+                &mut context,
+                &mut collector,
+            );
+            if annotations {
+                collector.last_filled = None;
+                let mut context = Context::new(
+                    Affine::IDENTITY,
+                    everywhere,
+                    cache,
+                    pdf.xref(),
+                    InterpreterSettings {
+                        render_content: RenderContent::ANNOTATIONS,
+                        ..InterpreterSettings::default()
+                    },
+                );
+                interpret_page(page, &mut context, &mut collector);
+            }
+        }));
+        collector.found
+    });
     doc.check_time()?;
-    Ok(collector.found)
+    Ok(found)
 }
 
 #[derive(Default)]

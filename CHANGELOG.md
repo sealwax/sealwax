@@ -12,6 +12,14 @@ All notable changes to sealwax are recorded here. The format follows
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.
 
+### Changed
+
+- Glyphs, drawings and PDF/A tagging keep the fonts they parsed from one call to the next: each
+  thread keeps them for the document it read last (`release_cache()` drops them). On a document
+  embedding ten whole TrueType fonts, reading a page's glyphs went from 23 ms to 1.3 ms.
+- Checking a page against the limits decodes a stream other pages share (a font program) once
+  per document, and opening a document finds its structure streams with a vectorised search.
+
 ## [0.1.0] - 2026-11-16
 
 The first release.

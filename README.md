@@ -115,7 +115,10 @@ Threads: every call releases the interpreter lock while sealwax works, and docum
 nothing, so distinct `Document`s are processed in parallel from several threads. One `Document`
 may be read from several threads at once (rendering, glyphs, fields); a call that modifies it
 (`fill_fields`, `flatten`) needs it to itself, and raises `RuntimeError` when another call holds
-it. Functions given bytes are independent of one another.
+it. Functions given bytes are independent of one another. Each thread keeps the fonts it parsed
+for the document it read last (glyphs, drawings), so that the next page does not parse them
+again; reading another document replaces them, and `sealwax.release_cache()` drops them, with the
+document they hold.
 
 ### Command line
 
