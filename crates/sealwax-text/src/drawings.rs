@@ -4,7 +4,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use hayro_interpret::font::GlyphRun;
-use hayro_interpret::hayro_syntax::object::Dict;
+use hayro_interpret::hayro_syntax::content::TypedIter;
+use hayro_interpret::hayro_syntax::object::{Array, Dict};
 use hayro_interpret::kurbo::{Affine, BezPath, PathEl, Point, Rect};
 use hayro_interpret::pattern::Pattern;
 use hayro_interpret::{
@@ -15,6 +16,7 @@ use sealwax_core::Document;
 
 use crate::cache::with_cache;
 use crate::drawn::Bounds;
+use crate::scan::{Op, operators};
 
 /// How far from the axes, in user space units, a turned rectangle's sides may lean and still
 /// count as along them.
@@ -23,6 +25,11 @@ const ALONG_AXES: f64 = 1e-6;
 /// How close, in the path's own units, two coordinates must be to count as one: what hayro
 /// allows when it finds a rectangle in a path.
 const SAME: f64 = 1.0 / 4096.0;
+
+/// The tag of the sequences around a path that is one box, filled, its fourth side drawn back to
+/// its start without `h`: hayro hands such a path over as a rectangle, and MuPDF gives it as four
+/// lines. The sequence carries its corners (`/P`).
+const OPEN_BOX: &[u8] = b"SwOpenBox";
 
 /// What a page paints with straight lines (filled or stroked; clipping paths and text are not
 /// painting, nor is a shading, whether `sh` paints it or a path is filled or stroked with it: it
@@ -34,11 +41,14 @@ pub struct Drawings {
     /// Each straight segment of a path (`l`, and the side that closes a subpath with `h`, `s`,
     /// `b` or `b*` when it ends away from its start), from where it starts to where it ends:
     /// `[x0, y0, x1, y1]`. A rectangle's sides are not repeated here. A subpath filled without
-    /// being closed gets no closing side, as in MuPDF.
+    /// being closed gets no closing side, as in MuPDF. A curve whose control points lie on its
+    /// ends (the first on the start and the second on the end, or both on one end) is a line
+    /// here, as MuPDF draws it.
     pub lines: Vec<[f64; 4]>,
     /// Each rectangle whose sides stay along the axes on the page, as a box: a `re`, or a
-    /// subpath of four corners, closed (by `h` or by a last side back to its start), whose sides
-    /// run in turn along one axis and the other.
+    /// subpath of four corners closed by `h`, whose sides run in turn along one axis and the
+    /// other. A subpath whose fourth side comes back to its start is such a rectangle when it is
+    /// only stroked; filled, it is four lines, as in MuPDF.
     pub rectangles: Vec<Bounds>,
     /// Each such rectangle that the transformation turns off the axes, as its four corners in
     /// order.
@@ -79,8 +89,10 @@ pub fn drawings(
                 pdf.xref(),
                 InterpreterSettings::default(),
             );
+            let content = page.page_stream().unwrap_or_default();
+            let instrumented = instrument(content);
             interpret(
-                page.typed_operations(),
+                TypedIter::new(instrumented.as_deref().unwrap_or(content)),
                 page.resources(),
                 &mut context,
                 &mut collector,
@@ -111,6 +123,8 @@ struct Collector {
     found: Drawings,
     /// The last shape filled, placed on the page, to count it once when it is stroked next.
     last_filled: Option<Vec<PathEl>>,
+    /// The marked-content sequences open: the corners of a box filled without `h` for ours.
+    boxes: Vec<Option<[Point; 4]>>,
 }
 
 impl Collector {
@@ -167,8 +181,9 @@ impl Collector {
         }
     }
 
-    /// One subpath: a move, what follows it, and its closing, if any.
-    fn subpath(&mut self, elements: &[PathEl], transform: Affine) {
+    /// One subpath: a move, what follows it, and its closing, if any; `stroked` when it is only
+    /// stroked.
+    fn subpath(&mut self, elements: &[PathEl], transform: Affine, stroked: bool) {
         let (start, body) = match elements.split_first() {
             Some((PathEl::MoveTo(start), body)) => (Some(*start), body),
             _ => (None, elements),
@@ -178,7 +193,7 @@ impl Collector {
             _ => (body, false),
         };
         if let Some(start) = start
-            && let Some(rect) = as_rectangle(start, body, closed)
+            && let Some(rect) = as_rectangle(start, body, closed, stroked)
         {
             self.rectangle(&rect, transform);
             return;
@@ -234,9 +249,9 @@ fn same_elements(a: &[PathEl], b: &[PathEl]) -> bool {
 }
 
 /// The rectangle a subpath from `start` draws, if it draws one: four corners joined by straight
-/// sides, closed by `h` or by a last side back to the start, the sides running in turn along one
-/// axis and the other (as hayro finds one in a path of one subpath).
-fn as_rectangle(start: Point, body: &[PathEl], closed: bool) -> Option<Rect> {
+/// sides, closed by `h`, or by a last side back to the start when only `stroked` (filled, MuPDF
+/// gives that one as four lines), the sides running in turn along one axis and the other.
+fn as_rectangle(start: Point, body: &[PathEl], closed: bool, stroked: bool) -> Option<Rect> {
     let corners = match *body {
         [PathEl::LineTo(a), PathEl::LineTo(b), PathEl::LineTo(c)] if closed => [start, a, b, c],
         [
@@ -244,7 +259,7 @@ fn as_rectangle(start: Point, body: &[PathEl], closed: bool) -> Option<Rect> {
             PathEl::LineTo(b),
             PathEl::LineTo(c),
             PathEl::LineTo(d),
-        ] if same(d, start) => [start, a, b, c],
+        ] if stroked && same(d, start) => [start, a, b, c],
         _ => return None,
     };
     let mut previous = None;
@@ -260,6 +275,110 @@ fn as_rectangle(start: Point, body: &[PathEl], closed: bool) -> Option<Rect> {
     Some(Rect::from_points(corners[0], corners[2]))
 }
 
+/// `elements` with each curve whose control points lie on its ends (the first on its start and
+/// the second on its end, or both on one end) made a line, as MuPDF makes it: exactly, a control
+/// point a hair away keeps the curve.
+fn straightened(elements: &[PathEl]) -> Vec<PathEl> {
+    let (mut start, mut current) = (None::<Point>, None::<Point>);
+    elements
+        .iter()
+        .map(|element| match *element {
+            PathEl::MoveTo(p) => {
+                (start, current) = (Some(p), Some(p));
+                *element
+            }
+            PathEl::LineTo(p) | PathEl::QuadTo(_, p) => {
+                current = Some(p);
+                *element
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                let from = current;
+                current = Some(p3);
+                match from {
+                    Some(p0) if (p0 == p1 && (p2 == p3 || p1 == p2)) || (p1 == p2 && p2 == p3) => {
+                        PathEl::LineTo(p3)
+                    }
+                    _ => *element,
+                }
+            }
+            PathEl::ClosePath => {
+                current = start;
+                *element
+            }
+        })
+        .collect()
+}
+
+/// `content` with each path that is one box filled without `h` (`m`, four `l` the last back to
+/// the move's point, then `f`, `F`, `f*`, `B` or `B*`) in a sequence tagged [`OPEN_BOX`] giving
+/// its corners; `None` when it has none.
+fn instrument(content: &[u8]) -> Option<Vec<u8>> {
+    let mut out: Option<Vec<u8>> = None;
+    let mut copied = 0;
+    let mut path: Vec<Op> = Vec::new();
+    for op in operators(content) {
+        match &content[op.operator.clone()] {
+            b"m" | b"l" | b"c" | b"v" | b"y" | b"h" | b"re" => path.push(op),
+            b"W" | b"W*" => {}
+            operator => {
+                let filled = matches!(operator, b"f" | b"F" | b"f*" | b"B" | b"B*");
+                if filled
+                    && let Some(corners) = open_box(content, &path)
+                    && let Some(first) = path.first()
+                {
+                    let out = out.get_or_insert_with(|| Vec::with_capacity(content.len() + 64));
+                    out.extend_from_slice(&content[copied..first.start]);
+                    out.extend_from_slice(b" /");
+                    out.extend_from_slice(OPEN_BOX);
+                    out.extend_from_slice(b" <</P [");
+                    out.extend_from_slice(corners.as_bytes());
+                    out.extend_from_slice(b"]>> BDC ");
+                    out.extend_from_slice(&content[first.start..op.end]);
+                    out.extend_from_slice(b" EMC ");
+                    copied = op.end;
+                }
+                path.clear();
+            }
+        }
+    }
+    let mut out = out?;
+    out.extend_from_slice(&content[copied..]);
+    Some(out)
+}
+
+/// The corners of `path`, as written, when it is `m` and four `l`, the last back to the move's
+/// point.
+fn open_box(content: &[u8], path: &[Op]) -> Option<String> {
+    let [moved, first, second, third, last] = path else {
+        return None;
+    };
+    let point = |op: &Op, operator: &[u8]| -> Option<(f64, f64, String)> {
+        if &content[op.operator.clone()] != operator {
+            return None;
+        }
+        let operands = std::str::from_utf8(&content[op.start..op.operator.start]).ok()?;
+        let mut numbers = operands.split_ascii_whitespace();
+        let (x, y) = (numbers.next()?, numbers.next()?);
+        if numbers.next().is_some() {
+            return None;
+        }
+        Some((x.parse().ok()?, y.parse().ok()?, format!("{x} {y}")))
+    };
+    let (x0, y0, start) = point(moved, b"m")?;
+    let corners = [first, second, third].map(|op| point(op, b"l"));
+    let (x4, y4, _) = point(last, b"l")?;
+    if (x4, y4) != (x0, y0) {
+        return None;
+    }
+    let mut written = start;
+    for corner in corners {
+        let (_, _, text) = corner?;
+        written.push(' ');
+        written.push_str(&text);
+    }
+    Some(written)
+}
+
 /// Whether nothing drawn with `props` and `mode` counts: invisible, or painted with a shading.
 fn unseen(props: &DrawProps<'_>, mode: &DrawMode) -> bool {
     matches!(mode, DrawMode::Invisible)
@@ -272,17 +391,18 @@ impl<'a> Device<'a> for Collector {
             return;
         }
         let transform = props.transform;
+        let stroked = matches!(mode, DrawMode::Stroke(_));
         let mut subpath: Vec<PathEl> = Vec::new();
-        for element in path.elements() {
-            match *element {
+        for element in straightened(path.elements()) {
+            match element {
                 PathEl::MoveTo(_) => {
-                    self.subpath(&subpath, transform);
+                    self.subpath(&subpath, transform, stroked);
                     subpath.clear();
-                    subpath.push(*element);
+                    subpath.push(element);
                 }
                 PathEl::ClosePath => {
-                    subpath.push(*element);
-                    self.subpath(&subpath, transform);
+                    subpath.push(element);
+                    self.subpath(&subpath, transform, stroked);
                     // What follows without a move starts where the closed subpath started.
                     let start = match subpath.first() {
                         Some(PathEl::MoveTo(start)) => Some(*start),
@@ -291,10 +411,10 @@ impl<'a> Device<'a> for Collector {
                     subpath.clear();
                     subpath.extend(start.map(PathEl::MoveTo));
                 }
-                _ => subpath.push(*element),
+                _ => subpath.push(element),
             }
         }
-        self.subpath(&subpath, transform);
+        self.subpath(&subpath, transform, stroked);
     }
 
     fn draw_rect(&mut self, rect: &Rect, props: DrawProps<'a>, mode: &DrawMode) {
@@ -303,6 +423,15 @@ impl<'a> Device<'a> for Collector {
             PathEl::LineTo(Point::new(rect.x1, rect.y1)),
         ];
         if unseen(&props, mode) || self.repeated(&elements, props.transform, mode) {
+            return;
+        }
+        if !matches!(mode, DrawMode::Stroke(_))
+            && let Some(Some(corners)) = self.boxes.last()
+        {
+            let corners = *corners;
+            for (index, from) in corners.iter().enumerate() {
+                self.line(*from, corners[(index + 1) % 4], props.transform);
+            }
             return;
         }
         self.rectangle(rect, props.transform);
@@ -320,7 +449,26 @@ impl<'a> Device<'a> for Collector {
 
     fn pop_transparency_group(&mut self) {}
 
-    fn begin_marked_content(&mut self, _: &[u8], _: Option<&Dict<'_>>) {}
+    fn begin_marked_content(&mut self, tag: &[u8], properties: Option<&Dict<'_>>) {
+        let corners = (tag == OPEN_BOX)
+            .then(|| properties?.get::<Array<'_>>(b"P"))
+            .flatten()
+            .and_then(|corners| {
+                let numbers: Vec<f64> = corners.iter::<f64>().collect();
+                match numbers[..] {
+                    [x0, y0, x1, y1, x2, y2, x3, y3] => Some([
+                        Point::new(x0, y0),
+                        Point::new(x1, y1),
+                        Point::new(x2, y2),
+                        Point::new(x3, y3),
+                    ]),
+                    _ => None,
+                }
+            });
+        self.boxes.push(corners);
+    }
 
-    fn end_marked_content(&mut self) {}
+    fn end_marked_content(&mut self) {
+        self.boxes.pop();
+    }
 }
