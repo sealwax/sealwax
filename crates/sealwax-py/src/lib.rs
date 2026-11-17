@@ -58,6 +58,13 @@ create_exception!(
 );
 create_exception!(
     sealwax,
+    PdfEncryptedError,
+    PdfReadError,
+    "The PDF is encrypted, and encrypted documents were refused (`refuse_encrypted`): a copy \
+     of it would lose its protection."
+);
+create_exception!(
+    sealwax,
     FieldNameTakenError,
     PdfError,
     "A field to create is named as one the form already has."
@@ -111,6 +118,7 @@ fn pdf_error(py: Python<'_>, error: &pdf::Error) -> PyErr {
     let message = error.to_string();
     match error {
         pdf::Error::PasswordRequired => PdfPasswordError::new_err(message),
+        pdf::Error::Encrypted => PdfEncryptedError::new_err(message),
         pdf::Error::Malformed
         | pdf::Error::PagesMissing { .. }
         | pdf::Error::PageCountOutOfRange { .. }
@@ -523,30 +531,36 @@ impl Document {
     ///
     /// `page_count` is an inclusive (min, max) range: outside it, PdfReadError is raised.
     /// `limits` bounds what processing it may spend (default: the calibrated bounds, no timeout).
+    /// With `refuse_encrypted`, an encrypted document raises PdfEncryptedError, even one that
+    /// opens without a password: sealwax saves documents unencrypted.
     #[staticmethod]
-    #[pyo3(signature = (data, *, password=None, page_count=None, limits=None))]
+    #[pyo3(signature = (data, *, password=None, page_count=None, limits=None, refuse_encrypted=false))]
     fn from_bytes(
         py: Python<'_>,
         data: Vec<u8>,
         password: Option<String>,
         page_count: Option<(usize, usize)>,
         limits: Option<PyRef<'_, Limits>>,
+        refuse_encrypted: bool,
     ) -> PyResult<Self> {
-        let options = options(password, page_count, limits.as_deref());
+        let options =
+            options(password, page_count, limits.as_deref()).refuse_encrypted(refuse_encrypted);
         run(py, || Ok(pdf::Document::open(data, &options)?)).map(|inner| Self { inner })
     }
 
     /// Open the document stored at `path`.
     #[staticmethod]
-    #[pyo3(signature = (path, *, password=None, page_count=None, limits=None))]
+    #[pyo3(signature = (path, *, password=None, page_count=None, limits=None, refuse_encrypted=false))]
     fn open(
         py: Python<'_>,
         path: PathBuf,
         password: Option<String>,
         page_count: Option<(usize, usize)>,
         limits: Option<PyRef<'_, Limits>>,
+        refuse_encrypted: bool,
     ) -> PyResult<Self> {
-        let options = options(password, page_count, limits.as_deref());
+        let options =
+            options(password, page_count, limits.as_deref()).refuse_encrypted(refuse_encrypted);
         run(py, || Ok(pdf::Document::open_path(&path, &options)?)).map(|inner| Self { inner })
     }
 
@@ -1067,6 +1081,15 @@ impl Document {
         Ok(PyBytes::new(py, &data))
     }
 
+    /// Turn pages where they are, `turns` a list of (page index from 0, quarter turns clockwise,
+    /// negative counterclockwise): `/Rotate` changes, the document keeps everything it has
+    /// (outline, structure, information), unlike `arrange`. A page named twice turns twice.
+    /// `ValueError` for a page the document does not have, nothing turned then.
+    fn rotate_pages(&mut self, py: Python<'_>, turns: Vec<(usize, i32)>) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.rotate_pages(&turns)?))
+    }
+
     /// A new PDF of this document's pages `pages`, in that order, saved compressed: each entry a
     /// page index (from 0) or a (page index, quarter turns) pair, the quarter turns (clockwise;
     /// counterclockwise when negative) added to the page's rotation. Turning, deleting, moving,
@@ -1101,15 +1124,17 @@ impl Document {
     /// inserted document names as an earlier one does is renamed `name (2)`, `name (3)`...
     /// `ValueError` when `at` is past the last page; an error reading an inserted PDF names it
     /// (1-based).
+    #[pyo3(signature = (at, pdf_contents, *, refuse_encrypted = false))]
     fn insert_pages<'py>(
         &self,
         py: Python<'py>,
         at: usize,
         pdf_contents: Vec<Vec<u8>>,
+        refuse_encrypted: bool,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let inner = &self.inner;
         let data = run(py, || {
-            let others = open_sources(pdf_contents, inner.limits())?;
+            let others = open_sources(pdf_contents, inner.limits(), refuse_encrypted)?;
             let borrowed: Vec<&pdf::Document> = others.iter().collect();
             compact(&inner.insert(at, &borrowed)?, inner.limits())
         })?;
@@ -1354,8 +1379,11 @@ fn compact(doc: &pdf::Document, limits: &pdf::Limits) -> Result<Vec<u8>, Failure
 fn open_sources(
     pdf_contents: Vec<Vec<u8>>,
     limits: &pdf::Limits,
+    refuse_encrypted: bool,
 ) -> Result<Vec<pdf::Document>, Failure> {
-    let options = pdf::OpenOptions::default().limits(*limits);
+    let options = pdf::OpenOptions::default()
+        .limits(*limits)
+        .refuse_encrypted(refuse_encrypted);
     let mut sources = Vec::with_capacity(pdf_contents.len());
     for (index, data) in pdf_contents.into_iter().enumerate() {
         let doc =
@@ -1574,19 +1602,21 @@ fn redacted_dict<'py>(py: Python<'py>, done: &pdf::text::Redacted) -> PyResult<B
 /// The documents merged into one, in order, each flattened first. With `flatten=False`, their
 /// forms are kept instead, each document's fields renamed `name (2)`, `name (3)`... when an
 /// earlier document has a field of that name. An error names the source (1-based) it came from.
+/// With `refuse_encrypted`, an encrypted source is refused (PdfEncryptedError).
 #[pyfunction]
-#[pyo3(signature = (pdf_contents, *, flatten=true, limits=None))]
+#[pyo3(signature = (pdf_contents, *, flatten=true, limits=None, refuse_encrypted=false))]
 fn merge_bytes<'py>(
     py: Python<'py>,
     pdf_contents: Vec<Vec<u8>>,
     flatten: bool,
     limits: Option<PyRef<'_, Limits>>,
+    refuse_encrypted: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let bounds = limits
         .as_deref()
         .map_or_else(pdf::Limits::default, Limits::counted_from_now);
     let saved = run(py, || {
-        let sources = open_sources(pdf_contents, &bounds)?;
+        let sources = open_sources(pdf_contents, &bounds, refuse_encrypted)?;
         if flatten {
             let (merged, _) = pdf::annots::merge(sources)?;
             return Ok(merged.save(&pdf::SaveOptions::default())?);
@@ -1677,6 +1707,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PdfError", py.get_type::<PdfError>())?;
     m.add("PdfReadError", py.get_type::<PdfReadError>())?;
     m.add("PdfPasswordError", py.get_type::<PdfPasswordError>())?;
+    m.add("PdfEncryptedError", py.get_type::<PdfEncryptedError>())?;
     m.add("PdfLimitError", py.get_type::<PdfLimitError>())?;
     m.add("PdfTimeoutError", py.get_type::<PdfTimeoutError>())?;
     m.add("XfdfError", py.get_type::<XfdfError>())?;

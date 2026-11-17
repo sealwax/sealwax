@@ -49,6 +49,11 @@ export interface Limits {
 
 export interface OpenOptions {
   password?: string;
+  /**
+   * Refuse an encrypted document (a `PdfEncryptedError`), even one that opens without a
+   * password: sealwax saves documents unencrypted, so a copy would lose its protection.
+   */
+  refuseEncrypted?: boolean;
   /** The page count the caller accepts, [least, most]: another is refused. */
   pageCount?: [number, number];
   limits?: Limits;
@@ -213,6 +218,8 @@ export interface RenderedPage {
   height: number;
   /** RGBA, 4 bytes per pixel, row by row from the top, opaque over white. */
   pixels: Uint8ClampedArray;
+}
+
 export interface PhotoPages {
   added: number;
   /** The photos, from 0, that could not be read. */
@@ -234,6 +241,7 @@ fn core_error(error: &sealwax_core::Error) -> JsValue {
     let message = error.to_string();
     match error {
         Error::PasswordRequired => make_error("password", &message, None),
+        Error::Encrypted => make_error("encrypted", &message, None),
         Error::Malformed
         | Error::PagesMissing { .. }
         | Error::PageCountOutOfRange { .. }
@@ -254,6 +262,7 @@ fn annots_error(error: &sealwax_annots::Error) -> JsValue {
         Error::Source { error: inner, .. } => {
             let kind = match inner.as_ref() {
                 Error::Pdf(sealwax_core::Error::PasswordRequired) => "password",
+                Error::Pdf(sealwax_core::Error::Encrypted) => "encrypted",
                 Error::Pdf(
                     sealwax_core::Error::Malformed
                     | sealwax_core::Error::PagesMissing { .. }
@@ -408,6 +417,9 @@ fn open_options(value: Option<JsValue>) -> Result<OpenOptions, JsValue> {
     let Some(value) = value.filter(JsValue::is_object) else {
         return Ok(options);
     };
+    if let Some(refuse) = get(&value, "refuseEncrypted") {
+        options = options.refuse_encrypted(refuse.is_truthy());
+    }
     if let Some(password) = get(&value, "password") {
         options = options.password(
             password
@@ -454,8 +466,14 @@ fn compact(doc: &CoreDocument, limits: &Limits) -> Result<Uint8Array, JsValue> {
 
 /// The PDFs `sources` (each a `Uint8Array`) opened with `limits`; an error names the source
 /// (from 1).
-fn open_sources(sources: &Array, limits: Limits) -> Result<Vec<CoreDocument>, JsValue> {
-    let options = OpenOptions::default().limits(limits);
+fn open_sources(
+    sources: &Array,
+    limits: Limits,
+    refuse_encrypted: bool,
+) -> Result<Vec<CoreDocument>, JsValue> {
+    let options = OpenOptions::default()
+        .limits(limits)
+        .refuse_encrypted(refuse_encrypted);
     let mut documents = Vec::with_capacity(sources.length() as usize);
     for (index, source) in sources.iter().enumerate() {
         if !source.is_instance_of::<Uint8Array>() {
@@ -640,7 +658,7 @@ impl Document {
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(
         data: &[u8],
-        #[wasm_bindgen(unchecked_param_type = "OpenOptions")] options: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "OpenOptions")] options: Option<JsValue>,
     ) -> Result<Document, JsValue> {
         let options = open_options(options)?;
         CoreDocument::open(data.to_vec(), &options)
@@ -679,7 +697,7 @@ impl Document {
     /// A `PdfError` when it cannot be saved.
     pub fn save(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "SaveOptions")] options: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "SaveOptions")] options: Option<JsValue>,
     ) -> Result<Uint8Array, JsValue> {
         let options = save_options(options)?;
         self.inner
@@ -730,7 +748,9 @@ impl Document {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "Record<string, string | boolean | Uint8Array>")]
         values: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "{ keepFilled?: boolean; strict?: boolean }")]
+        #[wasm_bindgen(
+            unchecked_optional_param_type = "{ keepFilled?: boolean; strict?: boolean }"
+        )]
         options: Option<JsValue>,
     ) -> Result<Object, JsValue> {
         let mut wanted = HashMap::new();
@@ -1098,7 +1118,9 @@ impl Document {
     #[wasm_bindgen(unchecked_return_type = "Flattened")]
     pub fn flatten(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "{ fieldsOnly?: boolean }")] options: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "{ fieldsOnly?: boolean }")] options: Option<
+            JsValue,
+        >,
     ) -> Result<Object, JsValue> {
         let fields_only = options
             .as_ref()
@@ -1125,9 +1147,8 @@ impl Document {
         &self,
         page_index: usize,
         scale: f64,
-        #[wasm_bindgen(unchecked_param_type = "{ quarterTurns?: number }")] options: Option<
-            JsValue,
-        >,
+        #[wasm_bindgen(unchecked_optional_param_type = "{ quarterTurns?: number }")]
+        options: Option<JsValue>,
     ) -> Result<Uint8Array, JsValue> {
         let options = render_options(scale, options.as_ref())?;
         match sealwax_raster::render(&self.inner, page_index, &options, &|| false)
@@ -1155,7 +1176,9 @@ impl Document {
         &self,
         page_index: usize,
         scale: f64,
-        #[wasm_bindgen(unchecked_param_type = "{ quarterTurns?: number; cancel?: Int32Array }")]
+        #[wasm_bindgen(
+            unchecked_optional_param_type = "{ quarterTurns?: number; cancel?: Int32Array }"
+        )]
         options: Option<JsValue>,
     ) -> Result<JsValue, JsValue> {
         let render = render_options(scale, options.as_ref())?;
@@ -1277,6 +1300,23 @@ impl Document {
         compact(&arranged, self.inner.limits())
     }
 
+    /// Turn pages where they are: `turns` lists `[page, quarter turns]` (from 0; clockwise,
+    /// negative counterclockwise). `/Rotate` changes and the document keeps everything it has
+    /// (outline, structure, information), unlike `arrange`. A page named twice turns twice.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page the document does not have, nothing turned then.
+    #[wasm_bindgen(js_name = rotatePages)]
+    pub fn rotate_pages(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "[number, number][]")] turns: Array,
+    ) -> Result<(), JsValue> {
+        let turns = pages(&turns)?;
+        self.inner
+            .rotate_pages(&turns)
+            .map_err(|error| core_error(&error))
+    }
+
     /// A new PDF, saved compressed, of this document's pages with every page of the PDFs
     /// `sources` inserted before page `at` (from 0; the page count to append), one after the
     /// other, opened with this document's limits. The forms come along; a field an inserted
@@ -1290,8 +1330,14 @@ impl Document {
         &self,
         at: usize,
         #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] sources: Array,
+        #[wasm_bindgen(unchecked_optional_param_type = "{ refuseEncrypted?: boolean }")]
+        options: Option<JsValue>,
     ) -> Result<Uint8Array, JsValue> {
-        let others = open_sources(&sources, *self.inner.limits())?;
+        let refuse = options
+            .as_ref()
+            .and_then(|o| get(o, "refuseEncrypted"))
+            .is_some_and(|v| v.is_truthy());
+        let others = open_sources(&sources, *self.inner.limits(), refuse)?;
         let borrowed: Vec<&CoreDocument> = others.iter().collect();
         let inserted = self
             .inner
@@ -1341,7 +1387,7 @@ impl Document {
         &mut self,
         page_index: usize,
         #[wasm_bindgen(unchecked_param_type = "Box[]")] areas: Array,
-        #[wasm_bindgen(unchecked_param_type = "RedactOptions")] options: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "RedactOptions")] options: Option<JsValue>,
     ) -> Result<Object, JsValue> {
         let mut rects = Vec::new();
         for area in areas.iter() {
@@ -1369,7 +1415,7 @@ impl Document {
     #[wasm_bindgen(js_name = applyRedactions, unchecked_return_type = "AppliedRedactions")]
     pub fn apply_redactions(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "RedactOptions")] options: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "RedactOptions")] options: Option<JsValue>,
     ) -> Result<Object, JsValue> {
         let options = redact_options(options.as_ref())?;
         let applied = sealwax_annots::apply_redactions(&mut self.inner, &options)
@@ -1421,15 +1467,21 @@ impl Document {
 #[wasm_bindgen(js_name = mergeBytes)]
 pub fn merge_bytes(
     #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] sources: Array,
-    #[wasm_bindgen(unchecked_param_type = "{ flatten?: boolean; limits?: Limits }")]
+    #[wasm_bindgen(
+        unchecked_optional_param_type = "{ flatten?: boolean; limits?: Limits; refuseEncrypted?: boolean }"
+    )]
     options: Option<JsValue>,
 ) -> Result<Uint8Array, JsValue> {
+    let refuse = options
+        .as_ref()
+        .and_then(|o| get(o, "refuseEncrypted"))
+        .is_some_and(|v| v.is_truthy());
     let flatten = options
         .as_ref()
         .and_then(|o| get(o, "flatten"))
         .is_none_or(|v| v.is_truthy());
     let limits = limits(options.as_ref().and_then(|o| get(o, "limits")))?;
-    let documents = open_sources(&sources, limits)?;
+    let documents = open_sources(&sources, limits, refuse)?;
     let merged = if flatten {
         sealwax_annots::merge(documents)
             .map(|(merged, _)| merged)
@@ -1457,7 +1509,7 @@ pub fn merge_bytes(
 #[must_use]
 pub fn has_redaction_marks(
     data: &[u8],
-    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+    #[wasm_bindgen(unchecked_optional_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
 ) -> bool {
     let Ok(limits) = limits(options.as_ref().and_then(|o| get(o, "limits"))) else {
         return true;
@@ -1475,7 +1527,7 @@ pub fn has_redaction_marks(
 #[wasm_bindgen(js_name = photosToPdf, unchecked_return_type = "{ pdf: Uint8Array; unreadable: number[] }")]
 pub fn photos_to_pdf(
     #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] photos: Array,
-    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+    #[wasm_bindgen(unchecked_optional_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
 ) -> Result<Object, JsValue> {
     let limits = limits(options.as_ref().and_then(|o| get(o, "limits")))?;
     let photos = photo_bytes(&photos)?;
@@ -1554,6 +1606,16 @@ fn redacted_object(done: &sealwax_text::Redacted) -> Object {
     object
 }
 
+/// Panic, for the package's tests of what follows a panic (`SealwaxCrashedError`, `reset()`).
+///
+/// # Panics
+/// Always.
+#[wasm_bindgen(js_name = __panicForTests, skip_typescript)]
+#[allow(clippy::panic)]
+pub fn panic_for_tests() {
+    panic!("asked for");
+}
+
 /// The PDF in `data` with every annotation but links flattened into its page.
 ///
 /// # Errors
@@ -1561,7 +1623,7 @@ fn redacted_object(done: &sealwax_text::Redacted) -> Object {
 #[wasm_bindgen(js_name = flattenBytes)]
 pub fn flatten_bytes(
     data: &[u8],
-    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+    #[wasm_bindgen(unchecked_optional_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
 ) -> Result<Uint8Array, JsValue> {
     let options =
         OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);
@@ -1582,7 +1644,7 @@ pub fn flatten_bytes(
 #[wasm_bindgen(js_name = optimizeBytes)]
 pub fn optimize_bytes(
     data: &[u8],
-    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+    #[wasm_bindgen(unchecked_optional_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
 ) -> Result<Uint8Array, JsValue> {
     let options =
         OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);

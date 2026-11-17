@@ -12,6 +12,11 @@ pub enum Error {
     #[error("PDF is password protected")]
     PasswordRequired,
 
+    /// The document is encrypted, and the caller refuses encrypted documents
+    /// ([`crate::OpenOptions::refuse_encrypted`]): sealwax would write it unencrypted.
+    #[error("PDF is encrypted, and encrypted documents are refused")]
+    Encrypted,
+
     /// The document has a number of pages outside the range the caller accepts.
     #[error("PDF has {count} pages, accepted: {} to {}", accepted.start(), accepted.end())]
     PageCountOutOfRange {

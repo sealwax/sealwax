@@ -15,6 +15,9 @@ export class PdfReadError extends PdfError {}
 /** The document is encrypted and its password was not given, or is wrong. */
 export class PdfPasswordError extends PdfError {}
 
+/** The document is encrypted, and encrypted documents were refused (`refuseEncrypted`). */
+export class PdfEncryptedError extends PdfReadError {}
+
 /** A bound of the limits was passed; `limit` names it ("max_operators", ...). */
 export class PdfLimitError extends PdfError {
   constructor(message, limit) {
@@ -32,9 +35,22 @@ export class XfdfError extends PdfError {}
 /** A field to create is named as one the form already has. */
 export class FieldNameTakenError extends PdfError {}
 
+/**
+ * The WebAssembly module stopped, a panic aborting it: every call throws this until
+ * \`reset()\`, and the documents opened before are lost. Not a \`PdfError\`: the document is
+ * not the cause it names.
+ */
+export class SealwaxCrashedError extends Error {
+  constructor(cause, message = "sealwax stopped: call reset() and open the documents again") {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "SealwaxCrashedError";
+  }
+}
+
 const KINDS = {
   read: PdfReadError,
   password: PdfPasswordError,
+  encrypted: PdfEncryptedError,
   limit: PdfLimitError,
   timeout: PdfTimeoutError,
   xfdf: XfdfError,

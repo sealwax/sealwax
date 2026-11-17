@@ -41,6 +41,7 @@ const MAX_TREE_DEPTH: usize = 32;
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
     password: String,
+    refuse_encrypted: bool,
     page_count: Option<RangeInclusive<usize>>,
     max_file_bytes: usize,
     limits: Limits,
@@ -50,6 +51,7 @@ impl Default for OpenOptions {
     fn default() -> Self {
         Self {
             password: String::new(),
+            refuse_encrypted: false,
             page_count: None,
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             limits: Limits::default(),
@@ -63,6 +65,19 @@ impl OpenOptions {
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.password = password.into();
         self
+    }
+
+    /// Refuse an encrypted document ([`Error::Encrypted`]), even one that opens without a
+    /// password (an owner password only): sealwax writes documents unencrypted, so a copy of it
+    /// would lose its protection.
+    pub fn refuse_encrypted(mut self, refuse: bool) -> Self {
+        self.refuse_encrypted = refuse;
+        self
+    }
+
+    /// Whether encrypted documents are refused.
+    pub fn refuses_encrypted(&self) -> bool {
+        self.refuse_encrypted
     }
 
     /// Refuse a document whose page count falls outside `accepted`.
@@ -100,6 +115,8 @@ pub struct Document {
     catalog: Option<Object>,
     /// Pages added after those of the input ([`Document::append_pages`]), with their geometry.
     pub(crate) appended: Vec<(ObjId, PageGeometry)>,
+    /// The rotation of input pages turned since ([`Document::rotate_pages`]), by index.
+    rotations: HashMap<usize, Rotation>,
     info: Option<ObjId>,
     next_number: u32,
     /// The highest object number the file defines, read from its bytes when first needed.
@@ -149,6 +166,9 @@ impl Document {
         })?;
         let root = document_root(&pdf);
         let trailer = BaseTrailer::read(pdf.data().as_ref(), root);
+        if options.refuse_encrypted && trailer.encrypted() {
+            return Err(Error::Encrypted);
+        }
         let mut document = Self {
             info: trailer.info(),
             next_number: trailer.size().unwrap_or(1).max(1),
@@ -157,6 +177,7 @@ impl Document {
             page_index: HashMap::new(),
             catalog: None,
             appended: Vec::new(),
+            rotations: HashMap::new(),
             highest_defined: OnceLock::new(),
             geometry: OnceLock::new(),
             checked: Mutex::new(HashSet::new()),
@@ -669,6 +690,11 @@ impl Document {
     /// geometry from one call to the next, nor between what it reports and what it saves.
     pub fn geometry(&self) -> Vec<PageGeometry> {
         let mut geometry = self.input_geometry().clone();
+        for (index, rotation) in &self.rotations {
+            if let Some(page) = geometry.get_mut(*index) {
+                page.rotation = *rotation;
+            }
+        }
         let first = geometry.len();
         geometry.extend(
             self.appended
@@ -682,12 +708,56 @@ impl Document {
         geometry
     }
 
+    /// Turn pages where they are, by quarter turns clockwise added to their rotation
+    /// (`/Rotate`, written on the page itself when it inherits it): the document keeps all it
+    /// has (outline, structure, information, metadata), unlike [`Document::arrange`], which makes
+    /// a new one. A page named twice turns twice.
+    ///
+    /// # Errors
+    /// [`Error::InvalidArgument`] for a page the document does not have, nothing turned then.
+    pub fn rotate_pages(&mut self, turns: &[(usize, i32)]) -> Result<()> {
+        let ids = self.page_ids();
+        if turns
+            .iter()
+            .any(|(index, _)| !matches!(ids.get(*index), Some(Some(_))))
+        {
+            return Err(Error::InvalidArgument { what: "page index" });
+        }
+        let mut geometry = self.geometry();
+        for (index, quarter_turns) in turns {
+            let Some(Some(id)) = ids.get(*index).copied() else {
+                continue;
+            };
+            let rotation = geometry[*index].rotation.turned(*quarter_turns);
+            geometry[*index].rotation = rotation;
+            let Some(Object::Dict(mut page)) = self.object(id)? else {
+                continue;
+            };
+            page.insert("Rotate", i64::from(rotation.degrees()));
+            self.set_object(id, Object::Dict(page));
+            match self.page_index.get(&id) {
+                Some(input) => {
+                    self.rotations.insert(*input, rotation);
+                }
+                None => {
+                    if let Some((_, appended)) = self.appended.iter_mut().find(|(p, _)| *p == id) {
+                        appended.rotation = rotation;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The geometry of the page whose object is `id`, as [`Document::geometry`] reports it,
     /// without measuring every page: `None` when `id` is no page of the document.
     pub fn page_geometry(&self, id: ObjId) -> Option<PageGeometry> {
         let input = self.input_geometry();
         if let Some(index) = self.page_index.get(&id) {
-            return input.get(*index).copied();
+            return input.get(*index).map(|page| PageGeometry {
+                rotation: self.rotations.get(index).copied().unwrap_or(page.rotation),
+                ..*page
+            });
         }
         let (index, (_, page)) = self
             .appended
