@@ -657,9 +657,11 @@ impl Document {
     }
 
     /// Fill the fields `values` names, by full name, every occurrence of each: a text or choice
-    /// field gets the text and an appearance drawn for it (an empty text clears it); a button
-    /// shows the state named, given as bytes exactly as `buttonStates` spells it or as text (its
-    /// UTF-8 bytes); an empty value turns it `Off`. With `keepFilled`, a field holding another
+    /// field gets the text and an appearance drawn for it (an empty text clears it). A button
+    /// gets the state named, given as bytes exactly as `buttonStates` spells it or as text; or
+    /// the state of its widget whose export value (`/Opt`) it is; `false`, an empty value, "off",
+    /// "no", "0" and the like turn it `Off`; `true`, "yes", "on", "1", "x" and the like check a
+    /// button that has one state besides `Off` (a check box). With `keepFilled`, a field holding another
     /// value is left as it is (`kept`); with `strict`, what a reader would not let a person type
     /// is refused (a read-only field, a text longer than its maximum length or with characters its
     /// font cannot draw, a choice the field does not offer).
@@ -669,7 +671,7 @@ impl Document {
     #[wasm_bindgen(js_name = fillFields, unchecked_return_type = "Filled")]
     pub fn fill_fields(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "Record<string, string | Uint8Array>")]
+        #[wasm_bindgen(unchecked_param_type = "Record<string, string | boolean | Uint8Array>")]
         values: JsValue,
         #[wasm_bindgen(unchecked_param_type = "{ keepFilled?: boolean; strict?: boolean }")]
         options: Option<JsValue>,
@@ -684,10 +686,15 @@ impl Document {
             let value = pair.get(1);
             let value = if let Some(text) = value.as_string() {
                 FillValue::Text(text)
+            } else if let Some(flag) = value.as_bool() {
+                // A check box checked or not; a text field gets the word.
+                FillValue::Text(if flag { "true" } else { "false" }.into())
             } else if value.is_instance_of::<Uint8Array>() {
                 FillValue::Bytes(Uint8Array::from(value).to_vec())
             } else {
-                return Err(argument("each value must be a string or a Uint8Array"));
+                return Err(argument(
+                    "each value must be a string, a boolean or a Uint8Array",
+                ));
             };
             wanted.insert(name, value);
         }

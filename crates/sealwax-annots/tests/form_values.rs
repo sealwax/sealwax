@@ -227,3 +227,49 @@ fn undoing_restores_each_field_but_one_changed_since() {
         ("", "Lisette", "Off")
     );
 }
+
+/// Radio buttons whose states are numbers, their export values in `/Opt`; one alone.
+fn exported() -> Document {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 7 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Annots [5 0 R 6 0 R 7 0 R] >>",
+        "<< /FT /Btn /Ff 49152 /T (COMPTE) /Opt [(REER) (CELI)] /Kids [5 0 R 6 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 4 0 R /Rect [50 580 64 594] /F 4 /AS /Off /AP << /N << /0 8 0 R /Off 8 0 R >> >> >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 4 0 R /Rect [90 580 104 594] /F 4 /AS /Off /AP << /N << /1 8 0 R /Off 8 0 R >> >> >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 49152 /T (SEUL) /Rect [50 540 64 554] /F 4 /AS /Off /AP << /N << /Choix 8 0 R /Off 8 0 R >> >> >>",
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 14 14] /Length 0 >>\nstream\n\nendstream",
+    ];
+    Document::open(build(&objects), &OpenOptions::default()).unwrap()
+}
+
+#[test]
+fn a_radio_button_is_found_by_its_export_value_and_alone_by_a_word_that_checks() {
+    let mut doc = exported();
+    let filled = fill_fields_with(
+        &mut doc,
+        &text(&[("COMPTE", "CELI"), ("SEUL", "oui")]),
+        &FillOptions::default(),
+    )
+    .unwrap();
+    assert!(filled.refused.is_empty(), "{:?}", filled.refused);
+    assert_eq!(filled.written["COMPTE"], Written::new("1", "Off"));
+    assert_eq!(filled.written["SEUL"], Written::new("Choix", "Off"));
+    let read = values(&doc);
+    assert_eq!(
+        (read["COMPTE"].as_str(), read["SEUL"].as_str()),
+        ("1", "Choix")
+    );
+    // The state's own name still works; a word that checks does not choose between two.
+    let filled =
+        fill_fields_with(&mut doc, &text(&[("COMPTE", "0")]), &FillOptions::default()).unwrap();
+    assert_eq!(filled.written["COMPTE"].value, "0");
+    let filled = fill_fields_with(
+        &mut doc,
+        &text(&[("COMPTE", "yes")]),
+        &FillOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(filled.refused, ["COMPTE"]);
+    assert_eq!(values(&doc)["COMPTE"], "0");
+}

@@ -101,6 +101,8 @@ test("fields are read, filled and read back", () => {
   const reopened = Document.fromBytes(doc.save());
   assert.deepEqual(reopened.fieldValues(), { name: ["Élodie"], agree: ["Yes"] });
   assert.deepEqual(reopened.fillFields({ agree: "Maybe" }).refused, ["agree"]);
+  assert.equal(reopened.fillFields({ agree: false }).written.agree.value, "Off");
+  assert.equal(reopened.fillFields({ agree: true }).written.agree.value, "Yes");
   // Kept: a field holding another value; written: one given the value it holds.
   const kept = reopened.fillFields({ name: "Lise", agree: "Yes" }, { keepFilled: true });
   assert.deepEqual([kept.kept, Object.keys(kept.written)], [["name"], ["agree"]]);

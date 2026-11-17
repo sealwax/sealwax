@@ -6,7 +6,7 @@
 //! parents); a button shows the state its widget's `/AS` names. Names of button states are bytes,
 //! kept as the document spells them: a state is written back as it was read, never re-encoded.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Result, decode_text_string};
 
@@ -473,12 +473,17 @@ impl FillValue {
 /// - a text or choice field gets the value (`/V`, on the field: the widget's parent when the widget
 ///   is a kid), and an appearance drawn for it, as a reader draws it (font size and colour of its
 ///   `/DA`, automatic size, alignment, maximum length); an empty value clears it;
-/// - a button's widget shows the state named when it has one of that name, `Off` otherwise, and
-///   the field's value becomes that name (`Off` for an empty value). The name is written with the
-///   bytes given, never re-encoded.
+/// - a button gets the state the value means, found in this order: the state of that name (its
+///   bytes, never re-encoded); a state whose name reads as that text (`Fran#E7ais` for
+///   `Français`); the state of the widget whose export value (`/Opt`) it is; `Off` for an empty
+///   value or `off`, `no`, `n`, `false`, `0`, `unchecked`, `non`; and, for a button with one
+///   state besides `Off` (a check box, a radio button alone), that state for `yes`, `y`, `on`,
+///   `true`, `1`, `x`, `checked`, `oui` (trimmed, in any case). Each widget that has the state
+///   shows it, the others `Off`, and the field's value becomes its name.
 ///
-/// A name no field on the pages has, a signature field or push button, and a button given a state
-/// none of its widgets has are refused, the field left as it was ([`Filled::refused`]). Returns
+/// A name no field on the pages has, a signature field or push button, and a button given a value
+/// that means none of its states, or could mean several, are refused, the field left as it was
+/// ([`Filled::refused`]). Returns
 /// the occurrences written, and each field written with the value it held before
 /// ([`Filled::written`]).
 ///
@@ -504,14 +509,21 @@ pub fn fill_fields_with(
     let by_name = by_name(&found);
     let mut names: Vec<&String> = values.keys().collect();
     names.sort();
-    let mut accepted: HashMap<&str, &FillValue> = HashMap::new();
+    let buttons: HashSet<&str> = names
+        .iter()
+        .filter(|name| by_name.get(name.as_str()).is_some_and(|o| is_button(o)))
+        .map(|name| name.as_str())
+        .collect();
+    let exports = button_exports(doc, &buttons)?;
+    let mut accepted: HashMap<&str, FillValue> = HashMap::new();
     for name in names {
         let value = &values[name];
         let Some(occurrences) = by_name.get(name.as_str()) else {
             filled.refused.push(name.clone());
             continue;
         };
-        let Some(written) = takes(occurrences, value, options.strict) else {
+        let exported = exports.get(name.as_str()).map_or(&[][..], Vec::as_slice);
+        let Some((written, value)) = takes(occurrences, value, exported, options.strict) else {
             filled.refused.push(name.clone());
             continue;
         };
@@ -695,23 +707,134 @@ fn empty(occurrences: &[&Field], value: &str) -> bool {
     value.is_empty() || (is_button(occurrences) && value == "Off")
 }
 
-/// The value the field will hold once given `value`, read as [`held`] reads it; `None` when it
-/// refuses it.
-fn takes(occurrences: &[&Field], value: &FillValue, strict: bool) -> Option<String> {
+/// A button's export values, each with the state of its widget.
+type Exports = Vec<(String, Vec<u8>)>;
+
+/// The export values of the buttons `names` names (`/Opt`, one per widget in the order of the
+/// field's `/Kids`), each with the state of its widget, by full name.
+fn button_exports(doc: &Document, names: &HashSet<&str>) -> Result<HashMap<String, Exports>> {
+    let mut exports: HashMap<String, Exports> = HashMap::new();
+    if names.is_empty() {
+        return Ok(exports);
+    }
+    for page in doc.page_ids().into_iter().flatten() {
+        doc.check_time()?;
+        for widget in widgets(doc, page)? {
+            if !names.contains(widget.name.as_str()) {
+                continue;
+            }
+            let Some(Object::Array(options)) = pdf::inherited(doc, &widget.dict, b"Opt")? else {
+                continue;
+            };
+            // The widget's place among its field's kids; a widget that is its own field is the
+            // only one.
+            let index = match (widget.field, widget.id) {
+                (Some(field), Some(id)) if field != id => {
+                    let Some(Object::Dict(parent)) = doc.object(field)? else {
+                        continue;
+                    };
+                    let kids = match parent.get(b"Kids") {
+                        Some(kids) => match pdf::resolved(doc, kids)? {
+                            Some(Object::Array(kids)) => kids,
+                            _ => continue,
+                        },
+                        None => continue,
+                    };
+                    let Some(index) = kids.iter().position(|kid| *kid == Object::Ref(id)) else {
+                        continue;
+                    };
+                    index
+                }
+                _ => 0,
+            };
+            let Some(option) = options.get(index) else {
+                continue;
+            };
+            let Some(export) = text_of(doc, option)? else {
+                continue;
+            };
+            let Some(state) = states(doc, &widget.dict)?
+                .into_iter()
+                .find(|state| state.as_slice() != b"Off")
+            else {
+                continue;
+            };
+            exports
+                .entry(widget.name.clone())
+                .or_default()
+                .push((export, state));
+        }
+    }
+    Ok(exports)
+}
+
+/// Values that check a check box, whatever its state is named; compared trimmed, ignoring
+/// case.
+const CHECKED: [&str; 8] = ["yes", "y", "on", "true", "1", "x", "checked", "oui"];
+/// Values that uncheck a button.
+const UNCHECKED: [&str; 8] = ["", "off", "no", "n", "false", "0", "unchecked", "non"];
+
+/// The state a button takes for `value`, by order of precedence: the state of that name (its
+/// bytes); a state whose name reads as that text (`Fran#E7ais` for `Français`); the state of
+/// the widget whose export value (`/Opt`) it is; `Off` for a value of [`UNCHECKED`]; the one
+/// state other than `Off` its widgets have, for a value of [`CHECKED`]. Empty for `Off`; `None`
+/// when no state is meant, or several could be.
+fn button_state(
+    occurrences: &[&Field],
+    value: &FillValue,
+    exports: &[(String, Vec<u8>)],
+) -> Option<Vec<u8>> {
+    let mut on: Vec<&Vec<u8>> = Vec::new();
+    for state in occurrences.iter().flat_map(|o| &o.button_states) {
+        if state.as_slice() != b"Off" && !on.contains(&state) {
+            on.push(state);
+        }
+    }
+    let wanted = value.bytes();
+    if wanted == b"Off" {
+        return Some(Vec::new());
+    }
+    if let Some(state) = on.iter().find(|state| state.as_slice() == wanted) {
+        return Some((*state).clone());
+    }
+    let text = value.text();
+    if let Some(state) = on.iter().find(|state| name_text(state) == text) {
+        return Some((*state).clone());
+    }
+    if let Some((_, state)) = exports.iter().find(|(export, _)| *export == text) {
+        return Some(state.clone());
+    }
+    let alias = text.trim().to_lowercase();
+    if UNCHECKED.contains(&alias.as_str()) {
+        return Some(Vec::new());
+    }
+    match on.as_slice() {
+        [only] if CHECKED.contains(&alias.as_str()) => Some((*only).clone()),
+        _ => None,
+    }
+}
+
+/// The value the field will hold once given `value`, read as [`held`] reads it, and the value
+/// to write (a button's state, by its bytes); `None` when the field refuses it.
+fn takes(
+    occurrences: &[&Field],
+    value: &FillValue,
+    exports: &[(String, Vec<u8>)],
+    strict: bool,
+) -> Option<(String, FillValue)> {
     let first = occurrences.first()?;
     if strict && first.read_only {
         return None;
     }
     match first.kind {
         FieldKind::CheckBox | FieldKind::Radio => {
-            let wanted = value.bytes();
-            if wanted.is_empty() || wanted == b"Off" {
-                return Some("Off".to_owned());
-            }
-            occurrences
-                .iter()
-                .any(|occurrence| occurrence.button_states.iter().any(|s| s == wanted))
-                .then(|| name_text(wanted))
+            let state = button_state(occurrences, value, exports)?;
+            let written = if state.is_empty() {
+                "Off".to_owned()
+            } else {
+                name_text(&state)
+            };
+            Some((written, FillValue::Bytes(state)))
         }
         FieldKind::Text | FieldKind::ComboBox | FieldKind::ListBox => {
             let text = value.text();
@@ -737,7 +860,7 @@ fn takes(occurrences: &[&Field], value: &FillValue, strict: bool) -> Option<Stri
                     return None;
                 }
             }
-            Some(text)
+            Some((text.clone(), FillValue::Text(text)))
         }
         _ => None,
     }
