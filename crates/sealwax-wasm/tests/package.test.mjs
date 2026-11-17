@@ -290,3 +290,21 @@ test("photos become pages, those that cannot be read are named", () => {
   assert.throws(() => sealwax.photosToPdf([new Uint8Array([1])]), RangeError);
   assert.throws(() => sealwax.photosToPdf(["text"]), RangeError);
 });
+
+test("annotations are made with their appearance, and bad ones refused", () => {
+  const blank = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>",
+  ]);
+  const doc = Document.fromBytes(blank);
+  doc.addAnnotation({ pageIndex: 0, kind: "circle", rect: [10, 10, 90, 90], fill: [0, 0, 1], width: 0 });
+  doc.addAnnotation({ pageIndex: 0, kind: "ink", strokes: [[[110, 50], [190, 50]]], color: [0, 1, 0], width: 6 });
+  doc.addAnnotation({ pageIndex: 0, kind: "freetext", rect: [110, 70, 190, 95], text: "Note" });
+  assert.throws(() => doc.addAnnotation({ pageIndex: 0, kind: "highlight", quads: [[1, 2, 3]] }), RangeError);
+  assert.throws(() => doc.addAnnotation({ pageIndex: 3, kind: "square", rect: [0, 0, 1, 1] }), RangeError);
+  const image = Document.fromBytes(doc.save()).renderRgba(0, 1);
+  const at = (x, y) => [...image.pixels.slice(4 * (y * image.width + x), 4 * (y * image.width + x) + 3)];
+  assert.deepEqual(at(50, 50), [0, 0, 255]);
+  assert.deepEqual(at(150, 50), [0, 255, 0]);
+});

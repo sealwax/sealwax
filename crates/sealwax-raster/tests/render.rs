@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use sealwax_annots::{FillValue, NewField, NewFieldKind, add_field, fill_fields, photos_document};
+use sealwax_annots::{
+    AnnotationKind, FillValue, NewAnnotation, NewField, NewFieldKind, add_annotation, add_field,
+    fill_fields, flatten, photos_document,
+};
 use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
 use sealwax_raster::{Error, RenderOptions, render, render_png};
 
@@ -370,4 +373,131 @@ fn a_photo_turned_by_its_exif_data_shows_upright() {
     let blue = image.at(middle, bottom);
     assert!(red[0] > 200 && red[2] < 60, "{red:?} on top");
     assert!(blue[2] > 200 && blue[0] < 60, "{blue:?} at the bottom");
+}
+
+#[test]
+fn annotations_made_show_as_drawn_and_stay_when_flattened() {
+    // A black bar under the highlight, which must show through it.
+    let mut doc = open(document(
+        b"0 g 100 400 100 20 re f",
+        "/MediaBox [0 0 600 800]",
+        "",
+        &[],
+    ));
+    let red = [1.0, 0.0, 0.0];
+    let blue = [0.0, 0.0, 1.0];
+    let green = [0.0, 0.6, 0.0];
+    let made = [
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Square {
+                rect: [100.0, 600.0, 200.0, 700.0],
+            },
+        )
+        .color(red)
+        .width(4.0),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Circle {
+                rect: [300.0, 600.0, 400.0, 700.0],
+            },
+        )
+        .color(red)
+        .fill(Some(blue)),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Highlight {
+                quads: vec![[90.0, 425.0, 210.0, 425.0, 90.0, 395.0, 210.0, 395.0]],
+            },
+        ),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Ink {
+                strokes: vec![vec![[100.0, 300.0], [200.0, 300.0]], vec![[300.0, 300.0]]],
+            },
+        )
+        .color(green)
+        .width(6.0),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::StrikeOut {
+                quads: vec![[300.0, 420.0, 400.0, 420.0, 300.0, 400.0, 400.0, 400.0]],
+            },
+        )
+        .color(red),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Line {
+                from: [100.0, 200.0],
+                to: [200.0, 200.0],
+            },
+        )
+        .color(blue)
+        .width(3.0),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::Polygon {
+                points: vec![[300.0, 150.0], [400.0, 150.0], [350.0, 250.0]],
+            },
+        )
+        .fill(Some(green))
+        .opacity(0.5),
+        NewAnnotation::new(
+            0,
+            AnnotationKind::FreeText {
+                rect: [400.0, 50.0, 580.0, 100.0],
+                text: "WWWW".to_owned(),
+                size: 20.0,
+            },
+        )
+        .width(0.0),
+    ];
+    for annotation in &made {
+        add_annotation(&mut doc, annotation).unwrap();
+    }
+    let check = |doc: &Document, when: &str| {
+        let image = Image::decode(&render_png(doc, 0, 1.0).unwrap());
+        // Image rows go down: y in the image is 800 minus y on the page.
+        let at = |x: u32, y: u32| image.at(x, 800 - y);
+        let near = |pixel: [u8; 3], expected: [u8; 3]| {
+            pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) < 40)
+        };
+        assert!(
+            near(at(101, 650), [255, 0, 0]),
+            "{when}: the square's border"
+        );
+        assert!(
+            near(at(150, 650), [255, 255, 255]),
+            "{when}: an empty square"
+        );
+        assert!(near(at(350, 650), [0, 0, 255]), "{when}: a filled circle");
+        assert!(
+            near(at(150, 410), [0, 0, 0]),
+            "{when}: the text shows through the highlight"
+        );
+        assert!(near(at(95, 410), [255, 255, 0]), "{when}: the highlight");
+        assert!(near(at(150, 300), [0, 153, 0]), "{when}: an ink stroke");
+        assert!(near(at(300, 300), [0, 153, 0]), "{when}: a dot of ink");
+        // The strike out is a line 1.4 point wide through the middle: red, blended at its edges.
+        let strike = (408..=412)
+            .map(|y| at(350, y))
+            .min_by_key(|p| p[1])
+            .unwrap();
+        assert!(
+            strike[0] > 200 && strike[1] < 120,
+            "{when}: the strike out {strike:?}"
+        );
+        assert!(near(at(150, 200), [0, 0, 255]), "{when}: the line");
+        assert!(
+            near(at(350, 180), [128, 204, 128]),
+            "{when}: a polygon half opaque"
+        );
+        assert!(image.dark(405, 700, 575, 750) > 50, "{when}: the free text");
+    };
+    check(&doc, "made");
+    let reopened = open(doc.save(&sealwax_core::SaveOptions::default()).unwrap());
+    check(&reopened, "saved");
+    let mut flat = reopened;
+    flatten(&mut flat).unwrap();
+    check(&flat, "flattened");
 }

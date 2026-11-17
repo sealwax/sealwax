@@ -753,6 +753,106 @@ impl Document {
         Ok(dict)
     }
 
+    /// Add an annotation to page `page_index` (from 0), its appearance drawn, in the page's
+    /// default user space (unrotated, y up): `kind` "ink" (`strokes`, lists of points),
+    /// "highlight", "underline", "strikeout" or "squiggly" (`quads`: per line the corners
+    /// top-left, top-right, bottom-left, bottom-right, eight numbers), "square" or "circle"
+    /// (`rect`), "line" (`points`, its two ends), "polygon" or "polyline" (`points`), "freetext"
+    /// (`rect`, `text`, `size`). `color` (RGB from 0 to 1) draws the strokes, markup, border and
+    /// text, black by default and yellow for a highlight; `fill` the inside of a square,
+    /// circle or polygon, or a free text's background; `width` the strokes and borders (0: no
+    /// border); `opacity` from 0 to 1. `ValueError` for a missing or bad argument.
+    #[pyo3(signature = (
+        page_index, kind, *, quads = None, strokes = None, points = None, rect = None,
+        text = None, size = 12.0, color = None, fill = None, width = 1.0, opacity = 1.0,
+        author = None, contents = None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_annotation(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        kind: &str,
+        quads: Option<Vec<[f64; 8]>>,
+        strokes: Option<Vec<Vec<(f64, f64)>>>,
+        points: Option<Vec<(f64, f64)>>,
+        rect: Option<(f64, f64, f64, f64)>,
+        text: Option<String>,
+        size: f64,
+        color: Option<(f64, f64, f64)>,
+        fill: Option<(f64, f64, f64)>,
+        width: f64,
+        opacity: f64,
+        author: Option<String>,
+        contents: Option<String>,
+    ) -> PyResult<()> {
+        use pdf::annots::AnnotationKind as Kind;
+        let missing = |what: &str| PyValueError::new_err(format!("a {kind} needs {what}"));
+        let pairs = |list: Vec<(f64, f64)>| -> Vec<[f64; 2]> {
+            list.into_iter().map(|(x, y)| [x, y]).collect()
+        };
+        let rect = rect.map(|(x1, y1, x2, y2)| [x1, y1, x2, y2]);
+        let kind = match kind {
+            "ink" => Kind::Ink {
+                strokes: strokes
+                    .ok_or_else(|| missing("strokes"))?
+                    .into_iter()
+                    .map(pairs)
+                    .collect(),
+            },
+            "highlight" => Kind::Highlight {
+                quads: quads.ok_or_else(|| missing("quads"))?,
+            },
+            "underline" => Kind::Underline {
+                quads: quads.ok_or_else(|| missing("quads"))?,
+            },
+            "strikeout" => Kind::StrikeOut {
+                quads: quads.ok_or_else(|| missing("quads"))?,
+            },
+            "squiggly" => Kind::Squiggly {
+                quads: quads.ok_or_else(|| missing("quads"))?,
+            },
+            "square" => Kind::Square {
+                rect: rect.ok_or_else(|| missing("a rect"))?,
+            },
+            "circle" => Kind::Circle {
+                rect: rect.ok_or_else(|| missing("a rect"))?,
+            },
+            "line" => match pairs(points.ok_or_else(|| missing("points"))?).as_slice() {
+                [from, to] => Kind::Line {
+                    from: *from,
+                    to: *to,
+                },
+                _ => return Err(PyValueError::new_err("a line needs two points")),
+            },
+            "polygon" => Kind::Polygon {
+                points: pairs(points.ok_or_else(|| missing("points"))?),
+            },
+            "polyline" => Kind::PolyLine {
+                points: pairs(points.ok_or_else(|| missing("points"))?),
+            },
+            "freetext" => Kind::FreeText {
+                rect: rect.ok_or_else(|| missing("a rect"))?,
+                text: text.ok_or_else(|| missing("text"))?,
+                size,
+            },
+            _ => return Err(PyValueError::new_err("unknown annotation kind")),
+        };
+        let mut annotation = pdf::annots::NewAnnotation::new(page_index, kind)
+            .fill(fill.map(|(r, g, b)| [r, g, b]))
+            .width(width)
+            .opacity(opacity)
+            .author(author)
+            .contents(contents);
+        if let Some((r, g, b)) = color {
+            annotation = annotation.color([r, g, b]);
+        }
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::add_annotation(inner, &annotation).map(|_| ())?)
+        })
+    }
+
     /// Create a field on page `page_index` (from 0): `kind` "text", "date" (a text field
     /// carrying Acrobat's `yyyy-mm-dd` date actions) or "checkbox" (states `Yes` and `Off`),
     /// named `name` (not empty, no period), at `rect` (x1, y1, x2, y2) on the page as it shows:

@@ -225,6 +225,24 @@ class Document:
     def unfill_fields(self, written: dict[str, Written]) -> list[str]: ...
     def clear_template(self, title: str, *, keep_annotations: bool = False) -> Cleared: ...
     def template_content(self) -> TemplateContent: ...
+    def add_annotation(
+        self,
+        page_index: int,
+        kind: str,
+        *,
+        quads: list[tuple[float, float, float, float, float, float, float, float]] | None = None,
+        strokes: list[list[tuple[float, float]]] | None = None,
+        points: list[tuple[float, float]] | None = None,
+        rect: tuple[float, float, float, float] | None = None,
+        text: str | None = None,
+        size: float = 12.0,
+        color: tuple[float, float, float] | None = None,
+        fill: tuple[float, float, float] | None = None,
+        width: float = 1.0,
+        opacity: float = 1.0,
+        author: str | None = None,
+        contents: str | None = None,
+    ) -> None: ...
     def add_field(
         self, name: str, kind: str, page_index: int, rect: tuple[float, float, float, float], *, required: bool = False
     ) -> None: ...
