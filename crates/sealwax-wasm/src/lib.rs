@@ -1,0 +1,786 @@
+//! sealwax for browsers and web views: WebAssembly bindings, built by `build.sh` into the npm
+//! package `sealwax`. Bytes in, bytes out, as the Python package; errors are the package's own
+//! classes (`PdfError` and those under it, from `js/errors.js`), and never quote a document's
+//! content.
+//!
+//! A panic cannot unwind on this target: where the native library catches one (a page hayro
+//! cannot interpret), the module traps instead, and its instance should be dropped (a worker
+//! restarted).
+
+use std::collections::{BTreeMap, HashMap};
+
+use js_sys::{Array, Object, Reflect, Uint8Array};
+use sealwax_annots::{
+    FieldChoice, FieldKind, FieldValue, FillValue, Flattened, fields, fill_fields, flatten,
+    flatten_fields,
+};
+use sealwax_core::{
+    Document as CoreDocument, Limits, OpenOptions, PageGeometry, Rect, SaveOptions, XrefFormat,
+};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(module = "/js/errors.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = makeError)]
+    fn make_error(kind: &str, message: &str, limit: Option<String>) -> JsValue;
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const TYPES: &str = r#"
+/** What processing a document may spend, and for how long; a bound left out keeps its default,
+ * calibrated on real documents. `timeoutMs` counts from the call that opens the document, or from
+ * the call of a function given bytes. `unbounded` lifts every bound but the timeout: for
+ * documents the caller produced itself. */
+export interface Limits {
+  timeoutMs?: number;
+  unbounded?: boolean;
+  maxOperators?: number;
+  maxShownBytes?: number;
+  maxPageCost?: number;
+  maxImagePixels?: number;
+  maxMeshBytes?: number;
+  maxCodeRange?: number;
+  maxStreamBytes?: number;
+  minDashPeriod?: number;
+  maxAnnotations?: number;
+  maxRenderPixels?: number;
+}
+
+export interface OpenOptions {
+  password?: string;
+  /** The page count the caller accepts, [least, most]: another is refused. */
+  pageCount?: [number, number];
+  limits?: Limits;
+}
+
+export interface SaveOptions {
+  /** "stream" (cross-reference stream and object streams, the default) or "table". */
+  xref?: "stream" | "table";
+}
+
+/** x1, y1, x2, y2 in the page's default user space (points, y up). */
+export type Box = [number, number, number, number];
+
+export interface PageGeometry {
+  /** From 1. */
+  pageNumber: number;
+  /** Clipped to the media box. */
+  cropBox: Box;
+  mediaBox: Box;
+  rotation: 0 | 90 | 180 | 270;
+  userUnit: number;
+}
+
+export interface Field {
+  /** The full name: the partial names from the top, joined by periods. */
+  name: string;
+  /** `/TU`. */
+  label: string | null;
+  kind: "text" | "checkbox" | "radio" | "push_button" | "combo_box" | "list_box" | "signature" | "other";
+  /** From 1. */
+  pageNumber: number;
+  rect: Box;
+  cropBox: Box;
+  /** Text, several selections, or null. */
+  value: string | string[] | null;
+  /** A button's `/AS`, its bytes. */
+  state: Uint8Array | null;
+  required: boolean;
+  readOnly: boolean;
+  maxLength: number | null;
+  /** Text, or [export, display] pairs. */
+  choices: (string | [string, string])[];
+  /** The names of a button's appearances, their bytes as the document spells them. */
+  buttonStates: Uint8Array[];
+  buttonCaption: string | null;
+}
+
+export interface Filled {
+  /** The occurrences written: widgets of a field named. */
+  occurrences: number;
+  /** Characters the appearance's font lacks, drawn as "?" (the value keeps them). */
+  charactersReplaced: number;
+  /** The check boxes and radio buttons given a state none of their widgets has. */
+  unmatched: string[];
+}
+
+export interface Flattened {
+  painted: number;
+  drawn: number;
+  linksKept: number;
+  /** Annotations taken out, by subtype. */
+  dropped: Record<string, number>;
+  charactersReplaced: number;
+}
+
+export interface Metadata {
+  version: string;
+  encrypted: boolean;
+  linearized: boolean;
+  hasForms: boolean;
+  hasSignatures: boolean;
+  /** The part and conformance the XMP claims ("3A"). */
+  pdfa: string | null;
+  /** The document information's text entries, as written. */
+  info: Record<string, string>;
+}
+
+export interface OutlineEntry {
+  /** From 1. */
+  level: number;
+  title: string;
+  /** From 1; null when the entry leads nowhere in the document. */
+  pageNumber: number | null;
+}
+"#;
+
+/// The JavaScript error of a core error.
+fn core_error(error: &sealwax_core::Error) -> JsValue {
+    use sealwax_core::Error;
+    let message = error.to_string();
+    match error {
+        Error::PasswordRequired => make_error("password", &message, None),
+        Error::Malformed
+        | Error::PagesMissing { .. }
+        | Error::PageCountOutOfRange { .. }
+        | Error::Io(_) => make_error("read", &message, None),
+        Error::LimitExceeded { what } => make_error("limit", &message, Some((*what).to_owned())),
+        Error::Timeout => make_error("timeout", &message, Some("deadline".to_owned())),
+        Error::InvalidArgument { .. } => make_error("argument", &message, None),
+        _ => make_error("pdf", &message, None),
+    }
+}
+
+/// The JavaScript error of an annotation error.
+fn annots_error(error: &sealwax_annots::Error) -> JsValue {
+    use sealwax_annots::Error;
+    match error {
+        Error::Pdf(inner) => core_error(inner),
+        Error::Source { error: inner, .. } => {
+            let kind = match inner.as_ref() {
+                Error::Pdf(sealwax_core::Error::PasswordRequired) => "password",
+                Error::Pdf(
+                    sealwax_core::Error::Malformed
+                    | sealwax_core::Error::PagesMissing { .. }
+                    | sealwax_core::Error::PageCountOutOfRange { .. }
+                    | sealwax_core::Error::Io(_),
+                ) => "read",
+                Error::Pdf(sealwax_core::Error::LimitExceeded { .. }) => "limit",
+                Error::Pdf(sealwax_core::Error::Timeout) => "timeout",
+                Error::Pdf(_) => "pdf",
+                _ => "xfdf",
+            };
+            let limit = match inner.as_ref() {
+                Error::Pdf(sealwax_core::Error::LimitExceeded { what }) => Some((*what).to_owned()),
+                Error::Pdf(sealwax_core::Error::Timeout) => Some("deadline".to_owned()),
+                _ => None,
+            };
+            make_error(kind, &error.to_string(), limit)
+        }
+        _ => make_error("xfdf", &error.to_string(), None),
+    }
+}
+
+/// The JavaScript error of a rendering error.
+fn raster_error(error: &sealwax_raster::Error) -> JsValue {
+    match error {
+        sealwax_raster::Error::Pdf(inner) => core_error(inner),
+        sealwax_raster::Error::Annots(inner) => annots_error(inner),
+        other => make_error("pdf", &other.to_string(), None),
+    }
+}
+
+fn argument(message: &str) -> JsValue {
+    make_error("argument", message, None)
+}
+
+/// `value[key]`, when it is set (not undefined nor null).
+fn get(value: &JsValue, key: &str) -> Option<JsValue> {
+    if !value.is_object() {
+        return None;
+    }
+    Reflect::get(value, &JsValue::from_str(key))
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_null())
+}
+
+fn set(target: &Object, key: &str, value: impl Into<JsValue>) {
+    let _ = Reflect::set(target, &JsValue::from_str(key), &value.into());
+}
+
+fn numbers(values: &[f64]) -> Array {
+    values.iter().map(|v| JsValue::from_f64(*v)).collect()
+}
+
+fn rect(rect: Rect) -> Array {
+    numbers(&[rect.x1, rect.y1, rect.x2, rect.y2])
+}
+
+/// A count as a JavaScript number (exact up to 2^53, past any count sealwax makes).
+#[allow(clippy::cast_precision_loss)]
+fn count(value: usize) -> JsValue {
+    JsValue::from_f64(value as f64)
+}
+
+/// A whole number of `value[key]`, at least 0.
+fn bound(value: &JsValue, key: &str) -> Result<Option<u64>, JsValue> {
+    let Some(number) = get(value, key) else {
+        return Ok(None);
+    };
+    match number.as_f64() {
+        Some(n)
+            if n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0 =>
+        {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(Some(n as u64))
+        }
+        _ => Err(argument(&format!(
+            "limits.{key} must be a whole number >= 0"
+        ))),
+    }
+}
+
+/// The limits a `Limits` object describes, their deadline counted from now.
+fn limits(value: Option<JsValue>) -> Result<Limits, JsValue> {
+    let Some(value) = value.filter(JsValue::is_object) else {
+        return Ok(Limits::default());
+    };
+    let mut limits = if get(&value, "unbounded").is_some_and(|v| v.is_truthy()) {
+        Limits::unbounded()
+    } else {
+        Limits::default()
+    };
+    let fields: [(&str, &mut u64); 9] = [
+        ("maxOperators", &mut limits.max_operators),
+        ("maxShownBytes", &mut limits.max_shown_bytes),
+        ("maxPageCost", &mut limits.max_page_cost),
+        ("maxImagePixels", &mut limits.max_image_pixels),
+        ("maxMeshBytes", &mut limits.max_mesh_bytes),
+        ("maxCodeRange", &mut limits.max_code_range),
+        ("maxStreamBytes", &mut limits.max_stream_bytes),
+        ("maxAnnotations", &mut limits.max_annotations),
+        ("maxRenderPixels", &mut limits.max_render_pixels),
+    ];
+    for (key, field) in fields {
+        if let Some(number) = bound(&value, key)? {
+            *field = number;
+        }
+    }
+    if let Some(period) = get(&value, "minDashPeriod") {
+        match period.as_f64() {
+            Some(p) if p.is_finite() && p >= 0.0 => limits.min_dash_period = p,
+            _ => {
+                return Err(argument(
+                    "limits.minDashPeriod must be a finite number >= 0",
+                ));
+            }
+        }
+    }
+    if let Some(timeout) = get(&value, "timeoutMs") {
+        match timeout.as_f64() {
+            Some(ms) if ms.is_finite() && ms >= 0.0 => {
+                limits = limits.timeout(std::time::Duration::from_secs_f64(ms / 1000.0));
+            }
+            _ => return Err(argument("limits.timeoutMs must be a finite number >= 0")),
+        }
+    }
+    Ok(limits)
+}
+
+/// The options an `OpenOptions` object describes.
+fn open_options(value: Option<JsValue>) -> Result<OpenOptions, JsValue> {
+    let mut options = OpenOptions::default();
+    let Some(value) = value.filter(JsValue::is_object) else {
+        return Ok(options);
+    };
+    if let Some(password) = get(&value, "password") {
+        options = options.password(
+            password
+                .as_string()
+                .ok_or_else(|| argument("password must be a string"))?,
+        );
+    }
+    if let Some(range) = get(&value, "pageCount") {
+        let bounds: Vec<f64> = Array::from(&range)
+            .iter()
+            .filter_map(|v| v.as_f64())
+            .collect();
+        match bounds[..] {
+            [least, most]
+                if least.fract() == 0.0 && most.fract() == 0.0 && 0.0 <= least && least <= most =>
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    options = options.page_count(least as usize..=most as usize);
+                }
+            }
+            _ => return Err(argument("pageCount must be [least, most], whole numbers")),
+        }
+    }
+    Ok(options.limits(limits(get(&value, "limits"))?))
+}
+
+fn bytes(data: &[u8]) -> Uint8Array {
+    Uint8Array::from(data)
+}
+
+fn flattened(report: &Flattened) -> Object {
+    let object = Object::new();
+    set(&object, "painted", count(report.painted));
+    set(&object, "drawn", count(report.drawn));
+    set(&object, "linksKept", count(report.links_kept));
+    set(&object, "dropped", counts(&report.dropped));
+    set(
+        &object,
+        "charactersReplaced",
+        count(report.characters_replaced),
+    );
+    object
+}
+
+fn counts(map: &BTreeMap<String, usize>) -> Object {
+    let object = Object::new();
+    for (key, value) in map {
+        set(&object, key, count(*value));
+    }
+    object
+}
+
+fn geometry(page: &PageGeometry) -> Object {
+    let object = Object::new();
+    set(&object, "pageNumber", count(page.page_number));
+    set(&object, "cropBox", rect(page.crop_box));
+    set(&object, "mediaBox", rect(page.media_box));
+    set(&object, "rotation", page.rotation.degrees());
+    set(&object, "userUnit", page.user_unit);
+    object
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn field(field: &sealwax_annots::Field) -> Object {
+    let object = Object::new();
+    set(&object, "name", field.name.as_str());
+    set(
+        &object,
+        "label",
+        field.label.clone().map_or(JsValue::NULL, JsValue::from),
+    );
+    let kind = match field.kind {
+        FieldKind::Text => "text",
+        FieldKind::CheckBox => "checkbox",
+        FieldKind::Radio => "radio",
+        FieldKind::PushButton => "push_button",
+        FieldKind::ComboBox => "combo_box",
+        FieldKind::ListBox => "list_box",
+        FieldKind::Signature => "signature",
+        _ => "other",
+    };
+    set(&object, "kind", kind);
+    set(&object, "pageNumber", count(field.page_index + 1));
+    set(&object, "rect", rect(field.rect));
+    set(&object, "cropBox", rect(field.crop_box));
+    let value = match &field.value {
+        Some(FieldValue::Text(text)) => JsValue::from(text.as_str()),
+        Some(FieldValue::Name(name)) => JsValue::from(sealwax_annots::name_text(name)),
+        Some(FieldValue::List(list)) => list
+            .iter()
+            .map(|item| JsValue::from(item.as_str()))
+            .collect::<Array>()
+            .into(),
+        None => JsValue::NULL,
+    };
+    set(&object, "value", value);
+    set(
+        &object,
+        "state",
+        field
+            .state
+            .as_deref()
+            .map_or(JsValue::NULL, |state| bytes(state).into()),
+    );
+    set(&object, "required", field.required);
+    set(&object, "readOnly", field.read_only);
+    set(
+        &object,
+        "maxLength",
+        field
+            .max_length
+            .map_or(JsValue::NULL, |length| JsValue::from_f64(length as f64)),
+    );
+    let choices: Array = field
+        .choices
+        .iter()
+        .map(|choice| match choice {
+            FieldChoice::Single(text) => JsValue::from(text.as_str()),
+            FieldChoice::Pair { export, display } => {
+                Array::of2(&export.as_str().into(), &display.as_str().into()).into()
+            }
+        })
+        .collect();
+    set(&object, "choices", choices);
+    let states: Array = field
+        .button_states
+        .iter()
+        .map(|state| JsValue::from(bytes(state)))
+        .collect();
+    set(&object, "buttonStates", states);
+    set(
+        &object,
+        "buttonCaption",
+        field
+            .button_caption
+            .clone()
+            .map_or(JsValue::NULL, JsValue::from),
+    );
+    object
+}
+
+fn save_options(options: Option<JsValue>) -> Result<SaveOptions, JsValue> {
+    let format = match options.as_ref().and_then(|o| get(o, "xref")) {
+        None => XrefFormat::Stream,
+        Some(xref) => match xref.as_string().as_deref() {
+            Some("stream") => XrefFormat::Stream,
+            Some("table") => XrefFormat::Table,
+            _ => return Err(argument("xref must be \"stream\" or \"table\"")),
+        },
+    };
+    Ok(SaveOptions::default().xref(format))
+}
+
+/// An opened PDF document.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct Document {
+    inner: CoreDocument,
+}
+
+#[wasm_bindgen]
+impl Document {
+    /// Open the PDF in `data` (copied).
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(
+        data: &[u8],
+        #[wasm_bindgen(unchecked_param_type = "OpenOptions")] options: Option<JsValue>,
+    ) -> Result<Document, JsValue> {
+        let options = open_options(options)?;
+        CoreDocument::open(data.to_vec(), &options)
+            .map(|inner| Self { inner })
+            .map_err(|error| core_error(&error))
+    }
+
+    /// The number of pages.
+    #[wasm_bindgen(js_name = pageCount)]
+    #[must_use]
+    pub fn page_count(&self) -> usize {
+        self.inner.page_count()
+    }
+
+    /// Whether the document changed since it was opened.
+    #[wasm_bindgen(js_name = isModified)]
+    #[must_use]
+    pub fn is_modified(&self) -> bool {
+        self.inner.is_modified()
+    }
+
+    /// The geometry of every page, in page order.
+    #[wasm_bindgen(unchecked_return_type = "PageGeometry[]")]
+    #[must_use]
+    pub fn geometry(&self) -> Array {
+        self.inner
+            .geometry()
+            .iter()
+            .map(|page| JsValue::from(geometry(page)))
+            .collect()
+    }
+
+    /// The document saved in full: every reachable object rewritten, decrypted and renumbered.
+    ///
+    /// # Errors
+    /// A `PdfError` when it cannot be saved.
+    pub fn save(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "SaveOptions")] options: Option<JsValue>,
+    ) -> Result<Uint8Array, JsValue> {
+        let options = save_options(options)?;
+        self.inner
+            .save(&options)
+            .map(|data| bytes(&data))
+            .map_err(|error| core_error(&error))
+    }
+
+    /// The document with what changed appended as an incremental update: the input's bytes
+    /// first, unchanged (signatures stay valid).
+    ///
+    /// # Errors
+    /// A `PdfError` when it cannot be saved.
+    #[wasm_bindgen(js_name = saveIncremental)]
+    pub fn save_incremental(&self) -> Result<Uint8Array, JsValue> {
+        self.inner
+            .save_incremental()
+            .map(|data| bytes(&data))
+            .map_err(|error| core_error(&error))
+    }
+
+    /// The occurrences of the form's fields on page `pageIndex` (from 0), every page's when
+    /// left out: one per widget, a name repeated on several widgets never merged.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for a page the document does not have.
+    #[wasm_bindgen(unchecked_return_type = "Field[]")]
+    pub fn fields(&self, page_index: Option<usize>) -> Result<Array, JsValue> {
+        fields(&self.inner, page_index)
+            .map(|found| found.iter().map(|f| JsValue::from(field(f))).collect())
+            .map_err(|error| core_error(&error))
+    }
+
+    /// Fill the fields `values` names, by full name, every occurrence of each: a text or choice
+    /// field gets the text and an appearance drawn for it (an empty text clears it); a button
+    /// shows the state named, given as bytes exactly as `buttonStates` spells it or as text (its
+    /// UTF-8 bytes), `Off` when it has no such state.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for a value that is neither text nor bytes.
+    #[wasm_bindgen(js_name = fillFields, unchecked_return_type = "Filled")]
+    pub fn fill_fields(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Record<string, string | Uint8Array>")]
+        values: JsValue,
+    ) -> Result<Object, JsValue> {
+        let mut wanted = HashMap::new();
+        for entry in Object::entries(&Object::from(values)).iter() {
+            let pair = Array::from(&entry);
+            let name = pair
+                .get(0)
+                .as_string()
+                .ok_or_else(|| argument("a field's name must be a string"))?;
+            let value = pair.get(1);
+            let value = if let Some(text) = value.as_string() {
+                FillValue::Text(text)
+            } else if value.is_instance_of::<Uint8Array>() {
+                FillValue::Bytes(Uint8Array::from(value).to_vec())
+            } else {
+                return Err(argument("each value must be a string or a Uint8Array"));
+            };
+            wanted.insert(name, value);
+        }
+        let filled = fill_fields(&mut self.inner, &wanted).map_err(|error| core_error(&error))?;
+        let object = Object::new();
+        set(&object, "occurrences", count(filled.occurrences));
+        set(
+            &object,
+            "charactersReplaced",
+            count(filled.characters_replaced),
+        );
+        let unmatched: Array = filled
+            .unmatched
+            .iter()
+            .map(|name| JsValue::from(name.as_str()))
+            .collect();
+        set(&object, "unmatched", unmatched);
+        Ok(object)
+    }
+
+    /// Every occurrence's value, by full name: a text or choice field's value, a button's state
+    /// (`Off` when it has none), each as text.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = fieldValues, unchecked_return_type = "Record<string, string[]>")]
+    pub fn field_values(&self) -> Result<Object, JsValue> {
+        let values =
+            sealwax_annots::field_values(&self.inner).map_err(|error| core_error(&error))?;
+        let object = Object::new();
+        for (name, occurrences) in values {
+            let list: Array = occurrences
+                .iter()
+                .map(|value| JsValue::from(value.as_str()))
+                .collect();
+            set(&object, &name, list);
+        }
+        Ok(object)
+    }
+
+    /// Flatten every annotation but links into its page and take the form out; with
+    /// `fieldsOnly`, the form's widgets alone, every other annotation kept as it is.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(unchecked_return_type = "Flattened")]
+    pub fn flatten(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "{ fieldsOnly?: boolean }")] options: Option<JsValue>,
+    ) -> Result<Object, JsValue> {
+        let fields_only = options
+            .as_ref()
+            .and_then(|o| get(o, "fieldsOnly"))
+            .is_some_and(|v| v.is_truthy());
+        let report = if fields_only {
+            flatten_fields(&mut self.inner)
+        } else {
+            flatten(&mut self.inner)
+        }
+        .map_err(|error| annots_error(&error))?;
+        Ok(flattened(&report))
+    }
+
+    /// Page `pageIndex` (from 0) rendered as a reader shows it (annotations and field values
+    /// included), as PNG bytes: 8-bit RGB over white, the crop box as shown (rotated), at
+    /// `scale` pixels per point, sides rounded up.
+    ///
+    /// # Errors
+    /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError`.
+    #[wasm_bindgen(js_name = renderPng)]
+    pub fn render_png(&self, page_index: usize, scale: f64) -> Result<Uint8Array, JsValue> {
+        sealwax_raster::render_png(&self.inner, page_index, scale)
+            .map(|png| bytes(&png))
+            .map_err(|error| raster_error(&error))
+    }
+
+    /// What the document says about itself, never failing.
+    #[wasm_bindgen(unchecked_return_type = "Metadata")]
+    #[must_use]
+    pub fn metadata(&self) -> Object {
+        let metadata = self.inner.metadata();
+        let object = Object::new();
+        set(&object, "version", metadata.version.as_str());
+        set(&object, "encrypted", metadata.encrypted);
+        set(&object, "linearized", metadata.linearized);
+        set(&object, "hasForms", metadata.has_forms);
+        set(&object, "hasSignatures", metadata.has_signatures);
+        set(
+            &object,
+            "pdfa",
+            metadata.pdfa.map_or(JsValue::NULL, JsValue::from),
+        );
+        let info = Object::new();
+        for (key, value) in &metadata.info {
+            set(&info, key, value.as_str());
+        }
+        set(&object, "info", info);
+        object
+    }
+
+    /// The outline, flat and depth first; named destinations resolved, never a guess.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(unchecked_return_type = "OutlineEntry[]")]
+    pub fn outline(&self) -> Result<Array, JsValue> {
+        let entries = self.inner.outline().map_err(|error| core_error(&error))?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let object = Object::new();
+                set(&object, "level", count(entry.level));
+                set(&object, "title", entry.title);
+                set(
+                    &object,
+                    "pageNumber",
+                    entry
+                        .page_index
+                        .map_or(JsValue::NULL, |index| count(index + 1)),
+                );
+                JsValue::from(object)
+            })
+            .collect())
+    }
+
+    /// Pages `[start, stop)` (from 0; at least one) in a new PDF, saved compressed: each page with
+    /// its contents, resources and annotations; the outline, the form and the structure tree
+    /// left behind.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for a range the document does not have.
+    #[wasm_bindgen(js_name = extractPages)]
+    pub fn extract_pages(&self, start: usize, stop: usize) -> Result<Uint8Array, JsValue> {
+        let extracted = self
+            .inner
+            .extract_pages(start..stop)
+            .map_err(|error| core_error(&error))?;
+        let saved = extracted
+            .save(&SaveOptions::default())
+            .map_err(|error| core_error(&error))?;
+        let options = OpenOptions::default()
+            .limits(*self.inner.limits())
+            .max_file_bytes(usize::MAX);
+        sealwax_core::optimize(&saved, &options)
+            .map(|optimized| bytes(&optimized.data))
+            .map_err(|error| core_error(&error))
+    }
+}
+
+/// The documents `sources` one after the other, each flattened first.
+///
+/// # Errors
+/// The error of the first source that cannot be read or merged; its message says which.
+#[wasm_bindgen(js_name = mergeBytes)]
+pub fn merge_bytes(
+    #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] sources: Array,
+    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+) -> Result<Uint8Array, JsValue> {
+    let options =
+        OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);
+    let mut documents = Vec::with_capacity(sources.length() as usize);
+    for (index, source) in sources.iter().enumerate() {
+        if !source.is_instance_of::<Uint8Array>() {
+            return Err(argument("each source must be a Uint8Array"));
+        }
+        let document =
+            CoreDocument::open(Uint8Array::from(source).to_vec(), &options).map_err(|error| {
+                annots_error(&sealwax_annots::Error::Source {
+                    position: index + 1,
+                    error: Box::new(error.into()),
+                })
+            })?;
+        documents.push(document);
+    }
+    let (merged, _) = sealwax_annots::merge(documents).map_err(|error| annots_error(&error))?;
+    merged
+        .save(&SaveOptions::default())
+        .map(|data| bytes(&data))
+        .map_err(|error| core_error(&error))
+}
+
+/// The PDF in `data` with every annotation but links flattened into its page.
+///
+/// # Errors
+/// A `PdfError`.
+#[wasm_bindgen(js_name = flattenBytes)]
+pub fn flatten_bytes(
+    data: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+) -> Result<Uint8Array, JsValue> {
+    let options =
+        OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);
+    let mut document =
+        CoreDocument::open(data.to_vec(), &options).map_err(|error| core_error(&error))?;
+    flatten(&mut document).map_err(|error| annots_error(&error))?;
+    document
+        .save(&SaveOptions::default())
+        .map(|saved| bytes(&saved))
+        .map_err(|error| core_error(&error))
+}
+
+/// The PDF in `data` rewritten smaller, losslessly, or as it was when it is encrypted, signed, or
+/// not made smaller.
+///
+/// # Errors
+/// A `PdfError`.
+#[wasm_bindgen(js_name = optimizeBytes)]
+pub fn optimize_bytes(
+    data: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+) -> Result<Uint8Array, JsValue> {
+    let options =
+        OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);
+    sealwax_core::optimize(data, &options)
+        .map(|optimized| bytes(&optimized.data))
+        .map_err(|error| core_error(&error))
+}
+
+/// The version of sealwax.
+#[wasm_bindgen]
+#[must_use]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}

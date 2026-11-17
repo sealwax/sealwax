@@ -108,3 +108,27 @@ jobs:
           VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop
           .venv/bin/python -m mypy --strict python/sealwax
           .venv/bin/python -m pytest -q tests
+
+  wasm:
+    name: WebAssembly package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # The wasm-bindgen CLI must be the version the crate pins.
+      - name: wasm-bindgen version
+        id: bindgen
+        run: echo "version=$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' crates/sealwax-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the npm package
+        run: crates/sealwax-wasm/build.sh
+      - name: Test it under Node
+        run: node --test crates/sealwax-wasm/tests/

@@ -1,0 +1,29 @@
+[package]
+name = "sealwax-wasm"
+description = "WebAssembly bindings of sealwax, for browsers and web views (the npm package sealwax)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Built by build.sh into the npm package, never published on crates.io.
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sealwax-core.workspace = true
+sealwax-annots.workspace = true
+sealwax-raster.workspace = true
+# The bridge to JavaScript (MIT OR Apache-2.0): its version must be the wasm-bindgen CLI's that
+# build.sh runs.
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"
+
+[lints]
+workspace = true

@@ -8,6 +8,11 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- A WebAssembly build for browsers, web views and workers (`crates/sealwax-wasm`, built by its
+  `build.sh` into the npm package `sealwax`): a `Document` class (open, geometry, fields read and
+  filled, flattening, PNG rendering, metadata, outline, pages taken out, saving) and functions on
+  bytes, with the package's own error classes. The limits' deadline reads its clock through
+  `web-time`, which is `std`'s on every other target.
 - `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.

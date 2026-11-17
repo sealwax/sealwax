@@ -10,6 +10,7 @@ members = [
     "crates/sealwax-sign",
     "crates/sealwax-cli",
     "crates/sealwax-py",
+    "crates/sealwax-wasm",
 ]
 # Built with nightly by cargo-fuzz, in its own workspace.
 exclude = ["fuzz"]
@@ -66,3 +67,10 @@ panic = "warn"
 lto = "thin"
 codegen-units = 1
 panic = "unwind"
+
+# The browser build (crates/sealwax-wasm/build.sh): smaller code, and no unwinding, which the
+# target does not do.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+panic = "abort"
