@@ -30,8 +30,9 @@ pub struct PhotoPages {
 /// US Letter sheet, portrait or landscape as the photo shows, with a margin of half an inch, the
 /// photo centered and fitted without being stretched. A JPEG is embedded as it is, never encoded
 /// again (`DCTDecode`, its colour space read from its header); a PNG keeps its transparency. The
-/// orientation a phone writes in a JPEG's EXIF data becomes the page's rotation (and a mirror,
-/// for the orientations that flip), so that the photo shows upright. The limits'
+/// orientation a phone writes in a JPEG's EXIF data (its first EXIF segment, as browsers read
+/// it) becomes the page's rotation (and a mirror, for the orientations that flip), so that the
+/// photo shows upright. The limits'
 /// `max_image_pixels` apply to every photo before anything is decoded. A photo that cannot be
 /// read gets no page, and is named in [`PhotoPages::unreadable`].
 ///

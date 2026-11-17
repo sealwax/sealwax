@@ -10,7 +10,8 @@ pub(crate) struct Header {
     pub(crate) components: u8,
     /// An Adobe marker (`APP14`): its CMYK samples are stored inverted, as Photoshop writes them.
     pub(crate) adobe: bool,
-    /// The EXIF orientation, 1 to 8 (1 when it says none).
+    /// The EXIF orientation, 1 to 8 (1 when it says none): the first EXIF segment's, as
+    /// browsers read it; a later one, or another `APP1` segment (XMP), changes nothing.
     pub(crate) orientation: u8,
 }
 
@@ -21,7 +22,7 @@ pub(crate) fn header(data: &[u8]) -> Option<Header> {
     }
     let mut at = 2;
     let mut adobe = false;
-    let mut orientation = 1;
+    let mut orientation = None;
     let mut frame: Option<(u32, u32, u8)> = None;
     loop {
         // Fill bytes before a marker.
@@ -52,11 +53,11 @@ pub(crate) fn header(data: &[u8]) -> Option<Header> {
                     height,
                     components,
                     adobe,
-                    orientation,
+                    orientation: orientation.unwrap_or(1),
                 });
             }
-            0xE1 if segment.starts_with(b"Exif\0\0") => {
-                orientation = exif_orientation(&segment[6..]).unwrap_or(1);
+            0xE1 if orientation.is_none() && segment.starts_with(b"Exif\0\0") => {
+                orientation = Some(exif_orientation(&segment[6..]).unwrap_or(1));
             }
             0xEE if segment.starts_with(b"Adobe") => adobe = true,
             // Baseline, extended and progressive frames, Huffman-coded: what every PDF reader
@@ -156,6 +157,39 @@ mod tests {
         let mut arithmetic = photo.to_vec();
         arithmetic[frame + 1] = 0xC9;
         assert_eq!(header(&arithmetic), None, "arithmetic coding");
+        // Two EXIF segments: the first one counts, even without an orientation, as Chrome and
+        // Apple's ImageIO read them; an XMP segment before it does not.
+        let exif = photo.windows(6).position(|w| w == b"Exif\0\0").unwrap() - 4;
+        let length = usize::from(u16::from_be_bytes([photo[exif + 2], photo[exif + 3]]));
+        let six = &photo[exif..exif + 2 + length];
+        let segment = |payload: &[u8]| {
+            let mut out = vec![0xFF, 0xE1];
+            out.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+            out.extend_from_slice(payload);
+            out
+        };
+        let little = |entry: &[u8]| {
+            let mut payload = b"Exif\0\0II*\0\x08\0\0\0\x01\0".to_vec();
+            payload.extend_from_slice(entry);
+            payload.extend_from_slice(&[0; 4]);
+            segment(&payload)
+        };
+        let one = little(b"\x12\x01\x03\0\x01\0\0\0\x01\0\0\0");
+        let none = little(b"\x31\x01\x02\0\x04\0\0\0abc\0");
+        let xmp = segment(b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>");
+        let with = |before: &[u8], after: &[u8]| {
+            let mut out = photo[..exif].to_vec();
+            out.extend_from_slice(before);
+            out.extend_from_slice(six);
+            out.extend_from_slice(after);
+            out.extend_from_slice(&photo[exif + six.len()..]);
+            header(&out).unwrap().orientation
+        };
+        assert_eq!(with(&one, &[]), 1, "orientation 1, then 6");
+        assert_eq!(with(&[], &one), 6, "6, then 1");
+        assert_eq!(with(&none, &[]), 1, "none, then 6");
+        assert_eq!(with(&[], &none), 6, "6, then none");
+        assert_eq!(with(&xmp, &[]), 6, "XMP, then 6");
         // Big-endian EXIF, orientation 3.
         let tiff = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x03\0\0\0\0\0\0";
         assert_eq!(exif_orientation(tiff), Some(3));
