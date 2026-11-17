@@ -65,7 +65,7 @@ impl Document {
             return Err(Error::InvalidArgument { what: "page range" });
         }
         let wanted: Vec<(usize, i32)> = pages.map(|page| (page, 0)).collect();
-        let copied = self.copy_pages(other, &wanted, false)?;
+        let copied = self.copy_pages(other, &wanted, &CopyRules::default())?;
         let count = copied.pages.len();
         self.appended.extend(copied.pages);
         Ok(count)
@@ -87,6 +87,20 @@ impl Document {
     /// [`Error::InvalidArgument`] when `picks` is empty, or names a source or a page that does
     /// not exist, or a page twice; as [`Document::append_pages`].
     pub fn compose(sources: &[&Document], picks: &[PagePick], keep_form: bool) -> Result<Document> {
+        let rules = CopyRules {
+            keep_form,
+            redacted: false,
+        };
+        Self::compose_with(sources, picks, &rules)
+    }
+
+    /// [`Document::compose`] under `rules`.
+    pub(crate) fn compose_with(
+        sources: &[&Document],
+        picks: &[PagePick],
+        rules: &CopyRules,
+    ) -> Result<Document> {
+        let keep_form = rules.keep_form;
         let invalid = Error::InvalidArgument { what: "page list" };
         let mut named = std::collections::HashSet::new();
         for pick in picks {
@@ -104,6 +118,7 @@ impl Document {
         let mut fields: Vec<ObjId> = Vec::new();
         let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut defaults = Dict::new();
+        let mut optional_content = None;
         for (index, source) in sources.iter().enumerate() {
             let positions: Vec<usize> = (0..picks.len())
                 .filter(|at| picks[*at].source == index)
@@ -115,9 +130,12 @@ impl Document {
                 .iter()
                 .map(|at| (picks[*at].page, picks[*at].quarter_turns))
                 .collect();
-            let copied = out.copy_pages(source, &wanted, keep_form)?;
+            let copied = out.copy_pages(source, &wanted, rules)?;
             for (at, page) in positions.iter().zip(copied.pages) {
                 placed[*at] = Some(page);
+            }
+            if optional_content.is_none() {
+                optional_content = copied.optional_content;
             }
             if keep_form {
                 for (key, value) in copied.defaults.iter() {
@@ -129,6 +147,13 @@ impl Document {
             }
         }
         out.appended.extend(placed.into_iter().flatten());
+        if let Some(optional_content) = optional_content {
+            let catalog_id = out.catalog_id();
+            if let Some(Object::Dict(mut catalog)) = out.object(catalog_id)? {
+                catalog.insert("OCProperties", optional_content);
+                out.set_object(catalog_id, Object::Dict(catalog));
+            }
+        }
         if keep_form && !fields.is_empty() {
             let mut form = defaults;
             form.insert(
@@ -184,15 +209,17 @@ impl Document {
     }
 
     /// Copy pages `wanted` of `other` (each with the quarter turns added to its rotation), in that
-    /// order, without adding them to this document's pages; with `keep_form`, the defaults of
-    /// `other`'s form too. What only `other`'s other pages reach is never copied: those pages
-    /// lead to `null`, and so do their annotations.
+    /// order, without adding them to this document's pages, under `rules`. What only `other`'s
+    /// other pages reach is never copied: those pages lead to `null`, and so do their
+    /// annotations (and, for a redacted copy, the widgets and hidden annotations of the pages
+    /// copied).
     fn copy_pages(
         &mut self,
         other: &Document,
         wanted: &[(usize, i32)],
-        keep_form: bool,
+        rules: &CopyRules,
     ) -> Result<Copied> {
+        let keep_form = rules.keep_form;
         let ids = other.page_ids();
         let geometry = other.geometry();
         let inherited = other.inherited_resources()?;
@@ -229,8 +256,19 @@ impl Document {
                 slot.insert(copy);
             }
         }
-        for annotation in other_annotations {
-            if !kept_annotations.contains(&annotation) && !copies.contains_key(&annotation) {
+        let mut dropped: std::collections::HashSet<ObjId> = std::collections::HashSet::new();
+        if rules.redacted {
+            for annotation in &kept_annotations {
+                if let Some(Object::Dict(dict)) = other.object(*annotation)?
+                    && (crate::flattened::is_widget(&dict) || crate::flattened::hidden(&dict))
+                {
+                    dropped.insert(*annotation);
+                }
+            }
+        }
+        for annotation in other_annotations.into_iter().chain(dropped.iter().copied()) {
+            let left = !kept_annotations.contains(&annotation) || dropped.contains(&annotation);
+            if left && !copies.contains_key(&annotation) {
                 let null = null(self)?;
                 copies.insert(annotation, null);
             }
@@ -253,6 +291,36 @@ impl Document {
             };
             for key in PAGE_LEFT_BEHIND {
                 page.remove(key);
+            }
+            if rules.redacted {
+                let mut kept = Dict::new();
+                for (key, value) in page.iter() {
+                    if REDACTED_PAGE_KEYS.contains(&key.as_bytes()) {
+                        kept.insert(key.clone(), value.clone());
+                    }
+                }
+                page = kept;
+                if let Some((annotations, _)) = other.page_annotations(*id)? {
+                    let mut shown = Vec::with_capacity(annotations.len());
+                    for annotation in annotations {
+                        let keep = match &annotation {
+                            Object::Ref(id) => !dropped.contains(id),
+                            Object::Dict(dict) => {
+                                !(crate::flattened::is_widget(dict)
+                                    || crate::flattened::hidden(dict))
+                            }
+                            _ => false,
+                        };
+                        if keep {
+                            shown.push(annotation);
+                        }
+                    }
+                    if shown.is_empty() {
+                        page.remove(b"Annots");
+                    } else {
+                        page.insert("Annots", Object::Array(shown));
+                    }
+                }
             }
             let rotation = page_geometry.rotation.turned(*quarter_turns);
             page.insert("Type", Name::from("Page"));
@@ -283,6 +351,19 @@ impl Document {
                 }
             }
         }
+        let mut optional_content = None;
+        if rules.redacted
+            && let Some(Object::Dict(catalog)) = other.object(other.catalog_id())?
+            && let Some(properties) = catalog.get(b"OCProperties")
+        {
+            optional_content = Some(copy(
+                self,
+                properties.clone(),
+                &mut copies,
+                &mut pending,
+                0,
+            )?);
+        }
         let mut copied: usize = 0;
         while let Some(id) = pending.pop() {
             copied += 1;
@@ -310,6 +391,7 @@ impl Document {
             pages,
             widgets,
             defaults,
+            optional_content,
         })
     }
 
@@ -452,7 +534,46 @@ struct Copied {
     widgets: Vec<ObjId>,
     /// The defaults of the source's form, copied.
     defaults: Dict,
+    /// The source's optional content (`/OCProperties`), copied, for a redacted copy.
+    optional_content: Option<Object>,
 }
+
+/// How pages are copied.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CopyRules {
+    /// The form comes along ([`Document::compose`]).
+    pub(crate) keep_form: bool,
+    /// A copy whose redactions another engine applied
+    /// ([`Document::rebuilt_for_redaction`]): pages keep [`REDACTED_PAGE_KEYS`] alone, lose
+    /// their widgets and hidden annotations, and the optional content comes along.
+    pub(crate) redacted: bool,
+}
+
+impl CopyRules {
+    pub(crate) fn redacted() -> Self {
+        Self {
+            keep_form: false,
+            redacted: true,
+        }
+    }
+}
+
+/// The keys a page of a redacted copy keeps: what draws it, and nothing that may hold what was
+/// redacted (`/PieceInfo`, `/Thumb`, `/Metadata`...).
+const REDACTED_PAGE_KEYS: [&[u8]; 12] = [
+    b"Type",
+    b"MediaBox",
+    b"CropBox",
+    b"BleedBox",
+    b"TrimBox",
+    b"ArtBox",
+    b"Rotate",
+    b"UserUnit",
+    b"Resources",
+    b"Contents",
+    b"Annots",
+    b"Group",
+];
 
 /// The annotations of page `page` of `doc`, by object.
 fn annotation_ids(doc: &Document, page: ObjId) -> Result<Vec<ObjId>> {

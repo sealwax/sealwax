@@ -816,6 +816,62 @@ impl Document {
             .map_err(|error| core_error(&error))?;
         compact(&inserted, self.inner.limits())
     }
+
+    /// Write onto each page the media box, crop box and rotation it inherits from its page tree
+    /// and does not hold itself, for an engine that does not look for them there (PDFium's
+    /// flattening writes US Letter where a page holds no box). Returns the pages changed.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = ownPageBoxes)]
+    pub fn own_page_boxes(&mut self) -> Result<usize, JsValue> {
+        self.inner
+            .own_page_boxes()
+            .map_err(|error| core_error(&error))
+    }
+
+    /// After another engine flattened the form: take out the widgets it left because they are
+    /// hidden (`Hidden` or `NoView`), then the form itself, which still holds the values.
+    /// Returns the widgets taken out.
+    ///
+    /// # Errors
+    /// A `PdfError` when a page still holds a visible widget (the flattening did not happen):
+    /// nothing is changed then.
+    #[wasm_bindgen(js_name = clearFlattenedForm)]
+    pub fn clear_flattened_form(&mut self) -> Result<usize, JsValue> {
+        self.inner
+            .clear_flattened_form()
+            .map_err(|error| core_error(&error))
+    }
+
+    /// Whether a page holds a redaction mark (a `/Redact` annotation).
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = hasRedactionMarks)]
+    pub fn has_redaction_marks(&self) -> Result<bool, JsValue> {
+        self.inner
+            .has_redaction_marks()
+            .map_err(|error| core_error(&error))
+    }
+
+    /// A new PDF, saved compressed, of this document's pages alone, for a copy whose redactions
+    /// another engine applied: each page keeps only `/Type`, its boxes, `/Rotate`, `/UserUnit`,
+    /// `/Resources`, `/Contents`, `/Annots` and `/Group`; the widgets and hidden annotations are
+    /// taken out; the optional content is kept, so that a layer turned off stays off; the form,
+    /// the document information, the XMP metadata, the outline and the embedded files stay
+    /// behind.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = rebuiltForRedaction)]
+    pub fn rebuilt_for_redaction(&self) -> Result<Uint8Array, JsValue> {
+        let rebuilt = self
+            .inner
+            .rebuilt_for_redaction()
+            .map_err(|error| core_error(&error))?;
+        compact(&rebuilt, self.inner.limits())
+    }
 }
 
 /// The documents `sources` one after the other, each flattened first; with `flatten: false`,
@@ -855,6 +911,22 @@ pub fn merge_bytes(
         .save(&SaveOptions::default())
         .map(|data| bytes(&data))
         .map_err(|error| core_error(&error))
+}
+
+/// Whether the PDF in `data` holds a redaction mark (a `/Redact` annotation). A PDF that cannot
+/// be read counts as marked: a copy of it must not skip what redacting asks for.
+#[wasm_bindgen(js_name = hasRedactionMarks)]
+#[must_use]
+pub fn has_redaction_marks(
+    data: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+) -> bool {
+    let Ok(limits) = limits(options.as_ref().and_then(|o| get(o, "limits"))) else {
+        return true;
+    };
+    CoreDocument::open(data.to_vec(), &OpenOptions::default().limits(limits))
+        .and_then(|doc| doc.has_redaction_marks())
+        .unwrap_or(true)
 }
 
 /// The PDF in `data` with every annotation but links flattened into its page.
