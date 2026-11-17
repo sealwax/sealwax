@@ -15,6 +15,7 @@ mod cache;
 mod drawings;
 mod drawn;
 mod glyphs;
+mod scan;
 
 pub use cache::release_cache;
 pub use drawings::{Drawings, drawings};

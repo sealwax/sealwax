@@ -19,6 +19,9 @@ All notable changes to sealwax are recorded here. The format follows
   embedding ten whole TrueType fonts, reading a page's glyphs went from 23 ms to 1.3 ms.
 - Checking a page against the limits decodes a stream other pages share (a font program) once
   per document, and opening a document finds its structure streams with a vectorised search.
+- Drawings count as MuPDF's in two more cases: a box filled with its fourth side drawn back to
+  its start, without `h`, is four lines (stroked only, it stays a rectangle); a curve whose
+  control points lie on its ends is a line.
 
 ## [0.1.0] - 2026-11-16
 

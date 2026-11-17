@@ -118,13 +118,13 @@ fn what_is_only_clipped_curved_or_painted_twice_is_counted_as_drawn() {
 
 #[test]
 fn a_closed_box_of_four_corners_is_a_rectangle_wherever_it_is() {
-    // Alone, among other subpaths of its path, from any corner, closed by `h` or by a last side
-    // back to its start; two `re` in one path.
+    // Alone, among other subpaths of its path, from any corner, closed by `h` or (stroked) by a
+    // last side back to its start; two `re` in one path.
     for content in [
         "10 10 m 50 10 l 50 40 l 10 40 l h S",
         "10 10 m 50 10 l 50 40 l 10 40 l h 100 100 m 120 100 l 120 130 l 100 130 l h f",
         "50 40 m 50 10 l 10 10 l 10 40 l s",
-        "10 10 m 50 10 l 50 40 l 10 40 l 10 10 l 100 100 m 100 130 l 120 130 l 120 100 l b",
+        "10 10 m 50 10 l 50 40 l 10 40 l 10 10 l 100 100 m 100 130 l 120 130 l 120 100 l h S",
         "10 10 40 30 re 100 100 20 30 re f",
     ] {
         let found = drawings(&page(content), 0, false).unwrap();
@@ -278,4 +278,68 @@ fn a_shading_paints_no_lines() {
     // filled with a colour: itself.
     assert!(found.lines.is_empty(), "{found:?}");
     assert_eq!(found.rectangles, [[100.0, 100.0, 120.0, 120.0]]);
+}
+
+#[test]
+fn a_box_filled_with_its_fourth_side_back_to_its_start_is_four_lines_as_in_mupdf() {
+    let found = |content: &str| {
+        let found = drawings(&page(content), 0, false).unwrap();
+        (found.lines.len(), found.rectangles.len())
+    };
+    let open = "10 10 m 50 10 l 50 40 l 10 40 l 10 10 l";
+    // Filled, alone in its path (which hayro hands over as a rectangle) or not, with `h` or not:
+    // four lines. Filled and stroked: four lines too, the stroke repeating the fill.
+    for paint in ["f", "f*", "F", "B", "h f"] {
+        assert_eq!(found(&format!("{open} {paint}")), (4, 0), "{paint}");
+    }
+    assert_eq!(
+        found(&format!("{open} 60 10 m 90 10 l 90 40 l 60 40 l 60 10 l f")),
+        (8, 0)
+    );
+    // Only stroked, it is a rectangle; closed by `h` after three sides, a rectangle filled too.
+    assert_eq!(found(&format!("{open} S")), (0, 1));
+    assert_eq!(found("10 10 m 50 10 l 50 40 l 10 40 l h f"), (0, 1));
+    assert_eq!(found("10 10 40 30 re f"), (0, 1));
+    // The lines keep the order the content draws them in.
+    let lines = drawings(&page(&format!("{open} f")), 0, false)
+        .unwrap()
+        .lines;
+    assert_eq!(
+        lines,
+        [
+            [10.0, 10.0, 50.0, 10.0],
+            [50.0, 10.0, 50.0, 40.0],
+            [50.0, 40.0, 10.0, 40.0],
+            [10.0, 40.0, 10.0, 10.0]
+        ]
+    );
+}
+
+#[test]
+fn a_curve_whose_control_points_lie_on_its_ends_is_a_line() {
+    let lines = |content: &str| drawings(&page(content), 0, false).unwrap().lines;
+    for curve in [
+        "10 10 m 10 10 50 50 50 50 c S",
+        "10 10 m 10 10 10 10 50 50 c S",
+        "10 10 m 50 50 50 50 50 50 c S",
+    ] {
+        assert_eq!(lines(curve), [[10.0, 10.0, 50.0, 50.0]], "{curve}");
+    }
+    // A real curve, one with a single control point on an end, or one a hair away: no line.
+    for curve in [
+        "10 10 m 20 40 40 60 50 50 c S",
+        "10 10 m 10 10 30 60 50 50 c S",
+        "10 10 m 20 40 50 50 50 50 c S",
+        "10 10 m 10.001 10 50 50 50 50 c S",
+    ] {
+        assert!(lines(curve).is_empty(), "{curve}");
+    }
+    // Four degenerate curves closing a box make a rectangle, as four lines would.
+    let found = drawings(
+        &page("10 10 m 10 10 50 10 50 10 c 50 10 50 40 50 40 c 50 40 10 40 10 40 c h f"),
+        0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(found.rectangles, [[10.0, 10.0, 50.0, 40.0]]);
 }
