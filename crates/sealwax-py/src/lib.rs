@@ -476,6 +476,8 @@ fn applied_dict<'py>(
     dict.set_item("texts", applied.texts)?;
     dict.set_item("characters_replaced", applied.characters_replaced)?;
     dict.set_item("deletions_ignored", applied.deletions_ignored)?;
+    dict.set_item("annotations_removed", applied.annotations_removed)?;
+    dict.set_item("pages", applied.pages.clone())?;
     match &applied.flattened {
         Some(flattened) => dict.set_item("flattened", flattened_dict(py, flattened)?)?,
         None => dict.set_item("flattened", py.None())?,
@@ -1308,17 +1310,30 @@ impl Document {
     }
 
     /// Apply the XFDF a signing page exported: flatten what the document has first when
-    /// `flatten` is set, then draw the XFDF's pictures and texts. Raises XfdfError for an XFDF
-    /// outside a signing page's subset, or a mark that cannot be placed.
-    #[pyo3(signature = (xfdf, *, flatten=true))]
+    /// `flatten` is set, then draw the XFDF's pictures and texts. `remove_annotations` takes the
+    /// document's own annotations (links but) and form out first, nothing of them painted.
+    /// Several XFDF apply one after the other. `pages` lists the pages that changed (from 0). Raises XfdfError for an XFDF outside a signing page's subset, or a
+    /// mark that cannot be placed; nothing is changed then.
+    #[pyo3(signature = (xfdf, *, flatten=true, remove_annotations=false))]
     fn apply_xfdf<'py>(
         &mut self,
         py: Python<'py>,
         xfdf: String,
         flatten: bool,
+        remove_annotations: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let inner = &mut self.inner;
-        let applied = run(py, || Ok(pdf::annots::apply_xfdf(inner, &xfdf, flatten)?))?;
+        let options = pdf::annots::ApplyOptions::new()
+            .flatten(flatten)
+            .remove_annotations(remove_annotations);
+        let applied = run(py, || {
+            Ok(pdf::annots::apply_xfdf_with(
+                inner,
+                &xfdf,
+                &options,
+                |_| None,
+            )?)
+        })?;
         applied_dict(py, &applied)
     }
 
@@ -1501,20 +1516,24 @@ fn flatten_bytes<'py>(
 }
 
 /// `pdf_content` with a signing page's XFDF applied (what it has flattened first when
-/// `flatten` is set).
+/// `flatten` is set, taken out first when `remove_annotations` is).
 #[pyfunction]
-#[pyo3(signature = (pdf_content, xfdf_data, *, flatten=true, limits=None))]
+#[pyo3(signature = (pdf_content, xfdf_data, *, flatten=true, remove_annotations=false, limits=None))]
 fn apply_xfdf_bytes<'py>(
     py: Python<'py>,
     pdf_content: Vec<u8>,
     xfdf_data: String,
     flatten: bool,
+    remove_annotations: bool,
     limits: Option<PyRef<'_, Limits>>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let options = options(None, None, limits.as_deref());
+    let apply = pdf::annots::ApplyOptions::new()
+        .flatten(flatten)
+        .remove_annotations(remove_annotations);
     let saved = run(py, || {
         let mut doc = pdf::Document::open(pdf_content, &options)?;
-        pdf::annots::apply_xfdf(&mut doc, &xfdf_data, flatten)?;
+        pdf::annots::apply_xfdf_with(&mut doc, &xfdf_data, &apply, |_| None)?;
         Ok(doc.save(&pdf::SaveOptions::default())?)
     })?;
     Ok(PyBytes::new(py, &saved))

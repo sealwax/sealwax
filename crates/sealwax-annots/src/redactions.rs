@@ -247,6 +247,7 @@ fn overlay(doc: &mut Document, mark: &Mark, area: Rect) -> Result<Option<Placed>
             border: 0.0,
             border_color: None,
             fill: None,
+            rotation: 0,
         };
         drawing.extend_from_slice(&draw::free_text(&free, width, height).0);
         let mut fonts = Dict::new();

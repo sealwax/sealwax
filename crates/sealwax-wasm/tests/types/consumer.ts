@@ -9,6 +9,7 @@ import init, {
   isCrashed,
   mergeBytes,
   reset,
+  type Applied,
   type Field,
   type RenderedPage,
 } from "sealwax";
@@ -22,6 +23,8 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const merged: Uint8Array = mergeBytes([saved, withOptions.save()]);
   const fields: Field[] = doc.fields();
   const page: RenderedPage | null = doc.renderRgba(0, 1);
+  const applied: Applied = doc.applyXfdf("<xfdf/>", { flatten: false, removeAnnotations: true });
+  const changed: number[] = applied.pages;
   try {
     doc.flatten();
   } catch (error) {
@@ -31,5 +34,5 @@ export async function use(bytes: Uint8Array): Promise<number> {
       return -1;
     }
   }
-  return merged.length + fields.length + (page?.width ?? 0);
+  return merged.length + fields.length + (page?.width ?? 0) + changed.length;
 }

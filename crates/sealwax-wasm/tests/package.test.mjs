@@ -360,6 +360,70 @@ test("an encrypted document is refused when asked, its sources too", () => {
   assert.equal(Document.fromBytes(plain.insertPages(0, [protectedPdf])).pageCount(), 2);
 });
 
+/** The XFDF a signing page exports, its `<add>` holding `marks`. */
+function exported(marks) {
+  return (
+    '<?xml version="1.0" encoding="UTF-8" ?><xfdf xmlns="http://ns.adobe.com/xfdf/" xml:space="preserve">' +
+    `<fields /><add>${marks.join("")}</add><modify /><delete /></xfdf>`
+  );
+}
+
+test("a signing page's XFDF is applied, one per field, and names the pages to render again", () => {
+  // A black picture: a black page rendered small.
+  const black = Document.fromBytes(
+    build([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 60 20] /Contents 4 0 R >>",
+      stream("0 0 0 rg 0 0 60 20 re f"),
+    ]),
+  ).renderPng(0, 1);
+  const picture = `data:image/png;base64,${Buffer.from(black).toString("base64")}`;
+  const stamp = (page, rect) =>
+    `<stamp page="${page}" rect="${rect}" flags="print,readonly,locked" name="s${page}"><imagedata>${picture}</imagedata></stamp>`;
+  const text =
+    '<freetext page="0" rect="100,600,300,630" flags="print,readonly,locked" width="0" TextColor="#000000" FontSize="16">' +
+    "<contents>Jean Été</contents><defaultappearance>0 0 0 rg /Helvetica 16 Tf</defaultappearance></freetext>";
+  const doc = Document.fromBytes(
+    build([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 >>",
+    ]),
+  );
+  const blank = doc.renderRgba(1, 0.5).pixels;
+  const first = doc.applyXfdf(exported([text]));
+  assert.deepEqual(first.pages, [0]);
+  assert.equal(first.texts, 1);
+  assert.equal(first.charactersReplaced, 0);
+  assert.notEqual(first.flattened, null);
+  const second = doc.applyXfdf(exported([stamp(1, "100,100,160,120")]), { flatten: false });
+  assert.deepEqual(second.pages, [1]);
+  assert.equal(second.pictures, 1);
+  assert.equal(second.flattened, null);
+  // Page 1, turned, now shows the picture.
+  const drawn = doc.renderRgba(1, 0.5).pixels;
+  assert.equal(drawn.length, blank.length);
+  assert.ok(drawn.some((value, index) => value !== blank[index]));
+  assert.equal(Document.fromBytes(doc.save()).pageCount(), 2);
+});
+
+test("applying an XFDF can take the document's own annotations out, and a refused one changes nothing", () => {
+  const doc = Document.fromBytes(form());
+  const applied = doc.applyXfdf(exported([]), { removeAnnotations: true });
+  assert.equal(applied.annotationsRemoved, 2);
+  assert.deepEqual(applied.pages, [0]);
+  assert.equal(doc.fields().length, 0);
+  const untouched = Document.fromBytes(form());
+  assert.throws(
+    () => untouched.applyXfdf(exported(['<ink page="0" rect="1,1,2,2" />']), { removeAnnotations: true }),
+    (error) => error instanceof sealwax.XfdfError && error instanceof PdfError,
+  );
+  assert.equal(untouched.isModified(), false);
+  assert.equal(untouched.fields().length, 2);
+});
+
 // Last: a panic stops the module, and reset() makes another.
 test("after a panic every call throws until reset(), and older documents stay refused", async () => {
   const bytes = build([

@@ -570,6 +570,7 @@ mod tests {
             border: 0.0,
             border_color: None,
             fill: None,
+            rotation: 0,
         };
         let (drawing, replaced) = free_text(&free, 120.0, 25.0);
         let drawing = String::from_utf8(drawing).unwrap();

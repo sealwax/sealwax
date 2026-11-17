@@ -58,6 +58,22 @@ encrypted documents instead, pass `refuseEncrypted: true` to `Document.fromBytes
 information). `arrange`, `extractPages`, `insertPages` and `mergeBytes` make a new document of
 the pages, their form kept; `arrange` refuses a page listed twice.
 
+## Signed fields (XFDF)
+
+`applyXfdf` draws into the pages the XFDF a signing page exports (its `<add>`: PNG stamps and
+free texts, turned by quarter turns when a page is), with the code a server running sealwax uses
+for the final PDF: what shows on screen is what the final PDF holds. The document's own
+annotations are flattened first (`flatten`, true unless said otherwise), or taken out
+(`removeAnnotations`); apply one XFDF per signed field, one after the other. The result's `pages`
+lists the pages to render again.
+
+```js
+for (const xfdf of storedXfdfs) {
+  const { pages } = doc.applyXfdf(xfdf);
+  pages.forEach(renderPage);
+}
+```
+
 ## Limits and panics
 
 Every operation runs within bounds (operators, image pixels, decoded bytes, annotations, rendered

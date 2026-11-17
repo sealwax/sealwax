@@ -7,7 +7,8 @@
 //!   the original PDF out of the signed one.
 //!   [`apply_xfdf_described`] gives each picture an alternate description (whose signature it
 //!   is: the XFDF names no one, its caller knows), which PDF/A level a makes the alternate text
-//!   of the picture's figure.
+//!   of the picture's figure. [`apply_xfdf_with`] takes [`ApplyOptions`]: the document's own
+//!   annotations flattened, kept as they are, or taken out, and says which pages changed.
 //! - [`stamp_images`] draws pictures at rectangles of the signing page's frame (`position_metadata`),
 //!   each with its description if it has one.
 //! - [`flatten`] paints every annotation into its page; links stay.
@@ -28,7 +29,7 @@ mod template;
 mod text;
 pub mod xfdf;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use sealwax_core::{Dict, Document, ObjId, Object, PageGeometry, Rect};
@@ -108,6 +109,7 @@ impl fmt::Debug for Stamp {
 /// What [`apply_xfdf`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct Applied {
     /// Pictures drawn.
     pub pictures: usize,
@@ -119,6 +121,47 @@ pub struct Applied {
     pub deletions_ignored: usize,
     /// What flattening did, when asked.
     pub flattened: Option<Flattened>,
+    /// The document's own annotations taken out, when [`ApplyOptions::remove_annotations`] asked
+    /// it (links stay; popups are not counted).
+    pub annotations_removed: usize,
+    /// The pages that changed (from 0, in order): those the XFDF draws on, and those whose
+    /// annotations were flattened or taken out. A viewer renders these again, and only these.
+    pub pages: Vec<usize>,
+}
+
+/// How [`apply_xfdf_with`] treats what the document already has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ApplyOptions {
+    /// Flatten the document's annotations (links but) and its form into the pages first: the
+    /// XFDF draws over what the signer saw. Off, they stay annotations.
+    pub flatten: bool,
+    /// Take the document's annotations (links but) and its form out first, nothing of them
+    /// painted: the pages show their content and the XFDF alone. Flattening then has nothing
+    /// left to do.
+    pub remove_annotations: bool,
+}
+
+impl ApplyOptions {
+    /// Nothing flattened, nothing taken out.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// See [`ApplyOptions::flatten`].
+    #[must_use]
+    pub fn flatten(mut self, flatten: bool) -> Self {
+        self.flatten = flatten;
+        self
+    }
+
+    /// See [`ApplyOptions::remove_annotations`].
+    #[must_use]
+    pub fn remove_annotations(mut self, remove: bool) -> Self {
+        self.remove_annotations = remove;
+        self
+    }
 }
 
 /// What is drawn where, checked before any page changes.
@@ -127,6 +170,7 @@ enum Prepared {
     Picture {
         png: Vec<u8>,
         rect: Rect,
+        rotation: u16,
         alt: Option<String>,
     },
     Text {
@@ -180,7 +224,12 @@ impl Budget {
 /// rectangle or one whose centre is off the page's crop box, or a picture that is not a readable
 /// PNG of at most [`MAX_PIXELS`]. Nothing is changed then.
 pub fn apply_xfdf(doc: &mut Document, xfdf_text: &str, flatten: bool) -> Result<Applied> {
-    apply_xfdf_described(doc, xfdf_text, flatten, |_| None)
+    apply_xfdf_with(
+        doc,
+        xfdf_text,
+        &ApplyOptions::new().flatten(flatten),
+        |_| None,
+    )
 }
 
 /// [`apply_xfdf`], each picture given the alternate description `describe` says for it (from
@@ -196,11 +245,33 @@ pub fn apply_xfdf_described(
     flatten: bool,
     describe: impl Fn(&xfdf::Picture) -> Option<String>,
 ) -> Result<Applied> {
+    apply_xfdf_with(
+        doc,
+        xfdf_text,
+        &ApplyOptions::new().flatten(flatten),
+        describe,
+    )
+}
+
+/// [`apply_xfdf_described`], what the document already has treated as `options` says: its
+/// annotations flattened, kept, or taken out. Several XFDF can be applied one after the other
+/// (one per signed field), each drawn over the ones before.
+///
+/// # Errors
+///
+/// As [`apply_xfdf`]; nothing is changed then.
+pub fn apply_xfdf_with(
+    doc: &mut Document,
+    xfdf_text: &str,
+    options: &ApplyOptions,
+    describe: impl Fn(&xfdf::Picture) -> Option<String>,
+) -> Result<Applied> {
     let command = xfdf::read_command(xfdf_text)?;
     let mut budget = Budget::new(doc, command.marks.len())?;
     let pages = doc.page_ids();
     let geometry = doc.geometry();
     let mut prepared = Vec::with_capacity(command.marks.len());
+    let mut changed = BTreeSet::new();
     for (index, mark) in command.marks.into_iter().enumerate() {
         doc.check_time()?;
         let position = index + 1;
@@ -209,6 +280,7 @@ pub fn apply_xfdf_described(
             xfdf::Mark::Text(text) => (text.page_number, text.rect),
         };
         let page = checked_page(&pages, &geometry, page_number, rect, position)?;
+        changed.insert(page_number - 1);
         let item = match mark {
             xfdf::Mark::Picture(picture) => {
                 budget.picture(&picture.png, position)?;
@@ -216,6 +288,7 @@ pub fn apply_xfdf_described(
                 Prepared::Picture {
                     png: picture.png,
                     rect,
+                    rotation: picture.rotation,
                     alt,
                 }
             }
@@ -227,14 +300,26 @@ pub fn apply_xfdf_described(
         deletions_ignored: command.deleted.len(),
         ..Applied::default()
     };
-    if flatten {
+    if options.flatten || options.remove_annotations {
+        changed.extend(flatten::annotated_pages(doc)?);
+    }
+    if options.remove_annotations {
+        applied.annotations_removed = flatten::remove_annotations(doc)?;
+    }
+    if options.flatten {
         applied.flattened = Some(flatten::flatten(doc)?);
     }
+    applied.pages = changed.into_iter().collect();
     let mut by_page: BTreeMap<ObjId, Vec<Placed>> = BTreeMap::new();
     let mut helvetica: Option<ObjId> = None;
     for (page, item) in prepared {
         let placed = match item {
-            Prepared::Picture { png, rect, alt } => {
+            Prepared::Picture {
+                png,
+                rect,
+                rotation,
+                alt,
+            } => {
                 doc.check_time()?;
                 applied.pictures += 1;
                 let decoded = image::decode(&png).map_err(|source| Error::Picture {
@@ -242,15 +327,17 @@ pub fn apply_xfdf_described(
                     source,
                 })?;
                 let image = image::add(doc, &decoded)?;
+                let (turn, width, height) = turned(rect, rotation);
+                let shown = Rect::from_corners(0.0, 0.0, width, height);
                 Placed {
                     xobject: image.id,
-                    matrix: contained(rect, image.width, image.height),
+                    matrix: multiply(contained(shown, image.width, image.height), turn),
                     alt,
                 }
             }
             Prepared::Text { text } => {
                 applied.texts += 1;
-                let (width, height) = (text.rect.x2 - text.rect.x1, text.rect.y2 - text.rect.y1);
+                let (turn, width, height) = turned(text.rect, text.rotation);
                 let (drawing, replaced) = draw::free_text(&text, width, height);
                 applied.characters_replaced += replaced;
                 let font = match helvetica {
@@ -265,7 +352,7 @@ pub fn apply_xfdf_described(
                     doc.add_object(flatten::form_stream(&drawing, width, height, resources))?;
                 Placed {
                     xobject: form,
-                    matrix: [1.0, 0.0, 0.0, 1.0, text.rect.x1, text.rect.y1],
+                    matrix: turn,
                     alt: None,
                 }
             }
@@ -425,6 +512,33 @@ fn checked_page(
 
 /// The matrix that draws a `width` x `height` picture contained in `rect` and centred, never
 /// stretched.
+/// What draws a mark turned `rotation` degrees counterclockwise in `rect`: the matrix from the
+/// mark's own space (origin at its bottom-left corner as shown) to user space, and the mark's
+/// width and height as shown (`rect`'s sides swapped by a quarter turn).
+fn turned(rect: Rect, rotation: u16) -> ([f64; 6], f64, f64) {
+    let (width, height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
+    match rotation {
+        90 => ([0.0, 1.0, -1.0, 0.0, rect.x2, rect.y1], height, width),
+        180 => ([-1.0, 0.0, 0.0, -1.0, rect.x2, rect.y2], width, height),
+        270 => ([0.0, -1.0, 1.0, 0.0, rect.x1, rect.y2], height, width),
+        _ => ([1.0, 0.0, 0.0, 1.0, rect.x1, rect.y1], width, height),
+    }
+}
+
+/// `first` then `then`, as `cm` operators in that order compose.
+fn multiply(first: [f64; 6], then: [f64; 6]) -> [f64; 6] {
+    let [a, b, c, d, e, f] = first;
+    let [a2, b2, c2, d2, e2, f2] = then;
+    [
+        a * a2 + b * c2,
+        a * b2 + b * d2,
+        c * a2 + d * c2,
+        c * b2 + d * d2,
+        e * a2 + f * c2 + e2,
+        e * b2 + f * d2 + f2,
+    ]
+}
+
 fn contained(rect: Rect, width: u32, height: u32) -> [f64; 6] {
     let (w, h) = (f64::from(width), f64::from(height));
     let scale = ((rect.x2 - rect.x1) / w).min((rect.y2 - rect.y1) / h);
