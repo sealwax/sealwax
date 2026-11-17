@@ -1,5 +1,7 @@
 """Pages turned, reordered, taken out, inserted and merged, the form kept."""
 
+from pathlib import Path
+
 from conftest import build, stream
 
 import sealwax
@@ -51,3 +53,24 @@ def test_documents_are_inserted_and_merged_with_their_forms_renamed():
     assert sorted({f["name"] for f in merged.fields()}) == ["city", "city (2)", "name", "name (2)"]
     flattened = sealwax.Document.from_bytes(sealwax.merge_bytes([form(), form()]))
     assert flattened.fields() == []
+
+
+PHOTOS = Path(__file__).resolve().parents[2] / "sealwax-annots" / "tests" / "data"
+
+
+def test_photos_become_pages_turned_as_they_show():
+    jpeg = (PHOTOS / "photo-40x20-exif6.jpg").read_bytes()
+    png = (PHOTOS / "photo-12x10-alpha.png").read_bytes()
+    data, unreadable = sealwax.photos_to_pdf([jpeg, b"not a photo", png])
+    assert unreadable == [1]
+    document = sealwax.Document.from_bytes(data)
+    assert [page.rotation for page in document.geometry()] == [90, 0]
+    report = document.add_photo_pages([png, b""])
+    assert report == {"added": 1, "unreadable": [1]}
+    assert sealwax.Document.from_bytes(document.save()).page_count == 3
+    try:
+        sealwax.photos_to_pdf([b"nothing"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("no photo read made a document")

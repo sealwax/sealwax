@@ -784,6 +784,29 @@ impl Document {
         )
     }
 
+    /// Add a page for each photo of `photos` (JPEG or PNG bytes), in order, after the document's
+    /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of margin,
+    /// the photo centered and fitted without being stretched. A JPEG is embedded as it is, never
+    /// encoded again; a PNG keeps its transparency; the orientation a phone writes in a JPEG's
+    /// EXIF data becomes the page's rotation. Returns `added` (pages) and `unreadable` (the
+    /// photos, from 0, that could not be read: not a JPEG or a PNG, damaged, or past the limits'
+    /// `max_image_pixels`).
+    fn add_photo_pages<'py>(
+        &mut self,
+        py: Python<'py>,
+        photos: Vec<Vec<u8>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let inner = &mut self.inner;
+        let report = run(py, || {
+            let borrowed: Vec<&[u8]> = photos.iter().map(Vec::as_slice).collect();
+            Ok(pdf::annots::add_photo_pages(inner, &borrowed)?)
+        })?;
+        let dict = PyDict::new(py);
+        dict.set_item("added", report.added)?;
+        dict.set_item("unreadable", report.unreadable)?;
+        Ok(dict)
+    }
+
     /// Page `page_index` (from 0) rendered as a reader shows it (annotations and field values
     /// included), as PNG bytes: 8-bit RGB without alpha, over white. The image covers the crop
     /// box as shown (rotated, then turned `quarter_turns` more quarter turns clockwise), at
@@ -1330,6 +1353,27 @@ fn has_redaction_marks(
     })
 }
 
+/// A new PDF of a page for each photo of `photos` (JPEG or PNG bytes), as
+/// `Document.add_photo_pages` adds them, and the photos (from 0) that could not be read.
+/// `ValueError` when none can be.
+#[pyfunction]
+#[pyo3(signature = (photos, *, limits=None))]
+fn photos_to_pdf<'py>(
+    py: Python<'py>,
+    photos: Vec<Vec<u8>>,
+    limits: Option<PyRef<'_, Limits>>,
+) -> PyResult<(Bound<'py, PyBytes>, Vec<usize>)> {
+    let bounds = limits
+        .as_deref()
+        .map_or_else(pdf::Limits::default, Limits::counted_from_now);
+    let (data, unreadable) = run(py, || {
+        let borrowed: Vec<&[u8]> = photos.iter().map(Vec::as_slice).collect();
+        let (doc, report) = pdf::annots::photos_document(&borrowed, bounds)?;
+        Ok((doc.save(&pdf::SaveOptions::default())?, report.unreadable))
+    })?;
+    Ok((PyBytes::new(py, &data), unreadable))
+}
+
 /// The documents merged into one, in order, each flattened first. With `flatten=False`, their
 /// forms are kept instead, each document's fields renamed `name (2)`, `name (3)`... when an
 /// earlier document has a field of that name. An error names the source (1-based) it came from.
@@ -1454,6 +1498,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pdfa_convert, m)?)?;
     m.add_function(wrap_pyfunction!(release_cache, m)?)?;
     m.add_function(wrap_pyfunction!(has_redaction_marks, m)?)?;
+    m.add_function(wrap_pyfunction!(photos_to_pdf, m)?)?;
     signing::register(m)?;
     Ok(())
 }

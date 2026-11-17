@@ -36,6 +36,14 @@ impl Document {
         Self::open(EMPTY.to_vec(), &OpenOptions::default())
     }
 
+    /// As [`Document::empty`], what is added to it held to `limits` (their deadline included).
+    ///
+    /// # Errors
+    /// None in practice: the document is built in.
+    pub fn empty_with(limits: crate::Limits) -> Result<Self> {
+        Self::open(EMPTY.to_vec(), &OpenOptions::default().limits(limits))
+    }
+
     /// Append the pages of `other` after this document's, in order. Each page is copied with
     /// everything it reaches (contents, resources, annotations), renumbered; an object several
     /// pages share is copied once; a reference to another page of `other` (a link's destination)
@@ -608,8 +616,8 @@ fn acro_form(doc: &Document) -> Result<Option<Dict>> {
 
 impl Document {
     /// Add a new page after the others: `page` gets `/Type /Page` and `media_box`, which is its
-    /// geometry (no crop box, no rotation). Its contents and resources are the caller's, added
-    /// with [`Document::add_object`]. Returns the page object.
+    /// geometry with the `/Rotate` it holds, if any (no crop box). Its contents and resources are
+    /// the caller's, added with [`Document::add_object`]. Returns the page object.
     ///
     /// # Errors
     /// As [`Document::add_object`].
@@ -624,12 +632,18 @@ impl Document {
                 media_box.y2.into(),
             ],
         );
+        let quarter_turns = page
+            .get(b"Rotate")
+            .and_then(Object::as_i64)
+            .map_or(0, |degrees| (degrees / 90).rem_euclid(4));
+        let rotation =
+            crate::geometry::Rotation::None.turned(i32::try_from(quarter_turns).unwrap_or(0));
         let id = self.add_object(Object::Dict(page))?;
         let geometry = crate::geometry::PageGeometry {
             page_number: self.page_count() + 1,
             media_box,
             crop_box: media_box,
-            rotation: crate::geometry::Rotation::None,
+            rotation,
             user_unit: 1.0,
         };
         self.appended.push((id, geometry));

@@ -18,8 +18,10 @@ mod fields;
 mod flatten;
 mod generate;
 mod image;
+mod jpeg;
 mod page;
 mod pdf;
+mod photos;
 mod template;
 mod text;
 pub mod xfdf;
@@ -36,6 +38,7 @@ pub use fields::{
 };
 pub use flatten::Flattened;
 pub use image::{MAX_PIXELS, PictureError};
+pub use photos::{PhotoPages, add_photo_pages, photos_document};
 pub use template::{Cleared, TemplateContent, TemplateOptions, clear_template, template_content};
 
 use page::Placed;

@@ -156,6 +156,10 @@ export interface RenderedPage {
   height: number;
   /** RGBA, 4 bytes per pixel, row by row from the top, opaque over white. */
   pixels: Uint8ClampedArray;
+export interface PhotoPages {
+  added: number;
+  /** The photos, from 0, that could not be read. */
+  unreadable: number[];
 }
 
 export interface OutlineEntry {
@@ -852,6 +856,26 @@ impl Document {
             .map_err(|error| annots_error(&error))
     }
 
+    /// Add a page for each photo of `photos` (JPEG or PNG), in order, after the document's
+    /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of
+    /// margin, the photo centered and fitted without being stretched; a JPEG embedded as it is,
+    /// the orientation of its EXIF data made the page's rotation. Returns `added` and
+    /// `unreadable` (the photos, from 0, that could not be read).
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = addPhotoPages, unchecked_return_type = "PhotoPages")]
+    pub fn add_photo_pages(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] photos: Array,
+    ) -> Result<Object, JsValue> {
+        let photos = photo_bytes(&photos)?;
+        let borrowed: Vec<&[u8]> = photos.iter().map(Vec::as_slice).collect();
+        let report = sealwax_annots::add_photo_pages(&mut self.inner, &borrowed)
+            .map_err(|error| annots_error(&error))?;
+        Ok(photo_report(report.added, &report.unreadable))
+    }
+
     /// Every occurrence's value, by full name: a text or choice field's value, a button's state
     /// (`Off` when it has none), each as text.
     ///
@@ -1192,6 +1216,50 @@ pub fn has_redaction_marks(
     CoreDocument::open(data.to_vec(), &OpenOptions::default().limits(limits))
         .and_then(|doc| doc.has_redaction_marks())
         .unwrap_or(true)
+}
+
+/// A new PDF of a page for each photo of `photos` (JPEG or PNG), as `addPhotoPages` adds
+/// them: `{ pdf, unreadable }`.
+///
+/// # Errors
+/// A `RangeError` when no photo can be read.
+#[wasm_bindgen(js_name = photosToPdf, unchecked_return_type = "{ pdf: Uint8Array; unreadable: number[] }")]
+pub fn photos_to_pdf(
+    #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] photos: Array,
+    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+) -> Result<Object, JsValue> {
+    let limits = limits(options.as_ref().and_then(|o| get(o, "limits")))?;
+    let photos = photo_bytes(&photos)?;
+    let borrowed: Vec<&[u8]> = photos.iter().map(Vec::as_slice).collect();
+    let (doc, report) =
+        sealwax_annots::photos_document(&borrowed, limits).map_err(|error| annots_error(&error))?;
+    let saved = doc
+        .save(&SaveOptions::default())
+        .map_err(|error| core_error(&error))?;
+    let object = photo_report(report.added, &report.unreadable);
+    set(&object, "pdf", bytes(&saved));
+    Ok(object)
+}
+
+fn photo_bytes(photos: &Array) -> Result<Vec<Vec<u8>>, JsValue> {
+    photos
+        .iter()
+        .map(|photo| {
+            if photo.is_instance_of::<Uint8Array>() {
+                Ok(Uint8Array::from(photo).to_vec())
+            } else {
+                Err(argument("each photo must be a Uint8Array"))
+            }
+        })
+        .collect()
+}
+
+fn photo_report(added: usize, unreadable: &[usize]) -> Object {
+    let object = Object::new();
+    set(&object, "added", count(added));
+    let list: Array = unreadable.iter().map(|index| count(*index)).collect();
+    set(&object, "unreadable", list);
+    object
 }
 
 /// The PDF in `data` with every annotation but links flattened into its page.

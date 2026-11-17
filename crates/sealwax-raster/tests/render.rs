@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use sealwax_annots::{FillValue, NewField, NewFieldKind, add_field, fill_fields};
+use sealwax_annots::{FillValue, NewField, NewFieldKind, add_field, fill_fields, photos_document};
 use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
 use sealwax_raster::{Error, RenderOptions, render, render_png};
 
@@ -347,4 +347,27 @@ fn a_field_created_on_a_turned_page_shows_where_it_was_placed_and_reads_upright(
             "{rotate}: the text reads along the field"
         );
     }
+}
+
+#[test]
+fn a_photo_turned_by_its_exif_data_shows_upright() {
+    // Stored 40 x 20, red on the left, blue on the right; its EXIF orientation turns it a quarter
+    // clockwise: red on top, blue at the bottom.
+    let photo = include_bytes!("../../sealwax-annots/tests/data/photo-40x20-exif6.jpg");
+    let (doc, _) = photos_document(&[photo], Limits::default()).unwrap();
+    let image = Image::decode(&render_png(&doc, 0, 0.5).unwrap());
+    assert_eq!(
+        (image.width, image.height),
+        (306, 396),
+        "a portrait Letter sheet"
+    );
+    let (middle, top, bottom) = (
+        image.width / 2,
+        image.height / 2 - 40,
+        image.height / 2 + 40,
+    );
+    let red = image.at(middle, top);
+    let blue = image.at(middle, bottom);
+    assert!(red[0] > 200 && red[2] < 60, "{red:?} on top");
+    assert!(blue[2] > 200 && blue[0] < 60, "{blue:?} at the bottom");
 }

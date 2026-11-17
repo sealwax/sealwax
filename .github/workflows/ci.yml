@@ -69,6 +69,10 @@ jobs:
       - name: Fuzz the xfdf target
         working-directory: fuzz
         run: cargo fuzz run --target x86_64-unknown-linux-gnu xfdf -- -max_total_time=60 -max_len=65536
+      - name: Fuzz the photos target
+        working-directory: fuzz
+        # New inputs go to the first directory; the test photos only seed the run.
+        run: mkdir -p corpus/photos && cargo fuzz run --target x86_64-unknown-linux-gnu photos corpus/photos ../crates/sealwax-annots/tests/data -- -max_total_time=60 -max_len=65536
       - name: Fuzz the merge target
         working-directory: fuzz
         run: cargo fuzz run --target x86_64-unknown-linux-gnu merge -- -max_total_time=60 -max_len=65536
