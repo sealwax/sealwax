@@ -783,6 +783,55 @@ impl Document {
         Ok(PyBytes::new(py, &data))
     }
 
+    /// A new PDF of this document's pages `pages`, in that order, saved compressed: each entry a
+    /// page index (from 0) or a (page index, quarter turns) pair, the quarter turns (clockwise;
+    /// counterclockwise when negative) added to the page's rotation. Turning, deleting, moving,
+    /// reordering and taking out pages are each one arrangement. The form comes along for the
+    /// pages kept, each field with its widgets on them; nothing of the pages left out is copied.
+    /// `ValueError` for an empty list, a page the document does not have, or a page twice.
+    fn arrange<'py>(
+        &self,
+        py: Python<'py>,
+        pages: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let mut wanted = Vec::with_capacity(pages.len());
+        for page in &pages {
+            wanted.push(if let Ok(index) = page.extract::<usize>() {
+                (index, 0)
+            } else if let Ok(pair) = page.extract::<(usize, i32)>() {
+                pair
+            } else {
+                return Err(PyValueError::new_err(
+                    "each page is an index or an (index, quarter turns) pair",
+                ));
+            });
+        }
+        let inner = &self.inner;
+        let data = run(py, || compact(&inner.arrange(&wanted)?, inner.limits()))?;
+        Ok(PyBytes::new(py, &data))
+    }
+
+    /// A new PDF, saved compressed, of this document's pages with every page of the PDFs
+    /// `pdf_contents` inserted before page `at` (from 0; the page count to append), one document
+    /// after the other, opened with this document's limits. The forms come along; a field an
+    /// inserted document names as an earlier one does is renamed `name (2)`, `name (3)`...
+    /// `ValueError` when `at` is past the last page; an error reading an inserted PDF names it
+    /// (1-based).
+    fn insert_pages<'py>(
+        &self,
+        py: Python<'py>,
+        at: usize,
+        pdf_contents: Vec<Vec<u8>>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = &self.inner;
+        let data = run(py, || {
+            let others = open_sources(pdf_contents, inner.limits())?;
+            let borrowed: Vec<&pdf::Document> = others.iter().collect();
+            compact(&inner.insert(at, &borrowed)?, inner.limits())
+        })?;
+        Ok(PyBytes::new(py, &data))
+    }
+
     /// The glyphs page `page_index` (from 0) draws, in the order of its content (forms and
     /// Type 3 glyphs included), then with `annotations` those its annotations' appearances draw
     /// (as MuPDF's text includes them), each a dict in the page's default user space
@@ -917,6 +966,33 @@ impl Document {
     }
 }
 
+/// `doc` saved in full, then rewritten smaller (as `optimize`), read again with `limits`.
+fn compact(doc: &pdf::Document, limits: &pdf::Limits) -> Result<Vec<u8>, Failure> {
+    let saved = doc.save(&pdf::SaveOptions::default())?;
+    let options = pdf::OpenOptions::default()
+        .limits(*limits)
+        .max_file_bytes(usize::MAX);
+    Ok(pdf::optimize(&saved, &options)?.data)
+}
+
+/// The PDFs `pdf_contents` opened with `limits`; an error names the source (1-based).
+fn open_sources(
+    pdf_contents: Vec<Vec<u8>>,
+    limits: &pdf::Limits,
+) -> Result<Vec<pdf::Document>, Failure> {
+    let options = pdf::OpenOptions::default().limits(*limits);
+    let mut sources = Vec::with_capacity(pdf_contents.len());
+    for (index, data) in pdf_contents.into_iter().enumerate() {
+        let doc =
+            pdf::Document::open(data, &options).map_err(|error| pdf::annots::Error::Source {
+                position: index + 1,
+                error: Box::new(error.into()),
+            })?;
+        sources.push(doc);
+    }
+    Ok(sources)
+}
+
 fn field_dict<'py>(py: Python<'py>, field: &pdf::annots::Field) -> PyResult<Bound<'py, PyDict>> {
     use pdf::annots::{FieldChoice, FieldKind, FieldValue};
     let dict = PyDict::new(py);
@@ -1040,27 +1116,35 @@ fn apply_xfdf_bytes<'py>(
     Ok(PyBytes::new(py, &saved))
 }
 
-/// The documents merged into one, in order, each flattened first. An error names the source (1-based) it came from.
+/// The documents merged into one, in order, each flattened first. With `flatten=False`, their
+/// forms are kept instead, each document's fields renamed `name (2)`, `name (3)`... when an
+/// earlier document has a field of that name. An error names the source (1-based) it came from.
 #[pyfunction]
-#[pyo3(signature = (pdf_contents, *, limits=None))]
+#[pyo3(signature = (pdf_contents, *, flatten=true, limits=None))]
 fn merge_bytes<'py>(
     py: Python<'py>,
     pdf_contents: Vec<Vec<u8>>,
+    flatten: bool,
     limits: Option<PyRef<'_, Limits>>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let options = options(None, None, limits.as_deref());
+    let bounds = limits
+        .as_deref()
+        .map_or_else(pdf::Limits::default, Limits::counted_from_now);
     let saved = run(py, || {
-        let mut sources = Vec::with_capacity(pdf_contents.len());
-        for (index, data) in pdf_contents.into_iter().enumerate() {
-            let doc = pdf::Document::open(data, &options).map_err(|error| {
-                pdf::annots::Error::Source {
-                    position: index + 1,
-                    error: Box::new(error.into()),
-                }
-            })?;
-            sources.push(doc);
+        let sources = open_sources(pdf_contents, &bounds)?;
+        if flatten {
+            let (merged, _) = pdf::annots::merge(sources)?;
+            return Ok(merged.save(&pdf::SaveOptions::default())?);
         }
-        let (merged, _) = pdf::annots::merge(sources)?;
+        let borrowed: Vec<&pdf::Document> = sources.iter().collect();
+        let picks: Vec<pdf::PagePick> = sources
+            .iter()
+            .enumerate()
+            .flat_map(|(index, doc)| {
+                (0..doc.page_count()).map(move |page| pdf::PagePick::new(index, page, 0))
+            })
+            .collect();
+        let merged = pdf::Document::compose(&borrowed, &picks, true)?;
         Ok(merged.save(&pdf::SaveOptions::default())?)
     })?;
     Ok(PyBytes::new(py, &saved))

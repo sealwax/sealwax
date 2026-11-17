@@ -13,6 +13,13 @@ All notable changes to sealwax are recorded here. The format follows
   filled, flattening, PNG rendering, metadata, outline, pages taken out, saving) and functions on
   bytes, with the package's own error classes. The limits' deadline reads its clock through
   `web-time`, which is `std`'s on every other target.
+- Pages arranged and documents put together with their forms: `Document::compose` (pages of
+  several documents, in any order, each turned), `Document::arrange` (turning, deleting, moving,
+  reordering and taking out pages in one call) and `Document::insert`; in Python
+  `Document.arrange`, `Document.insert_pages` and `merge_bytes(flatten=False)`, in WebAssembly
+  `arrange`, `insertPages` and `mergeBytes({ flatten: false })`. Each field keeps its widgets on
+  the pages copied, and only those; a top field an earlier document already names becomes
+  `name (2)`.
 - `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.
@@ -27,6 +34,11 @@ All notable changes to sealwax are recorded here. The format follows
 - Drawings count as MuPDF's in two more cases: a box filled with its fourth side drawn back to
   its start, without `h`, is four lines (stroked only, it stays a rectangle); a curve whose
   control points lie on its ends is a line.
+
+### Fixed
+
+- Pages taken out (`extract_pages`, `append_page_range`) no longer carry the widgets of the pages
+  left out, with their appearances, that a field on a page kept led to.
 
 ## [0.1.0] - 2026-11-16
 

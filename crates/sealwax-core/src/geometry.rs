@@ -76,6 +76,19 @@ impl Rotation {
             Rotation::ThreeQuarters => 270,
         }
     }
+
+    /// This rotation turned `quarter_turns` more quarter turns clockwise (counterclockwise when
+    /// negative), back to none after a full turn.
+    #[must_use]
+    pub fn turned(self, quarter_turns: i32) -> Self {
+        let quarters = i32::from(self.degrees() / 90);
+        match (quarters + quarter_turns).rem_euclid(4) {
+            1 => Rotation::Quarter,
+            2 => Rotation::Half,
+            3 => Rotation::ThreeQuarters,
+            _ => Rotation::None,
+        }
+    }
 }
 
 /// The geometry a page declares, as stored in the PDF: user-space points, bottom-left origin.

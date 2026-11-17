@@ -15,7 +15,8 @@ use sealwax_annots::{
     flatten_fields,
 };
 use sealwax_core::{
-    Document as CoreDocument, Limits, OpenOptions, PageGeometry, Rect, SaveOptions, XrefFormat,
+    Document as CoreDocument, Limits, OpenOptions, PageGeometry, PagePick, Rect, SaveOptions,
+    XrefFormat,
 };
 use wasm_bindgen::prelude::*;
 
@@ -322,6 +323,70 @@ fn open_options(value: Option<JsValue>) -> Result<OpenOptions, JsValue> {
 
 fn bytes(data: &[u8]) -> Uint8Array {
     Uint8Array::from(data)
+}
+
+/// `doc` saved in full, then rewritten smaller, read again with `limits`.
+fn compact(doc: &CoreDocument, limits: &Limits) -> Result<Uint8Array, JsValue> {
+    let saved = doc
+        .save(&SaveOptions::default())
+        .map_err(|error| core_error(&error))?;
+    let options = OpenOptions::default()
+        .limits(*limits)
+        .max_file_bytes(usize::MAX);
+    sealwax_core::optimize(&saved, &options)
+        .map(|optimized| bytes(&optimized.data))
+        .map_err(|error| core_error(&error))
+}
+
+/// The PDFs `sources` (each a `Uint8Array`) opened with `limits`; an error names the source
+/// (from 1).
+fn open_sources(sources: &Array, limits: Limits) -> Result<Vec<CoreDocument>, JsValue> {
+    let options = OpenOptions::default().limits(limits);
+    let mut documents = Vec::with_capacity(sources.length() as usize);
+    for (index, source) in sources.iter().enumerate() {
+        if !source.is_instance_of::<Uint8Array>() {
+            return Err(argument("each source must be a Uint8Array"));
+        }
+        let document =
+            CoreDocument::open(Uint8Array::from(source).to_vec(), &options).map_err(|error| {
+                annots_error(&sealwax_annots::Error::Source {
+                    position: index + 1,
+                    error: Box::new(error.into()),
+                })
+            })?;
+        documents.push(document);
+    }
+    Ok(documents)
+}
+
+/// The pages of an `arrange` list: each a page index or a `[page, quarter turns]` pair.
+fn pages(list: &Array) -> Result<Vec<(usize, i32)>, JsValue> {
+    let whole = |value: JsValue| -> Option<f64> {
+        value.as_f64().filter(|n| n.is_finite() && n.fract() == 0.0)
+    };
+    let mut pages = Vec::with_capacity(list.length() as usize);
+    for item in list.iter() {
+        let (page, turns) = if Array::is_array(&item) {
+            let pair = Array::from(&item);
+            (whole(pair.get(0)), whole(pair.get(1)))
+        } else {
+            (whole(item), Some(0.0))
+        };
+        match (page, turns) {
+            (Some(page), Some(turns))
+                if (0.0..4_294_967_296.0).contains(&page) && turns.abs() < 1_000_000.0 =>
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                pages.push((page as usize, turns as i32));
+            }
+            _ => {
+                return Err(argument(
+                    "each page is an index or an [index, quarter turns] pair",
+                ));
+            }
+        }
+    }
+    Ok(pages)
 }
 
 fn flattened(report: &Flattened) -> Object {
@@ -707,34 +772,85 @@ impl Document {
             .map(|optimized| bytes(&optimized.data))
             .map_err(|error| core_error(&error))
     }
+
+    /// A new PDF of this document's pages `pages`, in that order, saved compressed: each entry a
+    /// page index (from 0) or a `[page, quarter turns]` pair, the quarter turns (clockwise;
+    /// counterclockwise when negative) added to the page's rotation. Turning, deleting, moving,
+    /// reordering and taking out pages are each one arrangement. The form comes along for the
+    /// pages kept, each field with its widgets on them; nothing of the pages left out is copied.
+    ///
+    /// # Errors
+    /// A `RangeError` for an empty list, a page the document does not have, or a page twice; a
+    /// `PdfError`.
+    pub fn arrange(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "(number | [number, number])[]")] pages_list: Array,
+    ) -> Result<Uint8Array, JsValue> {
+        let wanted = pages(&pages_list)?;
+        let arranged = self
+            .inner
+            .arrange(&wanted)
+            .map_err(|error| core_error(&error))?;
+        compact(&arranged, self.inner.limits())
+    }
+
+    /// A new PDF, saved compressed, of this document's pages with every page of the PDFs
+    /// `sources` inserted before page `at` (from 0; the page count to append), one after the
+    /// other, opened with this document's limits. The forms come along; a field an inserted
+    /// document names as an earlier one does is renamed `name (2)`, `name (3)`...
+    ///
+    /// # Errors
+    /// A `RangeError` when `at` is past the last page; the error of a source that cannot be read,
+    /// its message naming it.
+    #[wasm_bindgen(js_name = insertPages)]
+    pub fn insert_pages(
+        &self,
+        at: usize,
+        #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] sources: Array,
+    ) -> Result<Uint8Array, JsValue> {
+        let others = open_sources(&sources, *self.inner.limits())?;
+        let borrowed: Vec<&CoreDocument> = others.iter().collect();
+        let inserted = self
+            .inner
+            .insert(at, &borrowed)
+            .map_err(|error| core_error(&error))?;
+        compact(&inserted, self.inner.limits())
+    }
 }
 
-/// The documents `sources` one after the other, each flattened first.
+/// The documents `sources` one after the other, each flattened first; with `flatten: false`,
+/// their forms kept instead, a field an earlier document already names renamed `name (2)`,
+/// `name (3)`...
 ///
 /// # Errors
 /// The error of the first source that cannot be read or merged; its message says which.
 #[wasm_bindgen(js_name = mergeBytes)]
 pub fn merge_bytes(
     #[wasm_bindgen(unchecked_param_type = "Uint8Array[]")] sources: Array,
-    #[wasm_bindgen(unchecked_param_type = "{ limits?: Limits }")] options: Option<JsValue>,
+    #[wasm_bindgen(unchecked_param_type = "{ flatten?: boolean; limits?: Limits }")]
+    options: Option<JsValue>,
 ) -> Result<Uint8Array, JsValue> {
-    let options =
-        OpenOptions::default().limits(limits(options.as_ref().and_then(|o| get(o, "limits")))?);
-    let mut documents = Vec::with_capacity(sources.length() as usize);
-    for (index, source) in sources.iter().enumerate() {
-        if !source.is_instance_of::<Uint8Array>() {
-            return Err(argument("each source must be a Uint8Array"));
-        }
-        let document =
-            CoreDocument::open(Uint8Array::from(source).to_vec(), &options).map_err(|error| {
-                annots_error(&sealwax_annots::Error::Source {
-                    position: index + 1,
-                    error: Box::new(error.into()),
-                })
-            })?;
-        documents.push(document);
-    }
-    let (merged, _) = sealwax_annots::merge(documents).map_err(|error| annots_error(&error))?;
+    let flatten = options
+        .as_ref()
+        .and_then(|o| get(o, "flatten"))
+        .is_none_or(|v| v.is_truthy());
+    let limits = limits(options.as_ref().and_then(|o| get(o, "limits")))?;
+    let documents = open_sources(&sources, limits)?;
+    let merged = if flatten {
+        sealwax_annots::merge(documents)
+            .map(|(merged, _)| merged)
+            .map_err(|error| annots_error(&error))?
+    } else {
+        let borrowed: Vec<&CoreDocument> = documents.iter().collect();
+        let picks: Vec<PagePick> = documents
+            .iter()
+            .enumerate()
+            .flat_map(|(index, doc)| {
+                (0..doc.page_count()).map(move |page| PagePick::new(index, page, 0))
+            })
+            .collect();
+        CoreDocument::compose(&borrowed, &picks, true).map_err(|error| core_error(&error))?
+    };
     merged
         .save(&SaveOptions::default())
         .map(|data| bytes(&data))

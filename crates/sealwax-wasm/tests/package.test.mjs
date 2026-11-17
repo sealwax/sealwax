@@ -144,3 +144,47 @@ test("the deadline holds without the clock panicking", async () => {
 test("the package names its version", () => {
   assert.match(sealwax.version(), /^\d+\.\d+\.\d+/);
 });
+
+/** Three pages; field `name` has a widget on pages 1 and 2, field `city` one on page 3. */
+function threePages() {
+  const widget = (parent, page) =>
+    `<< /Type /Annot /Subtype /Widget /Parent ${parent} 0 R /P ${page} 0 R /Rect [10 10 110 30] /F 4 >>`;
+  const page = (contents, annot) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents ${contents} 0 R /Annots [${annot} 0 R] >>`;
+  return build([
+    "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [9 0 R 12 0 R] /DA (/Helv 0 Tf 0 g) >> >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+    page(6, 10),
+    page(7, 11),
+    page(8, 13),
+    stream("BT (p0) Tj ET"),
+    stream("BT (p1) Tj ET"),
+    stream("BT (p2) Tj ET"),
+    "<< /FT /Tx /T (name) /Kids [10 0 R 11 0 R] >>",
+    widget(9, 3),
+    widget(9, 4),
+    "<< /FT /Tx /T (city) /Kids [13 0 R] >>",
+    widget(12, 5),
+  ]);
+}
+
+test("pages are arranged, inserted and merged with their forms", () => {
+  const doc = Document.fromBytes(threePages());
+  const arranged = Document.fromBytes(doc.arrange([[2, 1], 0]));
+  assert.deepEqual(arranged.geometry().map((g) => g.rotation), [90, 0]);
+  assert.deepEqual(arranged.fields().map((f) => [f.name, f.pageNumber]), [
+    ["city", 1],
+    ["name", 2],
+  ]);
+  assert.throws(() => doc.arrange([]), RangeError);
+  assert.throws(() => doc.arrange([0, 0]), RangeError);
+  const inserted = Document.fromBytes(doc.insertPages(3, [threePages()]));
+  assert.equal(inserted.pageCount(), 6);
+  assert.deepEqual(
+    inserted.fields().map((f) => f.name),
+    ["name", "name", "city", "name (2)", "name (2)", "city (2)"],
+  );
+  const merged = Document.fromBytes(mergeBytes([threePages(), threePages()], { flatten: false }));
+  assert.equal(merged.fields().length, 6);
+  assert.equal(Document.fromBytes(mergeBytes([threePages(), threePages()])).fields().length, 0);
+});
