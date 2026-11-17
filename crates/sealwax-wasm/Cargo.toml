@@ -19,6 +19,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 sealwax-core.workspace = true
 sealwax-annots.workspace = true
+sealwax-text.workspace = true
 sealwax-raster.workspace = true
 # The bridge to JavaScript (MIT OR Apache-2.0): its version must be the wasm-bindgen CLI's that
 # build.sh runs.

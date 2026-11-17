@@ -22,7 +22,7 @@ pub use cache::release_cache;
 pub use drawings::{Drawings, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
-pub use redact::{RedactedText, redact_text};
+pub use redact::{ImageRedaction, PathRedaction, RedactOptions, Redacted, redact};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};

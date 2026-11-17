@@ -8,14 +8,21 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
-- Text redacted (`sealwax_text::redact_text`): the glyphs a page draws under areas are taken out
-  of its content, as text no reader can extract any longer rather than covered. Each string is
-  split into codes and each code placed as hayro reads it (its font's codes and advances, the
-  text state, the forms the page draws); a glyph whose box (its advance, from 0.2 em below its
-  baseline to 0.8 em above it, and its outline) overlaps an area is taken out, and an adjustment
-  that moves as far stands in its place, so that nothing after it moves. Text in a hidden layer
-  is taken out too. A form XObject losing text is copied for the drawing that loses it, the
-  others left whole. Only text, so far: images and paths stay.
+- Redaction (`sealwax_text::redact`; `Document.redact` in Python, `doc.redact` in WebAssembly):
+  what a page draws under areas is taken out of its content, rather than covered. Glyphs: each
+  string split into codes and each code placed as hayro reads it, a glyph whose box (its advance
+  from 0.2 em below its baseline to 0.8 em above it, and its outline) an area overlaps taken out,
+  an adjustment moving as far in its place so that nothing after it moves; text in a hidden layer
+  too. Images: their pixels under the areas blanked (black, transparent in their soft mask), the
+  image written anew in RGB or gray, or taken out whole (`images`: "pixels", "remove", "keep").
+  Paths painted over an area: taken out when the area touches them, or covers them whole
+  (`paths`: "touched", "covered", "keep"), a clipping path clipping still. A form XObject losing
+  content is copied for the drawing that loses it, the others left whole.
+- Redaction marks applied (`sealwax_annots::apply_redactions`; `Document.apply_redactions`,
+  `doc.applyRedactions`): the other annotations flattened first, what the pages draw under the
+  marks taken out, each mark's area painted with its interior colour (`/IC`) and its overlay
+  text written, the marks and the links under them taken out. Follow with
+  `rebuilt_for_redaction` and a full save.
 - Annotations made with their appearance (`sealwax_annots::add_annotation`;
   `Document.add_annotation` in Python, `addAnnotation` in WebAssembly): ink, highlight (its
   colours multiplied, the text showing through), underline, strike out, squiggly, square, circle,

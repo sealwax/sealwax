@@ -77,6 +77,8 @@ struct Painter {
 pub(crate) enum Scope {
     /// Every annotation but links.
     All,
+    /// Every annotation but links and redaction marks, which stay to be applied.
+    AllButRedactions,
     /// Form widgets only: the other annotations (comments, highlights, links) stay as they are.
     Fields,
 }
@@ -134,6 +136,7 @@ pub(crate) fn flatten_scope(doc: &mut Document, scope: Scope) -> Result<Flattene
                 Some(subtype) if scope == Scope::Fields && subtype != b"Widget" => {
                     kept.push(item);
                 }
+                Some(b"Redact") if scope == Scope::AllButRedactions => kept.push(item),
                 Some(b"Popup") => {}
                 _ => {
                     if let Some(placement) = painter.placement(doc, &annotation)? {
