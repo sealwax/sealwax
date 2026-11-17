@@ -127,8 +127,8 @@ jobs:
           tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Build the npm package
         run: crates/sealwax-wasm/build.sh
       - name: Test it under Node
-        run: node --test crates/sealwax-wasm/tests/
+        run: node --test crates/sealwax-wasm/tests/package.test.mjs

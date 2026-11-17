@@ -1,6 +1,6 @@
 // The npm package as a caller uses it, run by Node's test runner on what build.sh wrote:
 //
-//   crates/sealwax-wasm/build.sh && node --test crates/sealwax-wasm/tests/
+//   crates/sealwax-wasm/build.sh && node --test crates/sealwax-wasm/tests/package.test.mjs
 //
 // Documents are built here, never read from a corpus.
 
