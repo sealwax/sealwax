@@ -96,10 +96,13 @@ impl<'a> Fonts<'a> {
     /// `glyph` drawn in font `index` (made [`Fonts::usable`] first): its code and advance.
     pub(crate) fn place(&mut self, index: usize, glyph: &Glyph) -> Placed {
         match self.slots.get_mut(index).and_then(Option::as_mut) {
-            Some(Slot::Embedded(font)) => Placed {
-                code: format!("{:04X}", font.code(glyph.id, &glyph.text)),
-                advance: font.program().advance(glyph.id),
-            },
+            Some(Slot::Embedded(font)) => {
+                let code = font.code(glyph.id, &glyph.text);
+                Placed {
+                    code: format!("{code:04X}"),
+                    advance: font.code_advance(code),
+                }
+            }
             Some(Slot::Standard { widths, .. }) => {
                 let code = u8::try_from(glyph.id).unwrap_or(b'?');
                 let advance = *widths.entry(code).or_insert(glyph.advance);

@@ -240,9 +240,13 @@ impl EmbeddedFont {
         code
     }
 
-    /// The advance of the glyph `code` draws, in thousandths of an em.
+    /// The advance of the glyph `code` draws, in thousandths of an em, as the font written
+    /// gives it: `.notdef` (code 0) has the default width, 0.
     #[must_use]
     pub fn code_advance(&self, code: u16) -> f64 {
+        if code == 0 {
+            return 0.0;
+        }
         let original = self
             .drawn
             .borrow()

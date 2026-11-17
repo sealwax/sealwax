@@ -85,6 +85,37 @@ fn text_reads_back_where_it_was_placed() {
 }
 
 #[test]
+fn notdef_glyphs_land_where_they_are_placed() {
+    // Glyph 0 (.notdef, as a layout draws a character no font has) and a glyph past the
+    // program's are drawn as code 0, whose width is 0: each stays at its x.
+    let program = common::program("Test", &['H']);
+    let composition = Composition {
+        pages: vec![page(vec![Item::Text(run(
+            0,
+            vec![
+                glyph(0, 0.0, ""),
+                glyph(0, 0.0, ""),
+                glyph(999, 0.0, ""),
+                glyph(1, 4.0, "H"),
+            ],
+        ))])],
+        fonts: vec![Font::Program {
+            program: Arc::new(program),
+            face: 0,
+        }],
+        ..Composition::default()
+    };
+    let composed = compose(&composition, &Limits::default()).unwrap();
+    let doc = reopened(&composed.document);
+    let glyphs = sealwax_text::glyphs(&doc, 0, false).unwrap();
+    let xs: Vec<f64> = glyphs
+        .iter()
+        .map(|g| (g.origin[0] * 100.0).round() / 100.0)
+        .collect();
+    assert_eq!(xs, [10.0, 10.0, 10.0, 14.0]);
+}
+
+#[test]
 fn fonts_with_a_garbled_table_directory_are_embedded() {
     let program = common::program_with_bad_record("Test", &['H']);
     let composition = Composition {
