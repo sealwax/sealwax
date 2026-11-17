@@ -1034,6 +1034,7 @@ dependencies = [
  "flate2",
  "png",
  "quick-xml",
+ "read-fonts 0.46.0",
  "sealwax-core",
  "sealwax-text",
  "serde",

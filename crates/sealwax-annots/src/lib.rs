@@ -18,6 +18,7 @@ mod create;
 mod draw;
 mod fields;
 mod flatten;
+mod font;
 mod generate;
 mod image;
 mod jpeg;
@@ -31,6 +32,7 @@ pub mod xfdf;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 use sealwax_core::{Dict, Document, ObjId, Object, PageGeometry, Rect};
 
@@ -41,6 +43,7 @@ pub use fields::{
     field_values, fields, fill_fields, fill_fields_with, name_text, unfill_fields,
 };
 pub use flatten::Flattened;
+pub use font::TextFonts;
 pub use image::{MAX_PIXELS, PictureError};
 pub use photos::{PhotoPages, add_photo_pages, photos_document};
 pub use redactions::{Redactions, apply_redactions};
@@ -129,8 +132,9 @@ pub struct Applied {
     pub pages: Vec<usize>,
 }
 
-/// How [`apply_xfdf_with`] treats what the document already has.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How [`apply_xfdf_with`] treats what the document already has, and the fonts it draws texts
+/// with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ApplyOptions {
     /// Flatten the document's annotations (links but) and its form into the pages first: the
@@ -140,6 +144,10 @@ pub struct ApplyOptions {
     /// painted: the pages show their content and the XFDF alone. Flattening then has nothing
     /// left to do.
     pub remove_annotations: bool,
+    /// TrueType programs for the free texts, by the font the XFDF names, and for every other:
+    /// embedded (the glyphs used), each character the font has drawn as it is. Without them,
+    /// Helvetica, the characters WinAnsiEncoding lacks drawn as `?`.
+    pub fonts: TextFonts,
 }
 
 impl ApplyOptions {
@@ -160,6 +168,13 @@ impl ApplyOptions {
     #[must_use]
     pub fn remove_annotations(mut self, remove: bool) -> Self {
         self.remove_annotations = remove;
+        self
+    }
+
+    /// See [`ApplyOptions::fonts`].
+    #[must_use]
+    pub fn fonts(mut self, fonts: TextFonts) -> Self {
+        self.fonts = fonts;
         self
     }
 }
@@ -267,6 +282,7 @@ pub fn apply_xfdf_with(
     describe: impl Fn(&xfdf::Picture) -> Option<String>,
 ) -> Result<Applied> {
     let command = xfdf::read_command(xfdf_text)?;
+    let programs = options.fonts.read()?;
     let mut budget = Budget::new(doc, command.marks.len())?;
     let pages = doc.page_ids();
     let geometry = doc.geometry();
@@ -312,6 +328,8 @@ pub fn apply_xfdf_with(
     applied.pages = changed.into_iter().collect();
     let mut by_page: BTreeMap<ObjId, Vec<Placed>> = BTreeMap::new();
     let mut helvetica: Option<ObjId> = None;
+    // The programs embedded, by the program: one font per program for this XFDF's texts.
+    let mut embedded: Vec<(Arc<font::Program>, font::Embedded)> = Vec::new();
     for (page, item) in prepared {
         let placed = match item {
             Prepared::Picture {
@@ -338,14 +356,38 @@ pub fn apply_xfdf_with(
             Prepared::Text { text } => {
                 applied.texts += 1;
                 let (turn, width, height) = turned(text.rect, text.rotation);
-                let (drawing, replaced) = draw::free_text(&text, width, height);
-                applied.characters_replaced += replaced;
-                let font = match helvetica {
-                    Some(font) => font,
-                    None => *helvetica.insert(doc.add_object(flatten::helvetica())?),
-                };
                 let mut fonts = Dict::new();
-                fonts.insert("Helv", Object::Ref(font));
+                let drawing = match programs.for_name(text.font.as_deref()) {
+                    Some(program) => {
+                        let at = match embedded.iter().position(|(p, _)| Arc::ptr_eq(p, program)) {
+                            Some(at) => at,
+                            None => {
+                                let id = doc.add_object(Object::Null)?;
+                                let resource = format!("SwF{}", embedded.len() + 1);
+                                embedded.push((
+                                    Arc::clone(program),
+                                    font::Embedded::new(Arc::clone(program), id, resource),
+                                ));
+                                embedded.len() - 1
+                            }
+                        };
+                        let font = &embedded[at].1;
+                        let (drawing, replaced) = draw::free_text_with(&text, width, height, font);
+                        applied.characters_replaced += replaced;
+                        fonts.insert(font::TextFont::resource(font), Object::Ref(font.id));
+                        drawing
+                    }
+                    None => {
+                        let (drawing, replaced) = draw::free_text(&text, width, height);
+                        applied.characters_replaced += replaced;
+                        let font = match helvetica {
+                            Some(font) => font,
+                            None => *helvetica.insert(doc.add_object(flatten::helvetica())?),
+                        };
+                        fonts.insert("Helv", Object::Ref(font));
+                        drawing
+                    }
+                };
                 let mut resources = Dict::new();
                 resources.insert("Font", fonts);
                 let form =
@@ -358,6 +400,9 @@ pub fn apply_xfdf_with(
             }
         };
         by_page.entry(page).or_default().push(placed);
+    }
+    for (_, font) in &embedded {
+        font.write(doc)?;
     }
     let mut handed_down = pdf::HandedDown::default();
     for (page, placed) in &by_page {

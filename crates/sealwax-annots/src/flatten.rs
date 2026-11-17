@@ -468,6 +468,7 @@ impl Painter {
             border,
             fill: colour(doc, annotation.get(b"C"))?,
             rotation: 0,
+            font: None,
         })
     }
 

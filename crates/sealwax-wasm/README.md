@@ -83,6 +83,10 @@ const xfdf = xfdfFor([{ kind: "stamp", pageIndex, rect, rotation, name: id, png,
 doc.applyXfdf(xfdf);
 ```
 
+Free texts are drawn in Helvetica, the characters it lacks as `?`, unless TrueType fonts are
+given: `fonts` by the name the XFDF gives (`{ Caveat: bytes }`), `defaultFont` for every other.
+The font is embedded with the glyphs used, and the text reads back as typed.
+
 ## Zoom
 
 A page shown larger than the screen renders by the part that shows: `clip` takes a rectangle in

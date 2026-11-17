@@ -129,6 +129,8 @@ pub struct Text {
     /// Degrees (0, 90, 180 or 270) the text is turned counterclockwise in user space, within
     /// `rect`, as [`Picture::rotation`].
     pub rotation: u16,
+    /// The font's name, as the viewer gave it (`defaultstyle`, else `defaultappearance`).
+    pub font: Option<String>,
 }
 
 impl fmt::Debug for Text {
@@ -586,6 +588,7 @@ fn written_as_read(marks: &[NewMark], deleted: &[(usize, String)], read: &Comman
                     && read.align == given.align
                     && read.vertical == given.vertical
                     && read.border == 0.0
+                    && read.font.as_deref() == Some(given.font.as_str())
             }
             _ => false,
         })
@@ -750,6 +753,10 @@ fn text(annotation: &Element, position: usize) -> Result<Text, Refused> {
         border_color: annotation.attribute("color").and_then(hex_color),
         fill: annotation.attribute("interior-color").and_then(hex_color),
         rotation,
+        font: style
+            .as_ref()
+            .and_then(|s| s.font.clone())
+            .or_else(|| appearance.as_ref().and_then(|a| a.font.clone())),
     })
 }
 
@@ -758,11 +765,14 @@ fn text(annotation: &Element, position: usize) -> Result<Text, Refused> {
 pub(crate) struct DefaultAppearance {
     pub(crate) size: Option<f64>,
     pub(crate) color: Option<Vec<f64>>,
+    /// The name `Tf` sets.
+    pub(crate) font: Option<String>,
 }
 
 pub(crate) fn default_appearance(da: &str) -> DefaultAppearance {
     let mut found = DefaultAppearance::default();
     let mut operands: Vec<f64> = Vec::new();
+    let mut last_name: Option<String> = None;
     for token in da.split_whitespace() {
         if let Some(value) = number(token) {
             operands.push(value);
@@ -774,6 +784,7 @@ pub(crate) fn default_appearance(da: &str) -> DefaultAppearance {
             "k" => 4,
             "Tf" => {
                 found.size = operands.last().copied();
+                found.font = last_name.take();
                 0
             }
             _ => 0,
@@ -782,7 +793,9 @@ pub(crate) fn default_appearance(da: &str) -> DefaultAppearance {
             found.color = Some(operands[operands.len() - wanted..].to_vec());
         }
         // A name (the font) does not clear the operands of `Tf`.
-        if !token.starts_with('/') {
+        if let Some(name) = token.strip_prefix('/') {
+            last_name = Some(name.to_owned()).filter(|n| !n.is_empty());
+        } else {
             operands.clear();
         }
     }
@@ -791,6 +804,8 @@ pub(crate) fn default_appearance(da: &str) -> DefaultAppearance {
 
 /// What the viewer's `defaultstyle` (CSS declarations) says.
 struct DefaultStyle {
+    /// The family of `font`.
+    font: Option<String>,
     size: Option<f64>,
     color: Option<Vec<f64>>,
     align: Align,
@@ -799,6 +814,7 @@ struct DefaultStyle {
 
 fn default_style(css: &str) -> DefaultStyle {
     let mut style = DefaultStyle {
+        font: None,
         size: None,
         color: None,
         align: Align::Left,
@@ -814,6 +830,17 @@ fn default_style(css: &str) -> DefaultStyle {
                 style.size = value
                     .split_whitespace()
                     .find_map(|part| part.strip_suffix("pt").and_then(number));
+                // `font: Caveat 16pt`: the family is what comes before the size.
+                let family: Vec<&str> = value
+                    .split_whitespace()
+                    .take_while(|part| part.strip_suffix("pt").and_then(number).is_none())
+                    .collect();
+                style.font = Some(family.join(" ").trim_matches(['"', '\'']).to_owned())
+                    .filter(|f| !f.is_empty());
+            }
+            "font-family" => {
+                style.font =
+                    Some(value.trim_matches(['"', '\'']).to_owned()).filter(|f| !f.is_empty());
             }
             "font-size" => style.size = value.strip_suffix("pt").and_then(number),
             "color" => style.color = hex_color(value),

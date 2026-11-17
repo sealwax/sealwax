@@ -474,6 +474,17 @@ test("the XFDF of a signed field is written as applyXfdf reads it", () => {
   assert.throws(() => sealwax.xfdfFor([{ kind: "stamp", pageIndex: 0 }]), RangeError);
 });
 
+test("a font that is no TrueType program is refused before anything changes", () => {
+  const xfdf = sealwax.xfdfFor([
+    { kind: "freetext", pageIndex: 0, rect: [100, 600, 300, 630], name: "t1", text: "Łukasz", font: "Caveat" },
+  ]);
+  const doc = Document.fromBytes(form());
+  assert.throws(() => doc.applyXfdf(xfdf, { fonts: { Caveat: new Uint8Array([1, 2, 3]) } }), RangeError);
+  assert.throws(() => doc.applyXfdf(xfdf, { defaultFont: "Arial" }), RangeError);
+  assert.equal(doc.isModified(), false);
+  assert.equal(doc.applyXfdf(xfdf).charactersReplaced, 1);
+});
+
 // Last: a panic stops the module, and reset() makes another.
 test("after a panic every call throws until reset(), and older documents stay refused", async () => {
   const bytes = build([
