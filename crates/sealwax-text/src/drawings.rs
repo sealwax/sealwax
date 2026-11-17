@@ -26,6 +26,10 @@ const ALONG_AXES: f64 = 1e-6;
 /// allows when it finds a rectangle in a path.
 const SAME: f64 = 1.0 / 4096.0;
 
+/// How far along x hayro moves the end of a line that goes nowhere, so that a round cap still
+/// shows.
+const NUDGE: f64 = 0.0001;
+
 /// The tag of the sequences around a path that is one box, filled, its fourth side drawn back to
 /// its start without `h`: hayro hands such a path over as a rectangle, and MuPDF gives it as four
 /// lines. The sequence carries its corners (`/P`).
@@ -43,7 +47,9 @@ pub struct Drawings {
     /// `[x0, y0, x1, y1]`. A rectangle's sides are not repeated here. A subpath filled without
     /// being closed gets no closing side, as in MuPDF. A curve whose control points lie on its
     /// ends (the first on the start and the second on the end, or both on one end) is a line
-    /// here, as MuPDF draws it.
+    /// here, as MuPDF draws it. A line or such a curve that goes nowhere (ends, as written, where
+    /// it starts) is left out, as in MuPDF, unless it follows a move: there it is a line of no
+    /// length.
     pub lines: Vec<[f64; 4]>,
     /// Each rectangle whose sides stay along the axes on the page, as a box: a `re`, or a
     /// subpath of four corners closed by `h`, whose sides run in turn along one axis and the
@@ -275,38 +281,44 @@ fn as_rectangle(start: Point, body: &[PathEl], closed: bool, stroked: bool) -> O
     Some(Rect::from_points(corners[0], corners[2]))
 }
 
-/// `elements` with each curve whose control points lie on its ends (the first on its start and
-/// the second on its end, or both on one end) made a line, as MuPDF makes it: exactly, a control
-/// point a hair away keeps the curve.
-fn straightened(elements: &[PathEl]) -> Vec<PathEl> {
+/// `elements` as MuPDF builds a path of them. Each curve whose control points lie on its ends (the
+/// first on its start and the second on its end, or both on one end) is made a line. A line that
+/// goes nowhere (to the point it starts from) is left out, unless it follows a move: there it
+/// stays, of no length. Points compare exactly, as written before the matrix: a control point a
+/// hair away keeps the curve, an end a hair away keeps the line.
+fn built(elements: &[PathEl]) -> Vec<PathEl> {
     let (mut start, mut current) = (None::<Point>, None::<Point>);
-    elements
-        .iter()
-        .map(|element| match *element {
+    let mut after_move = false;
+    let mut built = Vec::with_capacity(elements.len());
+    for element in elements {
+        let from = current;
+        let element = match (*element, from) {
+            // hayro moves the end of a line that goes nowhere: back where it was written.
+            (PathEl::LineTo(p), Some(p0)) if p == Point::new(p0.x + NUDGE, p0.y) => {
+                PathEl::LineTo(p0)
+            }
+            (PathEl::CurveTo(p1, p2, p3), Some(p0))
+                if (p0 == p1 && (p2 == p3 || p1 == p2)) || (p1 == p2 && p2 == p3) =>
+            {
+                PathEl::LineTo(p3)
+            }
+            (element, _) => element,
+        };
+        current = match element {
             PathEl::MoveTo(p) => {
-                (start, current) = (Some(p), Some(p));
-                *element
+                start = Some(p);
+                Some(p)
             }
-            PathEl::LineTo(p) | PathEl::QuadTo(_, p) => {
-                current = Some(p);
-                *element
-            }
-            PathEl::CurveTo(p1, p2, p3) => {
-                let from = current;
-                current = Some(p3);
-                match from {
-                    Some(p0) if (p0 == p1 && (p2 == p3 || p1 == p2)) || (p1 == p2 && p2 == p3) => {
-                        PathEl::LineTo(p3)
-                    }
-                    _ => *element,
-                }
-            }
-            PathEl::ClosePath => {
-                current = start;
-                *element
-            }
-        })
-        .collect()
+            PathEl::LineTo(p) | PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => Some(p),
+            PathEl::ClosePath => start,
+        };
+        if matches!(element, PathEl::LineTo(p) if Some(p) == from) && !after_move {
+            continue;
+        }
+        after_move = matches!(element, PathEl::MoveTo(_));
+        built.push(element);
+    }
+    built
 }
 
 /// `content` with each path that is one box filled without `h` (`m`, four `l` the last back to
@@ -393,7 +405,7 @@ impl<'a> Device<'a> for Collector {
         let transform = props.transform;
         let stroked = matches!(mode, DrawMode::Stroke(_));
         let mut subpath: Vec<PathEl> = Vec::new();
-        for element in straightened(path.elements()) {
+        for element in built(path.elements()) {
             match element {
                 PathEl::MoveTo(_) => {
                     self.subpath(&subpath, transform, stroked);

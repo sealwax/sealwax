@@ -343,3 +343,43 @@ fn a_curve_whose_control_points_lie_on_its_ends_is_a_line() {
     .unwrap();
     assert_eq!(found.rectangles, [[10.0, 10.0, 50.0, 40.0]]);
 }
+
+#[test]
+fn a_line_that_goes_nowhere_is_left_out_unless_it_follows_a_move() {
+    let lines = |content: &str| drawings(&page(content), 0, false).unwrap().lines;
+    // What MuPDF draws of these paths.
+    assert_eq!(
+        lines("10 10 m 10 10 l 20 10 l S"),
+        [[10.0, 10.0, 10.0, 10.0], [10.0, 10.0, 20.0, 10.0]]
+    );
+    assert_eq!(lines("0 0 m 10 0 l 10 0 l S"), [[0.0, 0.0, 10.0, 0.0]]);
+    assert_eq!(
+        lines("0 0 m 10 0 l 10 0 10 0 10 0 c 20 0 l S"),
+        [[0.0, 0.0, 10.0, 0.0], [10.0, 0.0, 20.0, 0.0]]
+    );
+    assert_eq!(
+        lines("5 5 m 5 5 5 5 5 5 c 15 5 l S"),
+        [[5.0, 5.0, 5.0, 5.0], [5.0, 5.0, 15.0, 5.0]]
+    );
+    assert_eq!(
+        lines("0 0 m 10 0 l 10 0 20 0 20 0 c S"),
+        [[0.0, 0.0, 10.0, 0.0], [10.0, 0.0, 20.0, 0.0]]
+    );
+    // After `h` the current point is the subpath's start: a line back to it goes nowhere.
+    assert_eq!(
+        lines("10 10 m 50 10 l 30 40 l h 10 10 l 10 60 l S"),
+        [
+            [10.0, 10.0, 50.0, 10.0],
+            [50.0, 10.0, 30.0, 40.0],
+            [30.0, 40.0, 10.0, 10.0],
+            [10.0, 10.0, 10.0, 60.0]
+        ]
+    );
+    // Points compare as written: an end a hair away is a line, and a line that goes nowhere is
+    // left out however the matrix rounds its ends.
+    assert_eq!(lines("0 0 m 10 0 l 10.001 0 l S").len(), 2);
+    assert_eq!(
+        lines("q 0.1 0 0 0.1 0.3 0.7 cm 0 0 m 100 0 l 100 0 l S Q").len(),
+        1
+    );
+}
