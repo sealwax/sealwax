@@ -284,6 +284,317 @@ pub fn to_position_frame(rect: Rect, crop_box: Rect) -> (f64, f64, f64, f64) {
     )
 }
 
+// --- writing ------------------------------------------------------------------------------
+
+/// A picture to write ([`write_command`]): a field signed with a picture (signature, initials,
+/// date, check box), as a signing page adds it.
+#[derive(Clone, PartialEq)]
+pub struct NewPicture {
+    /// From 0.
+    pub page_index: usize,
+    /// In PDF user space, the page unrotated, y upward.
+    pub rect: Rect,
+    /// Degrees counterclockwise (0, 90, 180 or 270): the page's rotation, for a picture that
+    /// shows upright on a turned page.
+    pub rotation: u16,
+    /// The PNG.
+    pub png: Vec<u8>,
+    /// The annotation's name (`name`): what identifies it, as a viewer's annotation id does.
+    pub name: String,
+    /// Written as the annotation's custom data (`trn-custom-data`), a JSON object of strings:
+    /// `fieldId` names the field it fills.
+    pub custom_data: Vec<(String, String)>,
+}
+
+impl fmt::Debug for NewPicture {
+    // The picture is a signature: kept out of debug output and logs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewPicture")
+            .field("page_index", &self.page_index)
+            .field("rect", &self.rect)
+            .field("rotation", &self.rotation)
+            .field("png_bytes", &self.png.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A free text to write ([`write_command`]): a text field signed, as a signing page adds it.
+#[derive(Clone, PartialEq)]
+pub struct NewText {
+    /// From 0.
+    pub page_index: usize,
+    /// In PDF user space, the page unrotated, y upward.
+    pub rect: Rect,
+    /// Degrees counterclockwise (0, 90, 180 or 270), as [`NewPicture::rotation`].
+    pub rotation: u16,
+    /// What the signer typed.
+    pub contents: String,
+    /// In points.
+    pub size: f64,
+    /// RGB, each from 0 to 1.
+    pub color: [f64; 3],
+    pub align: Align,
+    pub vertical: VerticalAlign,
+    /// The font's name, as the viewer names it (`Helvetica`): letters, digits, `-` and `_`.
+    pub font: String,
+    /// As [`NewPicture::name`].
+    pub name: String,
+    /// As [`NewPicture::custom_data`].
+    pub custom_data: Vec<(String, String)>,
+}
+
+impl fmt::Debug for NewText {
+    // What the signer typed is kept out of debug output and logs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewText")
+            .field("page_index", &self.page_index)
+            .field("rect", &self.rect)
+            .field("rotation", &self.rotation)
+            .field("characters", &self.contents.chars().count())
+            .field("size", &self.size)
+            .field("font", &self.font)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An annotation to write, in the order of `<add>`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewMark {
+    Picture(NewPicture),
+    Text(NewText),
+}
+
+/// The XFDF a signing page sends for the annotations it added: the viewer's export in command
+/// form (`<fields />`, `<add>`, `<modify />`, `<delete>`), exactly the subset [`read_command`]
+/// reads and `apply_xfdf` draws. `deleted` lists the annotations it deletes, as (page index from
+/// 0, name): its placeholders. The XFDF is read back before it is returned: what it writes is
+/// what it reads.
+///
+/// # Errors
+///
+/// [`Refused`] for a mark that cannot be written: an empty or infinite rectangle, a rotation
+/// other than 0, 90, 180 or 270, a picture that is not a PNG, a name empty, longer than 255
+/// characters or holding a control character, a text size not positive, a colour component out
+/// of 0 to 1, a font name of other characters, or a text or custom data holding a character XML
+/// cannot carry.
+pub fn write_command(marks: &[NewMark], deleted: &[(usize, String)]) -> Result<String, Refused> {
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?><xfdf xmlns=\"http://ns.adobe.com/xfdf/\" \
+         xml:space=\"preserve\"><fields />\n<add>",
+    );
+    for (index, mark) in marks.iter().enumerate() {
+        let position = index + 1;
+        match mark {
+            NewMark::Picture(picture) => write_picture(&mut out, picture, position)?,
+            NewMark::Text(text) => write_text(&mut out, text, position)?,
+        }
+    }
+    out.push_str("</add>\n<modify />\n");
+    if deleted.is_empty() {
+        out.push_str("<delete />");
+    } else {
+        out.push_str("<delete>");
+        for (page_index, name) in deleted {
+            checked_name(name, 0)?;
+            out.push_str(&format!(
+                "<id page=\"{page_index}\">{}</id>",
+                escaped(name, false)?
+            ));
+        }
+        out.push_str("</delete>");
+    }
+    out.push_str("</xfdf>");
+    let read = read_command(&out)?;
+    if !written_as_read(marks, deleted, &read) {
+        return Err(refused("the XFDF written does not read back as given"));
+    }
+    Ok(out)
+}
+
+fn write_picture(out: &mut String, picture: &NewPicture, position: usize) -> Result<(), Refused> {
+    if !picture.png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(refused(format!("annotation {position} is not a PNG")));
+    }
+    out.push_str(&format!(
+        "<stamp {}><trn-custom-data bytes=\"{}\"/><imagedata>{PNG_DATA_URL}{}</imagedata></stamp>",
+        common_attributes(
+            picture.page_index,
+            picture.rect,
+            picture.rotation,
+            &picture.name,
+            position
+        )?,
+        custom_json(&picture.custom_data, position)?,
+        base64::engine::general_purpose::STANDARD.encode(&picture.png),
+    ));
+    Ok(())
+}
+
+fn write_text(out: &mut String, text: &NewText, position: usize) -> Result<(), Refused> {
+    if !(text.size.is_finite() && text.size > 0.0) {
+        return Err(refused(format!(
+            "annotation {position} has a size not positive"
+        )));
+    }
+    if !text.color.iter().all(|c| (0.0..=1.0).contains(c)) {
+        return Err(refused(format!(
+            "annotation {position} has a colour out of 0 to 1"
+        )));
+    }
+    let font_ok = !text.font.is_empty()
+        && text.font.len() <= 64
+        && text
+            .font
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !font_ok {
+        return Err(refused(format!(
+            "annotation {position} has a font name refused"
+        )));
+    }
+    let [r, g, b] = text.color;
+    let hex = |c: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let byte = (c * 255.0).round() as u8;
+        format!("{byte:02X}")
+    };
+    let color = format!("#{}{}{}", hex(r), hex(g), hex(b));
+    let size = text.size;
+    let align = match text.align {
+        Align::Left => "left",
+        Align::Center => "center",
+        Align::Right => "right",
+    };
+    let vertical = match text.vertical {
+        VerticalAlign::Top => "top",
+        VerticalAlign::Center => "center",
+        VerticalAlign::Bottom => "bottom",
+    };
+    let font = &text.font;
+    out.push_str(&format!(
+        "<freetext {} width=\"0\" TextColor=\"{color}\" FontSize=\"{size}\">\
+         <trn-custom-data bytes=\"{}\"/><contents>{}</contents>\
+         <defaultappearance>{r} {g} {b} rg /{font} {size} Tf</defaultappearance>\
+         <defaultstyle>font: {font} {size}pt; text-align: {align}; text-vertical-align: {vertical}; \
+         color: {color}</defaultstyle></freetext>",
+        common_attributes(text.page_index, text.rect, text.rotation, &text.name, position)?,
+        custom_json(&text.custom_data, position)?,
+        escaped(&text.contents, true)?,
+    ));
+    Ok(())
+}
+
+/// `page`, `rect`, `flags`, `name` and, when turned, `rotation`.
+fn common_attributes(
+    page_index: usize,
+    rect: Rect,
+    rotation: u16,
+    name: &str,
+    position: usize,
+) -> Result<String, Refused> {
+    let values = [rect.x1, rect.y1, rect.x2, rect.y2];
+    if !values.iter().all(|v| v.is_finite()) || !(rect.x2 > rect.x1 && rect.y2 > rect.y1) {
+        return Err(refused(format!(
+            "annotation {position} has an empty rectangle"
+        )));
+    }
+    if !matches!(rotation, 0 | 90 | 180 | 270) {
+        return Err(refused(format!(
+            "annotation {position} is turned by other than a quarter turn"
+        )));
+    }
+    checked_name(name, position)?;
+    let turned = if rotation == 0 {
+        String::new()
+    } else {
+        format!(" rotation=\"{rotation}\"")
+    };
+    Ok(format!(
+        "page=\"{page_index}\" rect=\"{},{},{},{}\" flags=\"print,readonly,locked\" name=\"{}\"{turned}",
+        rect.x1,
+        rect.y1,
+        rect.x2,
+        rect.y2,
+        escaped(name, false)?
+    ))
+}
+
+fn checked_name(name: &str, position: usize) -> Result<(), Refused> {
+    if name.trim().is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+        return Err(refused(format!("annotation {position} has a name refused")));
+    }
+    Ok(())
+}
+
+fn custom_json(data: &[(String, String)], position: usize) -> Result<String, Refused> {
+    let map: serde_json::Map<String, serde_json::Value> = data
+        .iter()
+        .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+        .collect();
+    let json = serde_json::to_string(&map)
+        .map_err(|_| refused(format!("annotation {position} has custom data refused")))?;
+    escaped(&json, false)
+}
+
+/// `text` escaped for XML 1.0: in an attribute, or as text (a carriage return kept as a
+/// reference, which XML would read as a line feed). A character XML 1.0 cannot hold is refused.
+fn escaped(text: &str, content: bool) -> Result<String, Refused> {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if !content => out.push_str("&quot;"),
+            '\r' => out.push_str("&#13;"),
+            '\n' if !content => out.push_str("&#10;"),
+            '\t' if !content => out.push_str("&#9;"),
+            '\n' | '\t' => out.push(c),
+            c if u32::from(c) < 0x20 || matches!(c, '\u{FFFE}' | '\u{FFFF}') => {
+                return Err(refused("a character XML cannot carry"));
+            }
+            c => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `read`, the XFDF written read back, holds what was given.
+fn written_as_read(marks: &[NewMark], deleted: &[(usize, String)], read: &Command) -> bool {
+    let deletions = read.deleted.len() == deleted.len()
+        && read
+            .deleted
+            .iter()
+            .zip(deleted)
+            .all(|((page, name), (index, given))| *page == index + 1 && name == given.trim());
+    deletions
+        && read.marks.len() == marks.len()
+        && read.marks.iter().zip(marks).all(|pair| match pair {
+            (Mark::Picture(read), NewMark::Picture(given)) => {
+                read.page_number == given.page_index + 1
+                    && read.rect == normalized(given.rect)
+                    && read.rotation == given.rotation
+                    && read.png == given.png
+            }
+            (Mark::Text(read), NewMark::Text(given)) => {
+                read.page_number == given.page_index + 1
+                    && read.rect == normalized(given.rect)
+                    && read.rotation == given.rotation
+                    && read.contents == given.contents
+                    && read.size == given.size
+                    && read.color == given.color
+                    && read.align == given.align
+                    && read.vertical == given.vertical
+                    && read.border == 0.0
+            }
+            _ => false,
+        })
+}
+
+fn normalized(rect: Rect) -> Rect {
+    Rect::from_corners(rect.x1, rect.y1, rect.x2, rect.y2)
+}
+
 // --- the annotations ------------------------------------------------------------------------
 
 fn mark(annotation: &Element, position: usize) -> Result<Mark, Refused> {
@@ -778,6 +1089,105 @@ mod tests {
         <defaultappearance>0 0 0 rg /Helvetica 16 Tf</defaultappearance>\
         <defaultstyle>font: Helvetica 16pt; text-align: left; text-vertical-align: center; color: #000000</defaultstyle>\
         </freetext>";
+
+    fn new_picture(rotation: u16) -> NewPicture {
+        NewPicture {
+            page_index: 2,
+            rect: Rect::from_corners(100.5, 600.0, 160.25, 620.0),
+            rotation,
+            png: PNG.to_vec(),
+            name: "a1b2c3".to_owned(),
+            custom_data: vec![
+                ("fieldId".to_owned(), "f-1".to_owned()),
+                ("signed".to_owned(), "true".to_owned()),
+            ],
+        }
+    }
+
+    fn new_text(contents: &str, rotation: u16) -> NewText {
+        NewText {
+            page_index: 0,
+            rect: Rect::from_corners(10.0, 10.0, 130.0, 35.0),
+            rotation,
+            contents: contents.to_owned(),
+            size: 14.5,
+            color: [0.0, 0.2, 1.0],
+            align: Align::Center,
+            vertical: VerticalAlign::Center,
+            font: "Helvetica".to_owned(),
+            name: "t-9".to_owned(),
+            custom_data: vec![("fieldId".to_owned(), "f-2".to_owned())],
+        }
+    }
+
+    #[test]
+    fn what_is_written_reads_back_as_given() {
+        for rotation in [0, 90, 180, 270] {
+            let marks = [
+                NewMark::Picture(new_picture(rotation)),
+                NewMark::Text(new_text("Łukasz <Wójcik> & \"co\"\r\n\tété", rotation)),
+            ];
+            let deleted = [(2, "placeholder-1".to_owned())];
+            let xfdf = write_command(&marks, &deleted).unwrap();
+            let command = read_command(&xfdf).unwrap();
+            let [Mark::Picture(picture), Mark::Text(text)] = command.marks.as_slice() else {
+                panic!("a picture then a text");
+            };
+            assert_eq!(picture.page_number, 3);
+            assert_eq!(
+                picture.rect,
+                Rect::from_corners(100.5, 600.0, 160.25, 620.0)
+            );
+            assert_eq!((picture.rotation, text.rotation), (rotation, rotation));
+            assert_eq!(picture.png, PNG);
+            assert_eq!(picture.field_id.as_deref(), Some("f-1"));
+            assert_eq!(text.contents, "Łukasz <Wójcik> & \"co\"\r\n\tété");
+            assert_eq!((text.size, text.border), (14.5, 0.0));
+            assert_eq!(text.color, [0.0, 0.2, 1.0]);
+            assert_eq!(
+                (text.align, text.vertical),
+                (Align::Center, VerticalAlign::Center)
+            );
+            assert_eq!(command.deleted, [(3, "placeholder-1".to_owned())]);
+            // What a server merging the fields' XFDF as text needs: one bare <add>, plain XML.
+            assert_eq!(xfdf.matches("<add>").count(), 1);
+            assert_eq!(xfdf.matches("</add>").count(), 1);
+            assert_eq!(added_annotation_count(&xfdf).unwrap(), 2);
+            assert!(!xfdf.contains("<!"));
+            assert_eq!(xfdf.matches("<?").count(), 1);
+            assert!(!format!("{:?}", marks[1]).contains("Wójcik"));
+        }
+        let empty = write_command(&[], &[]).unwrap();
+        assert!(read_command(&empty).unwrap().marks.is_empty());
+    }
+
+    #[test]
+    fn what_cannot_be_written_is_refused() {
+        let picture = |change: &dyn Fn(&mut NewPicture)| {
+            let mut picture = new_picture(0);
+            change(&mut picture);
+            write_command(&[NewMark::Picture(picture)], &[])
+        };
+        let text = |change: &dyn Fn(&mut NewText)| {
+            let mut text = new_text("Jean", 0);
+            change(&mut text);
+            write_command(&[NewMark::Text(text)], &[])
+        };
+        assert!(picture(&|p| p.rotation = 45).is_err());
+        assert!(picture(&|p| p.rect = Rect::from_corners(1.0, 1.0, 1.0, 5.0)).is_err());
+        assert!(picture(&|p| p.rect.x2 = f64::NAN).is_err());
+        assert!(picture(&|p| p.png = b"GIF89a".to_vec()).is_err());
+        assert!(picture(&|p| p.name = " ".to_owned()).is_err());
+        assert!(picture(&|p| p.name = "a\nb".to_owned()).is_err());
+        assert!(picture(&|p| p.name = "x".repeat(256)).is_err());
+        assert!(picture(&|p| p.custom_data = vec![("k".to_owned(), "\u{1}".to_owned())]).is_ok());
+        assert!(text(&|t| t.size = 0.0).is_err());
+        assert!(text(&|t| t.color = [0.0, 1.5, 0.0]).is_err());
+        assert!(text(&|t| t.font = "Hel vetica".to_owned()).is_err());
+        assert!(text(&|t| t.font = "Caveat-Bold_2".to_owned()).is_ok());
+        assert!(text(&|t| t.contents = "a\u{1}b".to_owned()).is_err());
+        assert!(write_command(&[], &[(0, String::new())]).is_err());
+    }
 
     #[test]
     fn pictures_texts_and_deletions_are_read_in_order() {

@@ -115,6 +115,30 @@ def test_a_clipped_render_is_that_part_of_the_page():
         doc.render_rgba(0, 2.0, clip=(width - 1, 0, 2, 2))
 
 
+def test_the_xfdf_written_for_a_signed_field_is_what_apply_xfdf_draws():
+    from conftest import png
+
+    marks = [
+        {"kind": "stamp", "page_index": 0, "rect": (100, 100, 200, 150), "name": "a1", "png": png(),
+         "custom_data": {"fieldId": "f-1", "signed": "true"}},
+        {"kind": "freetext", "page_index": 0, "rect": (300, 300, 420, 330), "name": "t1", "text": "Łukasz & co",
+         "size": 14, "align": "center", "vertical_align": "center", "rotation": 0},
+    ]
+    xfdf = sealwax.xfdf_for(marks, deleted=[(0, "placeholder-1")])
+    assert xfdf.count("<add>") == 1 and 'name="a1"' in xfdf and "fieldId" in xfdf
+    doc = sealwax.Document.from_bytes(text_page())
+    applied = doc.apply_xfdf(xfdf)
+    assert (applied["pictures"], applied["texts"], applied["deletions_ignored"]) == (1, 1, 1)
+    with pytest.raises(sealwax.XfdfError):
+        sealwax.xfdf_for([{**marks[0], "rotation": 45}])
+    with pytest.raises(sealwax.XfdfError):
+        sealwax.xfdf_for([{**marks[0], "png": b"GIF89a"}])
+    with pytest.raises(ValueError):
+        sealwax.xfdf_for([{"kind": "stamp", "page_index": 0}])
+    with pytest.raises(ValueError):
+        sealwax.xfdf_for([{**marks[1], "align": "justify"}])
+
+
 def test_merge_names_the_source_that_failed():
     merged = sealwax.merge_bytes([text_page(), text_page(annots="[6 0 R]")])
     assert sealwax.Document.from_bytes(merged).page_count == 2

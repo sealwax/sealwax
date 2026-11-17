@@ -27,6 +27,11 @@ All notable changes to sealwax are recorded here. The format follows
   the part's pixels, so that a page zoomed past the bound renders by parts. Each part interprets
   the page whole and decodes the images it shows: render the part a screen shows in one call
   rather than many small tiles.
+- The XFDF of a signed field written (`xfdf::write_command`, `NewMark`, `NewPicture`, `NewText`;
+  `xfdf_for` in Python, `xfdfFor` in WebAssembly): PNG stamps and free texts, in PDF user space,
+  turned by quarter turns, with their name and custom data, in the command form a signing page
+  sends (`<add>`), exactly what `apply_xfdf` reads and draws: read back before it is returned. The
+  same marks give the same PDF as a web viewer's export of them.
 
 ### Changed
 

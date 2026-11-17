@@ -5,9 +5,11 @@
 use std::io::Read as _;
 
 use base64::Engine as _;
+use sealwax_annots::xfdf::{Align, NewMark, NewPicture, NewText, VerticalAlign, write_command};
 use sealwax_annots::{
     ApplyOptions, Error, Stamp, apply_xfdf, apply_xfdf_with, flatten, stamp_images,
 };
+use sealwax_core::Rect;
 use sealwax_core::{Dict, Document, Object, OpenOptions, SaveOptions};
 
 // --- building PDFs ------------------------------------------------------------------------------
@@ -594,6 +596,81 @@ fn a_turned_mark_is_drawn_turned_counterclockwise_within_its_rectangle() {
                 .collect();
             assert_eq!(unit, expected, "{rotation}: {matrix:?}");
         }
+    }
+}
+
+#[test]
+fn an_xfdf_written_draws_what_the_viewer_export_draws() {
+    let png = black(60, 20);
+    for rotation in [0_u16, 90, 180, 270] {
+        let turned = if rotation == 0 {
+            String::new()
+        } else {
+            format!(" rotation=\"{rotation}\"")
+        };
+        let (sig, txt) = if rotation % 180 == 0 {
+            ("100,600,160,620", "100,500,220,525")
+        } else {
+            ("100,560,120,620", "300,400,325,520")
+        };
+        // As the viewer exports them: a signature stamp and a text field's free text.
+        let viewer = exported(
+            &[
+                &xfdf_stamp(sig, 0, &data_url(&png))
+                    .replace("<stamp ", &format!("<stamp{turned} ")),
+                &format!(
+                    "<freetext page=\"0\" rect=\"{txt}\" flags=\"print,readonly,locked\" name=\"t1\" \
+                     subject=\"Free Text\" width=\"0\" TextColor=\"#000000\" FontSize=\"16\"{turned}>\
+                     <trn-custom-data bytes=\"{{&quot;fieldId&quot;:&quot;f-2&quot;}}\"/>\
+                     <contents>Jean Été</contents><contents-richtext><body><p><span>Jean Été</span></p></body></contents-richtext>\
+                     <defaultappearance>0 0 0 rg /Helvetica 16 Tf</defaultappearance>\
+                     <defaultstyle>font: Helvetica 16pt; text-align: center; text-vertical-align: center; color: #000000</defaultstyle>\
+                     </freetext>"
+                ),
+            ],
+            "<delete />",
+        );
+        let rect = |value: &str| {
+            let v: Vec<f64> = value.split(',').map(|n| n.parse().unwrap()).collect();
+            Rect::from_corners(v[0], v[1], v[2], v[3])
+        };
+        let written = write_command(
+            &[
+                NewMark::Picture(NewPicture {
+                    page_index: 0,
+                    rect: rect(sig),
+                    rotation,
+                    png: png.clone(),
+                    name: "a1b2c3".to_owned(),
+                    custom_data: vec![("signed".to_owned(), "true".to_owned())],
+                }),
+                NewMark::Text(NewText {
+                    page_index: 0,
+                    rect: rect(txt),
+                    rotation,
+                    contents: "Jean Été".to_owned(),
+                    size: 16.0,
+                    color: [0.0, 0.0, 0.0],
+                    align: Align::Center,
+                    vertical: VerticalAlign::Center,
+                    font: "Helvetica".to_owned(),
+                    name: "t1".to_owned(),
+                    custom_data: vec![("fieldId".to_owned(), "f-2".to_owned())],
+                }),
+            ],
+            &[],
+        )
+        .unwrap();
+        let page = format!("/Rotate {rotation}");
+        let mut from_viewer = doc_with(1, &page, "", "", &[]);
+        let mut from_written = doc_with(1, &page, "", "", &[]);
+        apply_xfdf(&mut from_viewer, &viewer, true).unwrap();
+        apply_xfdf(&mut from_written, &written, true).unwrap();
+        let save = |doc: &Document| doc.save(&SaveOptions::default()).unwrap();
+        assert!(
+            save(&from_viewer) == save(&from_written),
+            "rotation {rotation}"
+        );
     }
 }
 

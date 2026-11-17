@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from os import PathLike
-from typing import Any, TypedDict, final
+from typing import Any, Literal, NotRequired, TypedDict, final
 
 __version__: str
 
@@ -341,6 +341,30 @@ def grayscale(pdf_content: bytes, *, dpi: float = 200.0, limits: Limits | None =
 def optimize(pdf_content: bytes, *, limits: Limits | None = None) -> bytes: ...
 def release_cache() -> None: ...
 def has_redaction_marks(pdf_content: bytes, *, limits: Limits | None = None) -> bool: ...
+class StampMark(TypedDict):
+    kind: Literal["stamp"]
+    page_index: int
+    rect: tuple[float, float, float, float]
+    name: str
+    png: bytes
+    rotation: NotRequired[int]
+    custom_data: NotRequired[dict[str, str]]
+
+class FreeTextMark(TypedDict):
+    kind: Literal["freetext"]
+    page_index: int
+    rect: tuple[float, float, float, float]
+    name: str
+    text: str
+    rotation: NotRequired[int]
+    size: NotRequired[float]
+    color: NotRequired[tuple[float, float, float]]
+    align: NotRequired[Literal["left", "center", "right"]]
+    vertical_align: NotRequired[Literal["top", "center", "bottom"]]
+    font: NotRequired[str]
+    custom_data: NotRequired[dict[str, str]]
+
+def xfdf_for(marks: list[StampMark | FreeTextMark], *, deleted: list[tuple[int, str]] | None = None) -> str: ...
 def photos_to_pdf(photos: list[bytes], *, limits: Limits | None = None) -> tuple[bytes, list[int]]: ...
 def pdfa_convert(
     pdf_content: bytes, *, level: str = "3a", language: str | None = None, limits: Limits | None = None

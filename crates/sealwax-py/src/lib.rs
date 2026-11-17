@@ -1582,6 +1582,116 @@ fn has_redaction_marks(
     })
 }
 
+/// The XFDF a signing page sends for the annotations it added, exactly what `apply_xfdf` reads
+/// and draws, read back before it is returned. Each mark is a dict: `kind` ("stamp" or
+/// "freetext"), `page_index` (from 0), `rect` `(x1, y1, x2, y2)` in PDF user space (the page
+/// unrotated, y upward), `rotation` (0, 90, 180 or 270: the page's rotation, for a mark upright
+/// on a turned page; 0 by default), `name` (the annotation's id), `custom_data` (a dict of
+/// strings: `fieldId` names the field); a stamp's `png` (bytes); a free text's `text`, `size`
+/// (12 by default), `color` `(r, g, b)` from 0 to 1 (black by default), `align` ("left",
+/// "center", "right"), `vertical_align` ("top", "center", "bottom") and `font` ("Helvetica" by
+/// default). `deleted` lists the annotations deleted, as `(page_index, name)`. `XfdfError` for a
+/// mark that cannot be written; `ValueError` for a missing or bad entry.
+#[pyfunction]
+#[pyo3(signature = (marks, *, deleted = None))]
+fn xfdf_for(
+    marks: Vec<Bound<'_, PyDict>>,
+    deleted: Option<Vec<(usize, String)>>,
+) -> PyResult<String> {
+    let written = marks
+        .iter()
+        .enumerate()
+        .map(|(index, mark)| new_mark(mark, index + 1))
+        .collect::<PyResult<Vec<_>>>()?;
+    pdf::annots::xfdf::write_command(&written, &deleted.unwrap_or_default())
+        .map_err(|error| XfdfError::new_err(error.to_string()))
+}
+
+fn new_mark(mark: &Bound<'_, PyDict>, position: usize) -> PyResult<pdf::annots::xfdf::NewMark> {
+    use pdf::annots::xfdf::{Align, NewMark, NewPicture, NewText, VerticalAlign};
+    let bad =
+        |key: &str| PyValueError::new_err(format!("mark {position}: {key} is missing or bad"));
+    let required = |key: &str| mark.get_item(key)?.ok_or_else(|| bad(key));
+    let optional = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> {
+        Ok(mark.get_item(key)?.filter(|value| !value.is_none()))
+    };
+    let kind: String = required("kind")?.extract().map_err(|_| bad("kind"))?;
+    let page_index: usize = required("page_index")?
+        .extract()
+        .map_err(|_| bad("page_index"))?;
+    let (x1, y1, x2, y2): (f64, f64, f64, f64) =
+        required("rect")?.extract().map_err(|_| bad("rect"))?;
+    let rect = pdf::Rect::from_corners(x1, y1, x2, y2);
+    let rotation: u16 = match optional("rotation")? {
+        Some(value) => value.extract().map_err(|_| bad("rotation"))?,
+        None => 0,
+    };
+    let name: String = required("name")?.extract().map_err(|_| bad("name"))?;
+    let mut custom_data = Vec::new();
+    if let Some(value) = optional("custom_data")? {
+        let dict = value.cast::<PyDict>().map_err(|_| bad("custom_data"))?;
+        for (key, value) in dict.iter() {
+            custom_data.push((
+                key.extract().map_err(|_| bad("custom_data"))?,
+                value.extract().map_err(|_| bad("custom_data"))?,
+            ));
+        }
+    }
+    match kind.as_str() {
+        "stamp" => Ok(NewMark::Picture(NewPicture {
+            page_index,
+            rect,
+            rotation,
+            png: required("png")?.extract().map_err(|_| bad("png"))?,
+            name,
+            custom_data,
+        })),
+        "freetext" => {
+            let text: String = required("text")?.extract().map_err(|_| bad("text"))?;
+            let size: f64 = match optional("size")? {
+                Some(value) => value.extract().map_err(|_| bad("size"))?,
+                None => 12.0,
+            };
+            let (r, g, b): (f64, f64, f64) = match optional("color")? {
+                Some(value) => value.extract().map_err(|_| bad("color"))?,
+                None => (0.0, 0.0, 0.0),
+            };
+            let word = |key: &str, default: &str| -> PyResult<String> {
+                match optional(key)? {
+                    Some(value) => value.extract().map_err(|_| bad(key)),
+                    None => Ok(default.to_owned()),
+                }
+            };
+            let align = match word("align", "left")?.as_str() {
+                "left" => Align::Left,
+                "center" => Align::Center,
+                "right" => Align::Right,
+                _ => return Err(bad("align")),
+            };
+            let vertical = match word("vertical_align", "top")?.as_str() {
+                "top" => VerticalAlign::Top,
+                "center" => VerticalAlign::Center,
+                "bottom" => VerticalAlign::Bottom,
+                _ => return Err(bad("vertical_align")),
+            };
+            Ok(NewMark::Text(NewText {
+                page_index,
+                rect,
+                rotation,
+                contents: text,
+                size,
+                color: [r, g, b],
+                align,
+                vertical,
+                font: word("font", "Helvetica")?,
+                name,
+                custom_data,
+            }))
+        }
+        _ => Err(bad("kind")),
+    }
+}
+
 /// A new PDF of a page for each photo of `photos` (JPEG or PNG bytes), as
 /// `Document.add_photo_pages` adds them, and the photos (from 0) that could not be read.
 /// `ValueError` when none can be.
@@ -1762,6 +1872,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_geometry, m)?)?;
     m.add_function(wrap_pyfunction!(flatten_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(apply_xfdf_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(xfdf_for, m)?)?;
     m.add_function(wrap_pyfunction!(merge_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(grayscale, m)?)?;
     m.add_function(wrap_pyfunction!(optimize, m)?)?;
