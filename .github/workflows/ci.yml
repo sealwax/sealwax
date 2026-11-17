@@ -37,7 +37,16 @@ jobs:
       - run: cargo check -p sealwax -p sealwax-core -p sealwax-cli
 
   fuzz:
-    name: Fuzzing (one minute per target)
+    name: Fuzz ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          [open, save, text, pdfa, annots, xfdf, photos, merge, raster, timestamp, revocation, verify]
+        include:
+          # The test photos seed the photos target; new inputs go to its own corpus.
+          - target: photos
+            seeds: ../crates/sealwax-annots/tests/data
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,49 +54,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+          # The jobs build the same dependencies: one saves them for all.
+          save-if: ${{ matrix.target == 'open' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
       # Without the public corpora (not versioned), this mostly proves the target builds and
       # runs; real fuzzing sessions seed it locally (see fuzz/fuzz_targets/open.rs).
       # The prebuilt cargo-fuzz is a musl binary and would target musl, which the sanitizer refuses.
-      - name: Fuzz the open target
+      - name: Fuzz the ${{ matrix.target }} target for a minute
         working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu open -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the save target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu save -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the text target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu text -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the pdfa target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu pdfa -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the annots target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu annots -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the xfdf target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu xfdf -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the photos target
-        working-directory: fuzz
-        # New inputs go to the first directory; the test photos only seed the run.
-        run: mkdir -p corpus/photos && cargo fuzz run --target x86_64-unknown-linux-gnu photos corpus/photos ../crates/sealwax-annots/tests/data -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the merge target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu merge -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the raster target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu raster -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the timestamp target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu timestamp -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the revocation target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu revocation -- -max_total_time=60 -max_len=65536
-      - name: Fuzz the verify target
-        working-directory: fuzz
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu verify -- -max_total_time=60 -max_len=65536
+        env:
+          TARGET: ${{ matrix.target }}
+          SEEDS: ${{ matrix.seeds }}
+        run: |
+          mkdir -p "corpus/$TARGET"
+          # SEEDS is unquoted: empty, it adds no argument.
+          cargo fuzz run --target x86_64-unknown-linux-gnu "$TARGET" "corpus/$TARGET" $SEEDS \
+            -- -max_total_time=60 -max_len=65536
+
+  # The check the branch rules require, under its old name: every target's job passed. It also
+  # runs when one failed or was cancelled, so that it fails rather than being skipped.
+  fuzz-result:
+    name: Fuzzing (one minute per target)
+    needs: fuzz
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every target was fuzzed without a failure
+        env:
+          RESULT: ${{ needs.fuzz.result }}
+        run: test "$RESULT" = success
 
   deny:
     name: Licences and advisories
