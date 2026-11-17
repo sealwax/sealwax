@@ -27,8 +27,9 @@
 //!   order, or marked as an artifact (level N1, `tagging`); a tree the document has is kept,
 //!   its role map repaired (level N0), and what is drawn outside it tied to it.
 //!
-//! Not yet: the program of a composite font that has none (the report counts it as
-//! `font_not_embedded`).
+//! A composite font without a program gets one when it is encoded `Identity-H` or `Identity-V`,
+//! has a `ToUnicode` CMap, and the standard font has a glyph for every CID it shows: that font's
+//! glyphs in the order of its CIDs. Otherwise the report counts it as `font_not_embedded`.
 //!
 //! ```no_run
 //! use sealwax_core::{Document, OpenOptions, SaveOptions};

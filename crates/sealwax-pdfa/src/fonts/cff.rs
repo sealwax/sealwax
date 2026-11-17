@@ -12,7 +12,12 @@
 //! nothing, a blank glyph with the dictionary's width changes nothing drawn. Its code goes into
 //! the custom encoding itself, not a supplement: veraPDF 1.28 reads a supplement's glyph name as
 //! a place in the encoding.
+//!
+//! A composite font without a program gets a copy whose glyphs are put in the order of its CIDs:
+//! a CIDFont's CFF program without CIDFont operators has its CIDs read as glyph numbers
+//! (ISO 32000-1, 9.7.4.2).
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use read_fonts::ps::Sid;
@@ -641,6 +646,78 @@ impl<'a> Cff<'a> {
             strings,
             charset: Some(charset),
             encoding,
+            without_encoding: false,
+        }))
+    }
+
+    /// A copy of the font whose glyph `n` draws the glyph `glyphs[n].source` of this one, or
+    /// nothing, with the advance width `glyphs[n].width`: the program of a CIDFont whose CID
+    /// `n` shows that glyph. Glyph 0 is `.notdef`. Each glyph keeps its name where it is the
+    /// first to draw that glyph, and gets one of its own (`cid` and its number) otherwise; the
+    /// copy has no built-in encoding. `None` when a glyph cannot be read or there are too many.
+    pub(crate) fn reordered(&self, glyphs: &[Placed]) -> Option<Vec<u8>> {
+        if glyphs.is_empty() || glyphs.len() > MAX_GLYPHS {
+            return None;
+        }
+        let generated: Vec<String> = (0..glyphs.len()).map(|n| format!("cid{n}")).collect();
+        let mut strings: Vec<&[u8]> = self
+            .strings
+            .iter()
+            .map(|r| self.data.get(r.clone()))
+            .collect::<Option<_>>()?;
+        // The names generated are no standard strings: one the font does not have is added
+        // without looking for it, which keeps a font of many glyphs from taking quadratic time.
+        let own_strings: HashSet<&[u8]> = strings.iter().copied().collect();
+        let mut char_strings = Vec::with_capacity(glyphs.len());
+        let mut sids = Vec::with_capacity(glyphs.len());
+        let mut named: HashSet<u16> = HashSet::new();
+        for (n, glyph) in glyphs.iter().enumerate() {
+            let source = if n == 0 { Some(0) } else { glyph.source };
+            let mut code = self.width_operand(glyph.width);
+            match source {
+                Some(gid) => {
+                    let (expanded, current) = self.expanded(gid).ok()?;
+                    let start = current.map_or(0, |(_, bytes)| bytes.end);
+                    code.extend_from_slice(expanded.get(start..)?);
+                }
+                // endchar
+                None => code.push(14),
+            }
+            char_strings.push(code);
+            let own = source.and_then(|gid| self.sids.get(usize::from(gid)).copied());
+            let sid = match own {
+                Some(sid) if n == 0 || (sid != 0 && named.insert(sid)) => sid,
+                _ => {
+                    let name = generated[n].as_bytes();
+                    let sid = if own_strings.contains(name) {
+                        string_id(name, &mut strings)?
+                    } else {
+                        strings.push(name);
+                        u16::try_from(strings.len() - 1)
+                            .ok()?
+                            .checked_add(STANDARD_STRINGS)
+                            .filter(|sid| *sid <= MAX_SID)?
+                    };
+                    named.insert(sid);
+                    sid
+                }
+            };
+            sids.push(sid);
+        }
+        let mut charset = vec![0u8];
+        for sid in sids.iter().skip(1) {
+            charset.extend_from_slice(&sid.to_be_bytes());
+        }
+        let strings = (strings.len() != self.strings.len()).then(|| {
+            let items: Vec<Vec<u8>> = strings.iter().map(|s| s.to_vec()).collect();
+            encode_index(&items)
+        });
+        Some(self.write(Parts {
+            char_strings,
+            strings,
+            charset: Some(charset),
+            encoding: None,
+            without_encoding: true,
         }))
     }
 
@@ -705,15 +782,22 @@ impl<'a> Cff<'a> {
             .charset
             .as_deref()
             .unwrap_or_else(|| self.charset.as_ref().map(raw).unwrap_or_default());
-        let encoding = parts
-            .encoding
-            .as_deref()
-            .unwrap_or_else(|| self.encoding.as_ref().map(raw).unwrap_or_default());
+        let encoding = if parts.without_encoding {
+            &[][..]
+        } else {
+            parts
+                .encoding
+                .as_deref()
+                .unwrap_or_else(|| self.encoding.as_ref().map(raw).unwrap_or_default())
+        };
         let char_strings = encode_index(&parts.char_strings);
         let subrs = self.local_subrs.as_ref().map(raw).unwrap_or_default();
         let has_charset = !charset.is_empty();
         let has_encoding = !encoding.is_empty();
         let mut top = self.top.clone();
+        if parts.without_encoding {
+            top.retain(|entry| entry.op != ENCODING);
+        }
         if has_charset && find(&top, CHARSET).is_none() {
             top.push(Entry {
                 op: CHARSET,
@@ -768,6 +852,15 @@ impl<'a> Cff<'a> {
     }
 }
 
+/// A glyph of a copy put in another order ([`Cff::reordered`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Placed {
+    /// The glyph of the font it draws; nothing when `None`.
+    pub(crate) source: Option<u16>,
+    /// Advance width, in text space units per 1000 em.
+    pub(crate) width: f64,
+}
+
 /// A glyph to add to a font: it draws nothing.
 pub(crate) struct Blank<'n> {
     pub(crate) name: &'n str,
@@ -785,6 +878,8 @@ struct Parts {
     strings: Option<Vec<u8>>,
     charset: Option<Vec<u8>>,
     encoding: Option<Vec<u8>>,
+    /// No built-in encoding: Standard Encoding, the Top DICT without its `Encoding`.
+    without_encoding: bool,
 }
 
 /// The string identifier of `name`: a standard string's, else that of the font's string, else

@@ -355,9 +355,14 @@ fn char_set_cid_set_and_cid_to_gid_map() {
     ] {
         assert_eq!(report.changes().get(change), Some(&1), "{change}");
     }
-    // Helvetica gets the program of its standard font; the composite font cannot yet.
+    // Helvetica gets the program of its standard font; the composite font cannot, without a
+    // `ToUnicode` CMap to tell what its CIDs mean.
     assert_eq!(report.changes().get("font_embedded"), Some(&1));
     assert_eq!(report.residual().get("font_not_embedded"), Some(&1));
+    assert_eq!(
+        report.residual().get("composite_font_without_to_unicode"),
+        Some(&1)
+    );
     let objects: Vec<Object> = doc
         .reachable_objects()
         .unwrap()
