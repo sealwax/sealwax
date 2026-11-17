@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use sealwax_annots::{FillValue, fill_fields};
 use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
-use sealwax_raster::{Error, render_png};
+use sealwax_raster::{Error, RenderOptions, render, render_png};
 
 const SCAN: &[u8] = include_bytes!("data/scan-16x16.jpg");
 
@@ -201,4 +201,109 @@ fn past_the_pixel_bound_a_scale_or_a_page_is_refused_by_name() {
         render_png(&doc, 1, 1.0),
         Err(Error::Pdf(PdfError::InvalidArgument { what: "page index" }))
     ));
+}
+
+/// A page drawing an asymmetric shape: what turns shows.
+fn arrow(rotate: u16) -> Document {
+    open(document(
+        b"1 0 0 rg 50 70 250 100 re f 0 0 1 rg 400 600 100 150 re f",
+        &format!("/MediaBox [0 0 600 800] /CropBox [50 70 550 770] /Rotate {rotate}"),
+        "",
+        &[],
+    ))
+}
+
+fn raster(doc: &Document, turns: i32) -> sealwax_raster::Raster {
+    render(
+        doc,
+        0,
+        &RenderOptions::new(0.5).quarter_turns(turns),
+        &|| false,
+    )
+    .unwrap()
+    .unwrap()
+}
+
+#[test]
+fn pixels_come_as_opaque_rgba_and_the_png_says_the_same() {
+    let doc = arrow(0);
+    let image = raster(&doc, 0);
+    assert_eq!((image.width, image.height), (250, 350));
+    assert_eq!(image.pixels.len(), 250 * 350 * 4);
+    assert!(image.pixels.chunks(4).all(|p| p[3] == 255));
+    let png = Image::decode(&render_png(&doc, 0, 0.5).unwrap());
+    let rgb: Vec<u8> = image
+        .pixels
+        .chunks(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
+    assert_eq!(png.rgb, rgb);
+}
+
+#[test]
+fn quarter_turns_show_the_page_as_its_rotation_would() {
+    // Turning by quarter turns gives the very image of the page carrying that rotation.
+    for (rotate, turns, same_as) in [
+        (0, 1, 90),
+        (0, 2, 180),
+        (0, -1, 270),
+        (90, 1, 180),
+        (270, 2, 90),
+    ] {
+        let turned = raster(&arrow(rotate), turns);
+        let rotated = raster(&arrow(same_as), 0);
+        assert_eq!(
+            (turned.width, turned.height),
+            (rotated.width, rotated.height),
+            "{rotate} + {turns}"
+        );
+        assert!(turned.pixels == rotated.pixels, "{rotate} + {turns}");
+    }
+}
+
+#[test]
+fn a_cancelled_rendering_stops_without_error_and_draws_nothing() {
+    let doc = arrow(0);
+    for stop_at in 1..=3 {
+        let asked = std::cell::Cell::new(0);
+        let cancelled = || {
+            asked.set(asked.get() + 1);
+            asked.get() >= stop_at
+        };
+        let rendered = render(&doc, 0, &RenderOptions::new(0.5), &cancelled).unwrap();
+        assert!(rendered.is_none(), "stopped at the {stop_at}th question");
+    }
+    assert!(
+        render(&doc, 0, &RenderOptions::new(0.5), &|| false)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_modified_document_is_read_again_once_until_it_changes() {
+    let form = document(
+        b"",
+        "/MediaBox [0 0 300 200] /Annots [5 0 R]",
+        "/AcroForm << /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>",
+        &[
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [20 80 280 120] /F 4 >>"
+                .to_vec(),
+        ],
+    );
+    let mut doc = open(form);
+    assert!(doc.reopened_if_modified().unwrap().is_none());
+    let values = HashMap::from([("name".to_owned(), FillValue::Text("Alice".to_owned()))]);
+    fill_fields(&mut doc, &values).unwrap();
+    let first = doc.reopened_if_modified().unwrap().unwrap();
+    render_png(&doc, 0, 1.0).unwrap();
+    let again = doc.reopened_if_modified().unwrap().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again), "read again once");
+    let values = HashMap::from([("name".to_owned(), FillValue::Text("Bob".to_owned()))]);
+    fill_fields(&mut doc, &values).unwrap();
+    let changed = doc.reopened_if_modified().unwrap().unwrap();
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &changed),
+        "read again after a change"
+    );
 }

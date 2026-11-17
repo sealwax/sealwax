@@ -17,7 +17,7 @@ use hayro::hayro_syntax::Pdf;
 use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
-use hayro::{PixmapSettings, RenderCache, RenderSettings, render, render_into};
+use hayro::{PixmapSettings, RenderCache, RenderSettings, render as render_page, render_into};
 use sealwax_core::{Dict, Document, Name, Object, OpenOptions, Rect, SaveOptions, Stream};
 
 /// The fine resolution of a fax.
@@ -46,29 +46,99 @@ pub enum Error {
 /// Result type of this crate.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// How to render a page ([`render`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RenderOptions {
+    /// Pixels per point: 150 / 72 for 150 dpi.
+    pub scale: f64,
+    /// Quarter turns clockwise (counterclockwise when negative) added to the page's rotation:
+    /// the image is the page as it would show turned so.
+    pub quarter_turns: i32,
+}
+
+impl RenderOptions {
+    /// At `scale` pixels per point, not turned.
+    #[must_use]
+    pub fn new(scale: f64) -> Self {
+        Self {
+            scale,
+            quarter_turns: 0,
+        }
+    }
+
+    /// Turned `quarter_turns` more quarter turns clockwise.
+    #[must_use]
+    pub fn quarter_turns(mut self, quarter_turns: i32) -> Self {
+        self.quarter_turns = quarter_turns;
+        self
+    }
+}
+
+/// A rendered page: `pixels` holds its `width` x `height` pixels, row by row from the top, four
+/// bytes each (red, green, blue, alpha), opaque over white: what a canvas's `ImageData` takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Raster {
+    /// In pixels.
+    pub width: u32,
+    /// In pixels.
+    pub height: u32,
+    /// RGBA, 8 bits each.
+    pub pixels: Vec<u8>,
+}
+
+impl Raster {
+    /// The image as a PNG, 8-bit RGB.
+    ///
+    /// # Errors
+    /// [`Error::Unrenderable`] when it cannot be encoded.
+    pub fn png(&self) -> Result<Vec<u8>> {
+        let rgb: Vec<u8> = self
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|[r, g, b, _]| [*r, *g, *b])
+            .collect();
+        png_rgb(&rgb, self.width, self.height)
+    }
+}
+
 /// Page `page_index` (from 0) rendered as a reader shows it (its annotations and the fields'
-/// values included, the document left as it is) to a PNG image, 8-bit RGB without alpha over
-/// white. The image covers the page's crop box as shown (rotated), at `scale` pixels per point:
-/// its sides are the rotated crop box's, times `scale`, rounded up as MuPDF and PDFium size their
-/// images (a thousandth of a pixel over a whole number does not count), and the page is drawn at
-/// `scale` exactly. The user unit is not applied, as PDF readers render.
+/// values included, the document left as it is), turned as `options` say, to RGBA pixels over
+/// white. The image covers the page's crop box as shown (rotated), at `options.scale` pixels per
+/// point: its sides are the rotated crop box's, times the scale, rounded up as MuPDF and PDFium
+/// size their images (a thousandth of a pixel over a whole number does not count), and the page
+/// is drawn at that scale exactly. The user unit is not applied, as PDF readers render.
 ///
-/// A modified document (a field filled) is rendered as it stands: saved and read again first,
-/// which costs a full save each time; render a saved copy for many pages.
+/// `cancelled` is asked between the steps of the work (reading the page, interpreting it,
+/// drawing it): once it answers `true`, the rendering stops and returns `None`, nothing drawn.
+///
+/// A modified document (a field filled) is rendered as it stands: saved and read again once,
+/// until it changes again ([`Document::reopened_if_modified`]).
 ///
 /// # Errors
-/// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or a `scale`
+/// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or a scale
 /// that is not a positive number; [`sealwax_core::Error::LimitExceeded`] naming
 /// `max_render_pixels` for an image larger than [`sealwax_core::Limits::max_render_pixels`] (or
 /// with a side past 65,535 pixels), or the bound of [`Document::check_page`] the page passes;
 /// [`sealwax_core::Error::Timeout`] past the deadline; [`Error::Unrenderable`] when the renderer
 /// fails.
-pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u8>> {
+pub fn render(
+    doc: &Document,
+    page_index: usize,
+    options: &RenderOptions,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<Raster>> {
+    let scale = options.scale;
     if !(scale.is_finite() && scale > 0.0) {
         return Err(sealwax_core::Error::InvalidArgument { what: "scale" }.into());
     }
+    if cancelled() {
+        return Ok(None);
+    }
     let reopened = doc.reopened_if_modified()?;
-    let doc = reopened.as_ref().unwrap_or(doc);
+    let doc = reopened.as_deref().unwrap_or(doc);
     // The renderer has no bounds of its own.
     doc.check_page(page_index)?;
     let pages = doc.hayro().pages();
@@ -76,6 +146,12 @@ pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u
         .get(page_index)
         .ok_or(sealwax_core::Error::InvalidArgument { what: "page index" })?;
     let (width, height) = page.render_dimensions();
+    let turns = options.quarter_turns.rem_euclid(4);
+    let (width, height) = if turns % 2 == 1 {
+        (height, width)
+    } else {
+        (width, height)
+    };
     let too_large = sealwax_core::Error::LimitExceeded {
         what: "max_render_pixels",
     };
@@ -92,11 +168,22 @@ pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u
     if u64::from(columns) * u64::from(rows) > doc.limits().max_render_pixels {
         return Err(too_large.into());
     }
+    if cancelled() {
+        return Ok(None);
+    }
+    // The page as shown, then turned in its own points: the quarter turns a `/Rotate` adds.
+    let (w, h) = (f64::from(width), f64::from(height));
+    let turned = match turns {
+        1 => Affine::new([0.0, 1.0, -1.0, 0.0, w, 0.0]),
+        2 => Affine::new([-1.0, 0.0, 0.0, -1.0, w, h]),
+        3 => Affine::new([0.0, -1.0, 1.0, 0.0, 0.0, h]),
+        _ => Affine::IDENTITY,
+    };
     let cache = RenderCache::new();
     // A panic of the renderer is an error of this page, not of the process.
-    let pixmap = catch_unwind(AssertUnwindSafe(|| {
+    let drawn = catch_unwind(AssertUnwindSafe(|| {
         let mut context = RenderContext::new(columns, rows);
-        let transform = Affine::scale(scale) * page.initial_transform(true).to_kurbo();
+        let transform = Affine::scale(scale) * turned * page.initial_transform(true).to_kurbo();
         render_into(
             page,
             &cache,
@@ -106,6 +193,9 @@ pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u
             transform,
         );
         context.flush();
+        if cancelled() {
+            return None;
+        }
         let mut pixmap = Pixmap::new(columns, rows);
         context.render_with(
             &mut pixmap,
@@ -115,30 +205,51 @@ pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u
                 ..RasterizerSettings::default()
             },
         );
-        pixmap
+        Some(pixmap)
     }))
     .map_err(|_| Error::Unrenderable)?;
     doc.check_time()?;
-    png_rgb(&opaque_rgb(pixmap.data_as_u8_slice()), columns, rows)
+    let Some(pixmap) = drawn else {
+        return Ok(None);
+    };
+    Ok(Some(Raster {
+        width: u32::from(columns),
+        height: u32::from(rows),
+        pixels: opaque_rgba(pixmap.data_as_u8_slice()),
+    }))
 }
 
-/// Premultiplied RGBA pixels over white, as RGB.
-fn opaque_rgb(rgba: &[u8]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+/// Page `page_index` (from 0) rendered at `scale` pixels per point, as [`render`] renders it, to
+/// a PNG image, 8-bit RGB.
+///
+/// # Errors
+/// As [`render`].
+pub fn render_png(doc: &Document, page_index: usize, scale: f64) -> Result<Vec<u8>> {
+    let options = RenderOptions::new(scale);
+    match render(doc, page_index, &options, &|| false)? {
+        Some(raster) => raster.png(),
+        None => Err(Error::Unrenderable),
+    }
+}
+
+/// Premultiplied RGBA pixels over white, as opaque RGBA.
+fn opaque_rgba(rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
     for [r, g, b, a] in rgba.as_chunks::<4>().0 {
         let paper = 255 - a;
-        rgb.extend_from_slice(&[
+        out.extend_from_slice(&[
             r.saturating_add(paper),
             g.saturating_add(paper),
             b.saturating_add(paper),
+            255,
         ]);
     }
-    rgb
+    out
 }
 
-fn png_rgb(rgb: &[u8], width: u16, height: u16) -> Result<Vec<u8>> {
+fn png_rgb(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, u32::from(width), u32::from(height));
+    let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder
@@ -210,7 +321,7 @@ pub fn grayscale(data: &[u8], dpi: f32, options: &OpenOptions) -> Result<Vec<u8>
         };
         // A panic of the renderer is an error of this page, not of the process.
         let pixmap = catch_unwind(AssertUnwindSafe(|| {
-            render(
+            render_page(
                 page,
                 &cache,
                 &InterpreterSettings::default(),

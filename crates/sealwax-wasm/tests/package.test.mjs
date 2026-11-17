@@ -211,3 +211,30 @@ test("what goes with a flattening another engine makes", () => {
   const flattened = Document.fromBytes(marked);
   assert.equal(flattened.clearFlattenedForm(), 1);
 });
+
+test("pages render to canvas pixels, turned, and a cancelled rendering draws nothing", () => {
+  const page = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R >>",
+    stream("1 0 0 rg 0 0 100 100 re f"),
+  ]);
+  const doc = Document.fromBytes(page);
+  const image = doc.renderRgba(0, 1);
+  assert.equal(image.width, 200);
+  assert.equal(image.height, 100);
+  assert.ok(image.pixels instanceof Uint8ClampedArray);
+  assert.equal(image.pixels.length, 200 * 100 * 4);
+  // Red on the left half, white on the right, opaque.
+  assert.deepEqual([...image.pixels.slice(0, 4)], [255, 0, 0, 255]);
+  assert.deepEqual([...image.pixels.slice(199 * 4, 200 * 4)], [255, 255, 255, 255]);
+  const turned = doc.renderRgba(0, 1, { quarterTurns: 1 });
+  assert.equal(turned.width, 100);
+  assert.equal(turned.height, 200);
+  const token = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.store(token, 0, 1);
+  assert.equal(doc.renderRgba(0, 1, { cancel: token }), null);
+  Atomics.store(token, 0, 0);
+  assert.notEqual(doc.renderRgba(0, 1, { cancel: token }), null);
+  assert.throws(() => doc.renderRgba(0, 1, { quarterTurns: 0.5 }), RangeError);
+});

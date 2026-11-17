@@ -28,6 +28,12 @@ All notable changes to sealwax are recorded here. The format follows
   `rebuilt_for_redaction` makes a document of the pages alone, which keep only what draws them,
   without widgets or hidden annotations, their optional content kept. In Python and in
   WebAssembly too.
+- Rendering for a canvas: `sealwax_raster::render` gives RGBA pixels opaque over white (what
+  `ImageData` takes), turns the page by quarter turns added to its rotation (the very image of
+  the page carrying that rotation), and stops between its steps once `cancelled` says so,
+  drawing nothing. Python: `render_rgba` and `quarter_turns`; WebAssembly: `renderRgba`
+  (a `Uint8ClampedArray`; cancelled through an `Int32Array` over a `SharedArrayBuffer`) and
+  `quarterTurns`.
 - `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.
@@ -39,6 +45,8 @@ All notable changes to sealwax are recorded here. The format follows
   embedding ten whole TrueType fonts, reading a page's glyphs went from 23 ms to 1.3 ms.
 - Checking a page against the limits decodes a stream other pages share (a font program) once
   per document, and opening a document finds its structure streams with a vectorised search.
+- A modified document is saved and read again once for what reads its pages (rendering), until
+  it changes again: `Document::reopened_if_modified` keeps that copy, and returns it shared.
 - Drawings count as MuPDF's in two more cases: a box filled with its fourth side drawn back to
   its start, without `h`, is four lines (stroked only, it stays a rectangle); a curve whose
   control points lie on its ends is a line.
