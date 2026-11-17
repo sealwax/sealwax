@@ -32,6 +32,13 @@ All notable changes to sealwax are recorded here. The format follows
   turned by quarter turns, with their name and custom data, in the command form a signing page
   sends (`<add>`), exactly what `apply_xfdf` reads and draws: read back before it is returned. The
   same marks give the same PDF as a web viewer's export of them.
+- Free texts drawn with the TrueType fonts a caller gives (`ApplyOptions::fonts` and
+  `TextFonts`; `fonts` and `default_font` in Python, `fonts` and `defaultFont` in WebAssembly):
+  by the font the XFDF names (`Caveat`), and one for every other, embedded as a subset (a
+  composite font, `Identity-H`, the glyphs used kept in their place, the program's widths, a
+  `ToUnicode` map): each character the font has drawn as it is, and read back. A character it
+  lacks is drawn as its `?` and counted; `.notdef` is never shown. The documents convert to PDF/A
+  as before. Without fonts, Helvetica as before.
 
 ### Changed
 

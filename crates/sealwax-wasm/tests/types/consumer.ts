@@ -29,6 +29,7 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const changed: number[] = applied.pages;
   const marks: SignedMark[] = [{ kind: "freetext", pageIndex: 0, rect: [0, 0, 10, 10], name: "t", text: "x", rotation: 90 }];
   const xfdf: string = xfdfFor(marks, { deleted: [[0, "p"]] });
+  doc.applyXfdf(xfdf, { fonts: { Caveat: bytes }, defaultFont: bytes });
   try {
     doc.flatten();
   } catch (error) {

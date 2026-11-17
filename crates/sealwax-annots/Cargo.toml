@@ -17,6 +17,8 @@ sealwax-core.workspace = true
 sealwax-text.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+# The TrueType fonts a caller gives for free texts: `cmap`, advances, metrics, names.
+read-fonts = "0.46"
 flate2 = "1"
 quick-xml = "0.42.0"
 png = "0.18.1"

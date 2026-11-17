@@ -139,6 +139,21 @@ def test_the_xfdf_written_for_a_signed_field_is_what_apply_xfdf_draws():
         sealwax.xfdf_for([{**marks[1], "align": "justify"}])
 
 
+def test_a_font_that_is_no_truetype_program_is_refused_and_nothing_changes():
+    doc = sealwax.Document.from_bytes(text_page())
+    xfdf = sealwax.xfdf_for([
+        {"kind": "freetext", "page_index": 0, "rect": (300, 300, 420, 330), "name": "t1", "text": "Łukasz",
+         "font": "Caveat"},
+    ])
+    with pytest.raises(ValueError):
+        doc.apply_xfdf(xfdf, fonts={"Caveat": b"not a font"})
+    with pytest.raises(ValueError):
+        sealwax.apply_xfdf_bytes(text_page(), xfdf, default_font=b"not a font")
+    assert not doc.is_modified
+    applied = doc.apply_xfdf(xfdf, fonts={}, default_font=None)
+    assert applied["characters_replaced"] == 1
+
+
 def test_merge_names_the_source_that_failed():
     merged = sealwax.merge_bytes([text_page(), text_page(annots="[6 0 R]")])
     assert sealwax.Document.from_bytes(merged).page_count == 2

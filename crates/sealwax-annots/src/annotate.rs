@@ -242,6 +242,7 @@ pub fn add_annotation(doc: &mut Document, annotation: &NewAnnotation) -> Result<
                 border_color: (annotation.width > 0.0).then(|| annotation.color.to_vec()),
                 fill: annotation.fill.map(|fill| fill.to_vec()),
                 rotation: 0,
+                font: None,
             };
             draw::free_text(&free, width, height).0
         }

@@ -485,6 +485,21 @@ fn render_options(
     }
 }
 
+/// The fonts free texts are drawn with.
+fn text_fonts(
+    fonts: Option<HashMap<String, Vec<u8>>>,
+    default_font: Option<Vec<u8>>,
+) -> pdf::annots::TextFonts {
+    let mut set = pdf::annots::TextFonts::new();
+    for (name, program) in fonts.unwrap_or_default() {
+        set = set.named(name, program);
+    }
+    match default_font {
+        Some(program) => set.default_font(program),
+        None => set,
+    }
+}
+
 fn applied_dict<'py>(
     py: Python<'py>,
     applied: &pdf::annots::Applied,
@@ -1335,20 +1350,27 @@ impl Document {
     /// Apply the XFDF a signing page exported: flatten what the document has first when
     /// `flatten` is set, then draw the XFDF's pictures and texts. `remove_annotations` takes the
     /// document's own annotations (links but) and form out first, nothing of them painted.
-    /// Several XFDF apply one after the other. `pages` lists the pages that changed (from 0). Raises XfdfError for an XFDF outside a signing page's subset, or a
+    /// Several XFDF apply one after the other. `pages` lists the pages that changed (from 0).
+    /// `fonts` (`{"Caveat": bytes}`, by the font the XFDF names) and `default_font` (for every
+    /// other) are TrueType programs the free texts are drawn with, embedded: each character the
+    /// font has drawn as it is; without them, Helvetica. `ValueError` for a font that is no
+    /// TrueType program. Raises XfdfError for an XFDF outside a signing page's subset, or a
     /// mark that cannot be placed; nothing is changed then.
-    #[pyo3(signature = (xfdf, *, flatten=true, remove_annotations=false))]
+    #[pyo3(signature = (xfdf, *, flatten=true, remove_annotations=false, fonts=None, default_font=None))]
     fn apply_xfdf<'py>(
         &mut self,
         py: Python<'py>,
         xfdf: String,
         flatten: bool,
         remove_annotations: bool,
+        fonts: Option<HashMap<String, Vec<u8>>>,
+        default_font: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let inner = &mut self.inner;
         let options = pdf::annots::ApplyOptions::new()
             .flatten(flatten)
-            .remove_annotations(remove_annotations);
+            .remove_annotations(remove_annotations)
+            .fonts(text_fonts(fonts, default_font));
         let applied = run(py, || {
             Ok(pdf::annots::apply_xfdf_with(
                 inner,
@@ -1541,19 +1563,26 @@ fn flatten_bytes<'py>(
 /// `pdf_content` with a signing page's XFDF applied (what it has flattened first when
 /// `flatten` is set, taken out first when `remove_annotations` is).
 #[pyfunction]
-#[pyo3(signature = (pdf_content, xfdf_data, *, flatten=true, remove_annotations=false, limits=None))]
+#[pyo3(signature = (
+    pdf_content, xfdf_data, *, flatten=true, remove_annotations=false, fonts=None,
+    default_font=None, limits=None
+))]
+#[allow(clippy::too_many_arguments)]
 fn apply_xfdf_bytes<'py>(
     py: Python<'py>,
     pdf_content: Vec<u8>,
     xfdf_data: String,
     flatten: bool,
     remove_annotations: bool,
+    fonts: Option<HashMap<String, Vec<u8>>>,
+    default_font: Option<Vec<u8>>,
     limits: Option<PyRef<'_, Limits>>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let options = options(None, None, limits.as_deref());
     let apply = pdf::annots::ApplyOptions::new()
         .flatten(flatten)
-        .remove_annotations(remove_annotations);
+        .remove_annotations(remove_annotations)
+        .fonts(text_fonts(fonts, default_font));
     let saved = run(py, || {
         let mut doc = pdf::Document::open(pdf_content, &options)?;
         pdf::annots::apply_xfdf_with(&mut doc, &xfdf_data, &apply, |_| None)?;

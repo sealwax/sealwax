@@ -244,6 +244,12 @@ export interface ApplyXfdfOptions {
   /** Take the document's annotations (links but) and form out first, nothing of them painted:
    * the pages show their content and the XFDF alone. */
   removeAnnotations?: boolean;
+  /** TrueType programs for the free texts, by the font the XFDF names (`{ Caveat: bytes }`),
+   * embedded: each character the font has drawn as it is. */
+  fonts?: Record<string, Uint8Array>;
+  /** The TrueType program for the free texts whose font has none of its own; without it,
+   * Helvetica (the characters WinAnsiEncoding lacks drawn as `?`). */
+  defaultFont?: Uint8Array;
 }
 
 /** What `applyXfdf` did. */
@@ -1251,9 +1257,31 @@ impl Document {
                 .and_then(|o| get(o, key))
                 .map(|v| v.is_truthy())
         };
+        let mut fonts = sealwax_annots::TextFonts::new();
+        if let Some(named) = options.as_ref().and_then(|o| get(o, "fonts")) {
+            if !named.is_object() {
+                return Err(argument("fonts must be { name: Uint8Array }"));
+            }
+            for entry in Object::entries(&Object::from(named)).iter() {
+                let pair = Array::from(&entry);
+                match (pair.get(0).as_string(), pair.get(1)) {
+                    (Some(name), program) if program.is_instance_of::<Uint8Array>() => {
+                        fonts = fonts.named(name, Uint8Array::from(program).to_vec());
+                    }
+                    _ => return Err(argument("fonts must be { name: Uint8Array }")),
+                }
+            }
+        }
+        if let Some(program) = options.as_ref().and_then(|o| get(o, "defaultFont")) {
+            if !program.is_instance_of::<Uint8Array>() {
+                return Err(argument("defaultFont must be a Uint8Array"));
+            }
+            fonts = fonts.default_font(Uint8Array::from(program).to_vec());
+        }
         let apply = ApplyOptions::new()
             .flatten(flag("flatten").unwrap_or(true))
-            .remove_annotations(flag("removeAnnotations").unwrap_or(false));
+            .remove_annotations(flag("removeAnnotations").unwrap_or(false))
+            .fonts(fonts);
         let applied = apply_xfdf_with(&mut self.inner, xfdf, &apply, |_| None)
             .map_err(|error| annots_error(&error))?;
         let object = Object::new();

@@ -2,6 +2,7 @@
 //! check mark, a box, ink strokes, and the free text of an XFDF. Text is Helvetica in
 //! WinAnsiEncoding, whatever `/DA` names.
 
+use crate::font::{Helvetica, TextFont};
 use crate::text::{self, number};
 use crate::xfdf::{Align, VerticalAlign};
 
@@ -196,6 +197,11 @@ fn split_lines(lines: &[String]) -> Vec<String> {
 
 /// `lines` wrapped at word boundaries to `width` points at `size`.
 fn wrapped(lines: &[String], width: f64, size: f64) -> Vec<String> {
+    wrapped_with(lines, width, size, &Helvetica)
+}
+
+/// The lines broken at spaces to fit `width`, measured in `font`.
+fn wrapped_with(lines: &[String], width: f64, size: f64, font: &dyn TextFont) -> Vec<String> {
     let mut out = Vec::new();
     let mut ignored = 0;
     for line in lines {
@@ -207,7 +213,7 @@ fn wrapped(lines: &[String], width: f64, size: f64) -> Vec<String> {
                 format!("{current} {word}")
             };
             if !current.is_empty()
-                && text::width(&text::encode(&candidate, &mut ignored), size) > width
+                && font.width(&font.encode(&candidate, &mut ignored), size) > width
             {
                 out.push(std::mem::replace(&mut current, word.to_owned()));
             } else {
@@ -220,8 +226,13 @@ fn wrapped(lines: &[String], width: f64, size: f64) -> Vec<String> {
 }
 
 fn tm(left: f64, baseline: f64, encoded: &[u8]) -> Vec<u8> {
+    shown_at(left, baseline, &text::literal(encoded))
+}
+
+/// `operand` shown with its baseline starting at (`left`, `baseline`).
+fn shown_at(left: f64, baseline: f64, operand: &[u8]) -> Vec<u8> {
     let mut line = format!("1 0 0 1 {} {} Tm ", number(left), number(baseline)).into_bytes();
-    line.extend_from_slice(&text::literal(encoded));
+    line.extend_from_slice(operand);
     line.extend_from_slice(b" Tj");
     line
 }
@@ -386,16 +397,27 @@ const BOTTOM_DROP: f64 = 0.8;
 /// colour, a padding of twice the border's width, the lines the viewer showed when it gave them, else its contents wrapped to the rectangle; its border and background when it has
 /// them. Returns the drawing and the characters WinAnsiEncoding does not have.
 pub(crate) fn free_text(free: &crate::xfdf::Text, width: f64, height: f64) -> (Vec<u8>, usize) {
+    free_text_with(free, width, height, &Helvetica)
+}
+
+/// [`free_text`] in `font`: the characters it does not have are counted.
+pub(crate) fn free_text_with(
+    free: &crate::xfdf::Text,
+    width: f64,
+    height: f64,
+    font: &dyn TextFont,
+) -> (Vec<u8>, usize) {
     let mut replaced = 0;
     let size = free.size;
     let padding = 2.0 * free.border;
     let inner = (width - 2.0 * padding).max(1.0);
     let lines = match &free.lines {
         Some(lines) if same_words(lines, &free.contents) => aligned_lines(lines, &free.contents),
-        _ => wrapped(
+        _ => wrapped_with(
             &split_lines(std::slice::from_ref(&free.contents)),
             inner,
             size,
+            font,
         ),
     };
     let leading = size * LINE_HEIGHT;
@@ -430,17 +452,17 @@ pub(crate) fn free_text(free: &crate::xfdf::Text, width: f64, height: f64) -> (V
         );
     }
     let fill = color(&free.color, false).unwrap_or_else(|| "0 g".to_owned());
-    drawing.push(format!("BT /Helv {} Tf {fill}", number(size)).into_bytes());
+    drawing.push(format!("BT /{} {} Tf {fill}", font.resource(), number(size)).into_bytes());
     let mut baseline = first_baseline;
     for line in &lines {
-        let encoded = text::encode(line, &mut replaced);
-        let line_width = text::width(&encoded, size);
+        let encoded = font.encode(line, &mut replaced);
+        let line_width = font.width(&encoded, size);
         let left = match free.align {
             Align::Left => padding,
             Align::Center => (width - line_width) / 2.0,
             Align::Right => width - padding - line_width,
         };
-        drawing.push(tm(left, baseline, &encoded));
+        drawing.push(shown_at(left, baseline, &font.operand(&encoded)));
         baseline -= leading;
     }
     drawing.extend([b"ET".to_vec(), b"Q".to_vec()]);
@@ -571,6 +593,7 @@ mod tests {
             border_color: None,
             fill: None,
             rotation: 0,
+            font: None,
         };
         let (drawing, replaced) = free_text(&free, 120.0, 25.0);
         let drawing = String::from_utf8(drawing).unwrap();
