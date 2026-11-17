@@ -94,3 +94,27 @@ def test_pixels_for_a_canvas_and_quarter_turns():
     width, height, _ = document.render_rgba(0, 1.0, quarter_turns=1)
     assert (width, height) == (100, 200)
     assert document.render_png(0, 1.0, quarter_turns=2)[1:4] == b"PNG"
+
+
+def test_annotations_made_are_drawn_and_kept_on_save():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>",
+    ]))
+    document.add_annotation(0, "square", rect=(10, 10, 90, 90), color=(1, 0, 0), fill=(0, 0, 1), width=4)
+    document.add_annotation(0, "highlight", quads=[(110, 60, 190, 60, 110, 40, 190, 40)], author="Zoé")
+    document.add_annotation(0, "line", points=[(110, 20), (190, 20)], width=2)
+    for bad in [{"kind": "line", "points": [(0, 0)]}, {"kind": "ink"}, {"kind": "arrow"}]:
+        kind = bad.pop("kind")
+        try:
+            document.add_annotation(0, kind, **bad)  # type: ignore[arg-type]
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{kind} accepted")
+    width, height, pixels = sealwax.Document.from_bytes(document.save()).render_rgba(0, 1.0)
+    at = lambda x, y: tuple(pixels[4 * (y * width + x): 4 * (y * width + x) + 3])  # noqa: E731
+    assert at(50, 50) == (0, 0, 255), "the square's inside"
+    assert at(150, 50) == (255, 255, 0), "the highlight"
+    assert at(150, 80)[0] < 80, "the line"

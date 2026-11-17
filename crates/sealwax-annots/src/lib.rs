@@ -12,6 +12,7 @@
 //!   each with its description if it has one.
 //! - [`flatten`] paints every annotation into its page; links stay.
 
+mod annotate;
 mod create;
 mod draw;
 mod fields;
@@ -31,6 +32,7 @@ use std::fmt;
 
 use sealwax_core::{Dict, Document, ObjId, Object, PageGeometry, Rect};
 
+pub use annotate::{AnnotationKind, NewAnnotation, add_annotation};
 pub use create::{NewField, NewFieldKind, add_field};
 pub use fields::{
     Field, FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Filled, Written,

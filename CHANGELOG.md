@@ -8,6 +8,11 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Annotations made with their appearance (`sealwax_annots::add_annotation`;
+  `Document.add_annotation` in Python, `addAnnotation` in WebAssembly): ink, highlight (its
+  colours multiplied, the text showing through), underline, strike out, squiggly, square, circle,
+  line, polygon, polyline and free text, in the page's user space, with their colour, fill,
+  width, opacity, author and contents. Every reader draws them alike, and flattening keeps them.
 - PDF/A: a composite font without a program gets one when it is encoded `Identity-H` or
   `Identity-V` and its `ToUnicode` CMap says what its CIDs mean: the standard font that stands in
   for it (Arial's is Helvetica's), its glyphs put in the order of the CIDs (a CFF program read

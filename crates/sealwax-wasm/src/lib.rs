@@ -121,6 +121,39 @@ export interface Filled {
   written: Record<string, Written>;
 }
 
+export interface NewAnnotation {
+  pageIndex: number;
+  kind:
+    | "ink"
+    | "highlight"
+    | "underline"
+    | "strikeout"
+    | "squiggly"
+    | "square"
+    | "circle"
+    | "line"
+    | "polygon"
+    | "polyline"
+    | "freetext";
+  /** Ink: lists of [x, y] points. */
+  strokes?: [number, number][][];
+  /** Text markup: per line top-left, top-right, bottom-left, bottom-right, eight numbers. */
+  quads?: number[][];
+  /** A line's two ends, a polygon's or polyline's points. */
+  points?: [number, number][];
+  /** A square, circle or free text: [x1, y1, x2, y2]. */
+  rect?: Box;
+  text?: string;
+  size?: number;
+  /** [r, g, b] from 0 to 1. */
+  color?: [number, number, number];
+  fill?: [number, number, number];
+  width?: number;
+  opacity?: number;
+  author?: string;
+  contents?: string;
+}
+
 export interface TemplateContent {
   pages: number;
   /** The fields, each name once. */
@@ -815,6 +848,136 @@ impl Document {
         set(&object, "fields", count(content.fields));
         set(&object, "annotations", count(content.annotations));
         Ok(object)
+    }
+
+    /// Add an annotation, its appearance drawn, in the page's default user space (unrotated,
+    /// y up): `kind` "ink" (`strokes`, lists of [x, y] points), "highlight", "underline",
+    /// "strikeout" or "squiggly" (`quads`: per line the corners top-left, top-right, bottom-left,
+    /// bottom-right, eight numbers), "square" or "circle" (`rect`), "line" (`points`, its two
+    /// ends), "polygon" or "polyline" (`points`), "freetext" (`rect`, `text`, `size`, 12 by
+    /// default). `color` ([r, g, b] from 0 to 1) draws the strokes, markup, border and text,
+    /// black by default and yellow for a highlight; `fill` the inside of a square, circle or
+    /// polygon, or a free text's background; `width` the strokes and borders (1 by default, 0:
+    /// no border); `opacity` from 0 to 1.
+    ///
+    /// # Errors
+    /// A `RangeError` for a missing or bad argument.
+    #[wasm_bindgen(js_name = addAnnotation)]
+    pub fn add_annotation(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "NewAnnotation")] annotation: JsValue,
+    ) -> Result<(), JsValue> {
+        use sealwax_annots::AnnotationKind as Kind;
+        let numbers_of = |value: &JsValue| -> Option<Vec<f64>> {
+            if !Array::is_array(value) {
+                return None;
+            }
+            Array::from(value).iter().map(|v| v.as_f64()).collect()
+        };
+        let point_list = |value: &JsValue| -> Option<Vec<[f64; 2]>> {
+            if !Array::is_array(value) {
+                return None;
+            }
+            Array::from(value)
+                .iter()
+                .map(|point| match numbers_of(&point)?.as_slice() {
+                    [x, y] => Some([*x, *y]),
+                    _ => None,
+                })
+                .collect()
+        };
+        let field = |key: &str| get(&annotation, key).filter(|v| !v.is_undefined() && !v.is_null());
+        let kind_name = field("kind")
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let missing = |what: &str| argument(&format!("a {kind_name} needs {what}"));
+        let quads = || -> Result<Vec<[f64; 8]>, JsValue> {
+            let value = field("quads").ok_or_else(|| missing("quads"))?;
+            if !Array::is_array(&value) {
+                return Err(missing("quads"));
+            }
+            Array::from(&value)
+                .iter()
+                .map(|quad| {
+                    numbers_of(&quad)
+                        .and_then(|n| <[f64; 8]>::try_from(n).ok())
+                        .ok_or_else(|| argument("each quad must be eight numbers"))
+                })
+                .collect()
+        };
+        let rect = || -> Result<[f64; 4], JsValue> {
+            field("rect")
+                .and_then(|r| numbers_of(&r))
+                .and_then(|n| <[f64; 4]>::try_from(n).ok())
+                .ok_or_else(|| missing("rect: [x1, y1, x2, y2]"))
+        };
+        let points = || -> Result<Vec<[f64; 2]>, JsValue> {
+            field("points")
+                .and_then(|p| point_list(&p))
+                .ok_or_else(|| missing("points: [x, y][]"))
+        };
+        let rgb = |key: &str| -> Result<Option<[f64; 3]>, JsValue> {
+            match field(key) {
+                None => Ok(None),
+                Some(value) => numbers_of(&value)
+                    .and_then(|n| <[f64; 3]>::try_from(n).ok())
+                    .map(Some)
+                    .ok_or_else(|| argument("a colour must be [r, g, b]")),
+            }
+        };
+        let kind = match kind_name.as_str() {
+            "ink" => {
+                let value = field("strokes").ok_or_else(|| missing("strokes"))?;
+                if !Array::is_array(&value) {
+                    return Err(missing("strokes"));
+                }
+                let strokes: Option<Vec<Vec<[f64; 2]>>> =
+                    Array::from(&value).iter().map(|s| point_list(&s)).collect();
+                Kind::Ink {
+                    strokes: strokes.ok_or_else(|| missing("strokes: [x, y][][]"))?,
+                }
+            }
+            "highlight" => Kind::Highlight { quads: quads()? },
+            "underline" => Kind::Underline { quads: quads()? },
+            "strikeout" => Kind::StrikeOut { quads: quads()? },
+            "squiggly" => Kind::Squiggly { quads: quads()? },
+            "square" => Kind::Square { rect: rect()? },
+            "circle" => Kind::Circle { rect: rect()? },
+            "line" => match points()?.as_slice() {
+                [from, to] => Kind::Line {
+                    from: *from,
+                    to: *to,
+                },
+                _ => return Err(argument("a line needs two points")),
+            },
+            "polygon" => Kind::Polygon { points: points()? },
+            "polyline" => Kind::PolyLine { points: points()? },
+            "freetext" => Kind::FreeText {
+                rect: rect()?,
+                text: field("text")
+                    .and_then(|v| v.as_string())
+                    .ok_or_else(|| missing("text"))?,
+                size: field("size").and_then(|v| v.as_f64()).unwrap_or(12.0),
+            },
+            _ => return Err(argument("unknown annotation kind")),
+        };
+        let page = field("pageIndex")
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+            .ok_or_else(|| argument("pageIndex must be a whole number"))?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mut new = sealwax_annots::NewAnnotation::new(page as usize, kind)
+            .fill(rgb("fill")?)
+            .width(field("width").and_then(|v| v.as_f64()).unwrap_or(1.0))
+            .opacity(field("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0))
+            .author(field("author").and_then(|v| v.as_string()))
+            .contents(field("contents").and_then(|v| v.as_string()));
+        if let Some(color) = rgb("color")? {
+            new = new.color(color);
+        }
+        sealwax_annots::add_annotation(&mut self.inner, &new)
+            .map(|_| ())
+            .map_err(|error| annots_error(&error))
     }
 
     /// Create a field: `kind` "text", "date" (a text field carrying Acrobat's `yyyy-mm-dd` date
