@@ -15,6 +15,14 @@ All notable changes to sealwax are recorded here. The format follows
   the document it rendered last, until it renders another, `release_cache()` in Python, or, in
   WebAssembly, a document freed. A scanned page's image is still decoded on every render.
 
+### Fixed
+
+- `drawings()` leaves out a line that goes nowhere (an `l`, or a curve made a line, ending where
+  it starts, as written), as MuPDF does, unless it comes right after a move, where it stays a line
+  of no length. Since 0.2.0 made degenerate curves lines, the outlines of letters drawn as paths
+  added such lines: 6.7% more lines than PyMuPDF on a corpus of forms. A line of no length that
+  is kept now comes as written, its ends equal.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added
