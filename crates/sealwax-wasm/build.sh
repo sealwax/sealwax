@@ -26,20 +26,79 @@ rm -rf "${out:?}"
 wasm-bindgen --target web --out-dir "$out" --out-name sealwax \
     "$root/target/wasm32-unknown-unknown/wasm/sealwax_wasm.wasm"
 
+# Binaryen's optimizer, size first: a quarter of the module less to compile (7.7 MB to 5.7 MB;
+# 2.32 MB to 2.20 MB gzipped). The one on PATH, else Binaryen's npm package at a pinned version.
+if command -v wasm-opt >/dev/null 2>&1; then
+    optimize=(wasm-opt)
+else
+    optimize=(npx --yes -p binaryen@132.0.0 wasm-opt)
+fi
+"${optimize[@]}" -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
+    --enable-mutable-globals --enable-reference-types --enable-multivalue \
+    "$out/sealwax_bg.wasm" -o "$out/sealwax_bg.wasm"
+
 # The error classes the module builds: re-exported from the module's own copy, so that
 # `instanceof` holds, with their declarations beside them.
 errors="$(cd "$out" && find snippets -name errors.js | head -n 1)"
 cp "$here/js/errors.d.ts" "$out/$(dirname "$errors")/errors.d.ts"
+# A panic stops the module: its functions guarded, `reset()` to make another (see js/patch.mjs).
+node "$here/js/patch.mjs" "$out/sealwax.js" "./$errors"
 cat > "$out/index.js" <<JS
+import init, { __sealwax_forget, __sealwax_is_crashed } from "./sealwax.js";
+
 export { default, initSync } from "./sealwax.js";
 export * from "./sealwax.js";
 export * from "./$errors";
+
+/** Whether the module has stopped, a panic aborting it: every call throws until \`reset()\`. */
+export function isCrashed() {
+  return __sealwax_is_crashed();
+}
+
+/** Make the module anew, as \`init\` does: the documents opened before are lost, open them again. */
+export async function reset(module_or_path) {
+  __sealwax_forget();
+  return init(module_or_path);
+}
 JS
 cat > "$out/index.d.ts" <<TS
+import type { InitInput, InitOutput } from "./sealwax.js";
+
 export { default, initSync } from "./sealwax.js";
 export * from "./sealwax.js";
 export * from "./$errors";
+
+/** Whether the module has stopped, a panic aborting it: every call throws until \`reset()\`. */
+export function isCrashed(): boolean;
+
+/** Make the module anew, as \`init\` does: the documents opened before are lost, open them again. */
+export function reset(
+  module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>,
+): Promise<InitOutput>;
 TS
+# Node's fetch does not read file: URLs: under Node the package reads its module itself, and is
+# ready once imported.
+cat > "$out/node.js" <<JS
+import { readFile } from "node:fs/promises";
+
+import init, { reset as resetWith } from "./index.js";
+
+export * from "./index.js";
+
+const own = async () => ({ module_or_path: await readFile(new URL("./sealwax_bg.wasm", import.meta.url)) });
+
+await init(await own());
+
+/** As in a browser; the module read from the package when none is given. */
+export default async function initialize(module_or_path) {
+  return init(module_or_path ?? (await own()));
+}
+
+/** Make the module anew, read from the package when none is given. */
+export async function reset(module_or_path) {
+  return resetWith(module_or_path ?? (await own()));
+}
+JS
 
 # Licences: sealwax's, the third-party code and data copied into it, and the crates compiled into
 # the module (cargo-about; the release build installs it).
@@ -64,7 +123,7 @@ cat > "$out/package.json" <<JSON
   "main": "./index.js",
   "types": "./index.d.ts",
   "exports": {
-    ".": { "types": "./index.d.ts", "default": "./index.js" },
+    ".": { "types": "./index.d.ts", "node": "./node.js", "default": "./index.js" },
     "./sealwax_bg.wasm": "./sealwax_bg.wasm"
   },
   "files": ["*.js", "*.d.ts", "*.wasm", "snippets", "licenses", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"],

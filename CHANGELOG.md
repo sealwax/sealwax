@@ -8,6 +8,15 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Pages turned in place (`Document::rotate_pages`; `rotate_pages` in Python, `rotatePages` in
+  WebAssembly): `/Rotate` changes and the document keeps everything it has (outline, structure,
+  information, metadata), unlike `arrange`, which makes a new one.
+- Encrypted documents refused when asked (`OpenOptions::refuse_encrypted`; `refuse_encrypted` in
+  Python, `refuseEncrypted` in WebAssembly, for opening, merging and inserting pages): an error of
+  its own (`Error::Encrypted`, `PdfEncryptedError`), as sealwax saves documents unencrypted.
+- The npm package under Node: its `node` export reads the module from the package and is ready
+  once imported. After a panic, every call throws `SealwaxCrashedError` until `reset()` makes the
+  module anew; a document opened before is refused rather than read in the new memory.
 - Redaction (`sealwax_text::redact`; `Document.redact` in Python, `doc.redact` in WebAssembly):
   what a page draws under areas is taken out of its content, rather than covered. Glyphs: each
   string split into codes and each code placed as hayro reads it, a glyph whose box (its advance
@@ -95,6 +104,9 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Changed
 
+- The WebAssembly module is optimized by Binaryen (`wasm-opt -Oz`): 7.7 MB to 5.7 MB, 2.32 MB to
+  2.20 MB gzipped. Its optional parameters are declared optional (`options?:`), and its
+  declarations are compiled by the package's tests.
 - `fill_fields` gives a check box or radio button the state the value means: its name (bytes
   or text, `Français` finding `/Fran#E7ais`), the export value of a widget (`/Opt`), a word that
   unchecks (`off`, `no`, `false`, `0`, `non`…) or, for a button with one state besides `Off`, a
@@ -119,6 +131,7 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
+- The package's TypeScript declarations compile again: `RenderedPage` was left open.
 - A word inside an array of a content stream is read as an operand, as readers read it
   (`[(a) 0 Tc (b)] TJ` is one `TJ`): such text gets its font named in `glyphs`.
 - Pages taken out (`extract_pages`, `append_page_range`) no longer carry the widgets of the pages

@@ -327,3 +327,56 @@ test("redaction marks are applied and areas redacted", () => {
   assert.deepEqual(rebuilt.redact(0, [[60, 690, 80, 715]], { images: "keep" }).glyphs, 1);
   assert.throws(() => rebuilt.redact(0, [[1, 2]]), RangeError);
 });
+
+test("pages turn in place, the outline kept", () => {
+  const outlined = build([
+    "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 600 800] >>",
+    "<< /Type /Page /Parent 2 0 R >>",
+    "<< /Type /Page /Parent 2 0 R >>",
+    "<< /Type /Outlines /First 6 0 R /Last 6 0 R /Count 1 >>",
+    "<< /Title (Chapter) /Parent 5 0 R /Dest [3 0 R /Fit] >>",
+  ]);
+  const doc = Document.fromBytes(outlined);
+  doc.rotatePages([[1, 1], [1, 1], [0, -1]]);
+  assert.deepEqual(doc.geometry().map((page) => page.rotation), [270, 180]);
+  const saved = Document.fromBytes(doc.save());
+  assert.deepEqual(saved.geometry().map((page) => page.rotation), [270, 180]);
+  assert.equal(saved.outline()[0].title, "Chapter");
+  assert.throws(() => doc.rotatePages([[2, 1]]), RangeError);
+});
+
+test("an encrypted document is refused when asked, its sources too", () => {
+  const protectedPdf = new Uint8Array(
+    readFileSync(new URL("../../sealwax-core/tests/data/owner-protected.pdf", import.meta.url)),
+  );
+  // Opened by default, its user password empty.
+  assert.equal(Document.fromBytes(protectedPdf).pageCount(), 1);
+  const refused = (error) => error instanceof sealwax.PdfEncryptedError && error instanceof PdfReadError;
+  assert.throws(() => Document.fromBytes(protectedPdf, { refuseEncrypted: true }), refused);
+  assert.throws(() => mergeBytes([protectedPdf], { refuseEncrypted: true }), refused);
+  const plain = Document.fromBytes(Document.fromBytes(protectedPdf).save());
+  assert.throws(() => plain.insertPages(0, [protectedPdf], { refuseEncrypted: true }), refused);
+  assert.equal(Document.fromBytes(plain.insertPages(0, [protectedPdf])).pageCount(), 2);
+});
+
+// Last: a panic stops the module, and reset() makes another.
+test("after a panic every call throws until reset(), and older documents stay refused", async () => {
+  const bytes = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+  ]);
+  const before = Document.fromBytes(bytes);
+  assert.equal(sealwax.isCrashed(), false);
+  assert.throws(() => sealwax.__panicForTests(), sealwax.SealwaxCrashedError);
+  assert.equal(sealwax.isCrashed(), true);
+  assert.throws(() => before.pageCount(), sealwax.SealwaxCrashedError);
+  assert.throws(() => Document.fromBytes(bytes), sealwax.SealwaxCrashedError);
+  await sealwax.reset({ module_or_path: readFileSync(new URL("sealwax_bg.wasm", pkg)) });
+  assert.equal(sealwax.isCrashed(), false);
+  assert.equal(Document.fromBytes(bytes).pageCount(), 1);
+  // A document of the stopped module means nothing in the new one.
+  assert.throws(() => before.pageCount(), sealwax.SealwaxCrashedError);
+  assert.throws(() => before.free(), sealwax.SealwaxCrashedError);
+});

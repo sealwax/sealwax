@@ -135,4 +135,7 @@ jobs:
       - name: Build the npm package
         run: crates/sealwax-wasm/build.sh
       - name: Test it under Node
-        run: node --test crates/sealwax-wasm/tests/package.test.mjs
+        run: node --test crates/sealwax-wasm/tests/package.test.mjs crates/sealwax-wasm/tests/node.test.mjs
+      # Its declarations compile in a project that imports them (TypeScript pinned).
+      - name: Type-check a consumer
+        run: npx --yes -p typescript@5.8.3 tsc -p crates/sealwax-wasm/tests/types

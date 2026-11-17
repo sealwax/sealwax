@@ -74,3 +74,37 @@ def test_photos_become_pages_turned_as_they_show():
         pass
     else:
         raise AssertionError("no photo read made a document")
+
+
+def test_pages_turn_in_place_and_encrypted_documents_are_refused_when_asked():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 600 800] >>",
+        "<< /Type /Page /Parent 2 0 R >>",
+        "<< /Type /Page /Parent 2 0 R >>",
+        "<< /Type /Outlines /First 6 0 R /Last 6 0 R /Count 1 >>",
+        "<< /Title (Chapter) /Parent 5 0 R /Dest [3 0 R /Fit] >>",
+    ]))
+    document.rotate_pages([(0, 1), (1, -1)])
+    saved = sealwax.Document.from_bytes(document.save())
+    assert [page.rotation for page in saved.geometry()] == [90, 270]
+    assert saved.outline()[0]["title"] == "Chapter"
+    try:
+        document.rotate_pages([(5, 1)])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a page the document does not have was turned")
+    protected = (PHOTOS.parents[2] / "sealwax-core" / "tests" / "data" / "owner-protected.pdf").read_bytes()
+    assert sealwax.Document.from_bytes(protected).page_count == 1
+    for refused in (
+        lambda: sealwax.Document.from_bytes(protected, refuse_encrypted=True),
+        lambda: sealwax.merge_bytes([protected], refuse_encrypted=True),
+        lambda: saved.insert_pages(0, [protected], refuse_encrypted=True),
+    ):
+        try:
+            refused()
+        except sealwax.PdfEncryptedError as error:
+            assert isinstance(error, sealwax.PdfReadError)
+        else:
+            raise AssertionError("an encrypted document was accepted")

@@ -14,3 +14,12 @@ export class PdfTimeoutError extends PdfLimitError {}
 export class XfdfError extends PdfError {}
 /** A field to create is named as one the form already has. */
 export class FieldNameTakenError extends PdfError {}
+/** The document is encrypted, and encrypted documents were refused (`refuseEncrypted`). */
+export class PdfEncryptedError extends PdfReadError {}
+/**
+ * The WebAssembly module stopped, a panic aborting it: every call throws this until `reset()`,
+ * and the documents opened before are lost.
+ */
+export class SealwaxCrashedError extends Error {
+  constructor(cause?: unknown, message?: string);
+}
