@@ -20,12 +20,21 @@ use std::ops::Range;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use hayro_font::{Font, FontCache};
-use hayro_interpret::InterpreterSettings;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use hayro_interpret::font::GlyphRun;
+use hayro_interpret::hayro_syntax::Pdf;
+use hayro_interpret::hayro_syntax::content::TypedIter;
 use hayro_interpret::hayro_syntax::object::{
     Array, Dict as HayroDict, ObjectIdentifier, Stream as HayroStream,
 };
 use hayro_interpret::hayro_syntax::page::Resources;
+use hayro_interpret::kurbo::BezPath;
 use hayro_interpret::kurbo::{Affine, Point, Rect as KurboRect, Shape as _, Vec2};
+use hayro_interpret::{
+    BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageData, ImageDrawProps,
+    InterpreterCache, InterpreterSettings, SoftMask, interpret,
+};
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Stream};
 
 use crate::scan::{Op, Operand, operands, operators};
@@ -37,12 +46,15 @@ const DESCENT: f64 = 0.2;
 const ASCENT: f64 = 0.8;
 /// How deep form XObjects are followed.
 const MAX_DEPTH: usize = 12;
+/// The most pixels an image is decoded with to blank some (a page scanned at 600 dpi has 35
+/// million): a larger one under an area is taken out whole.
+const MAX_BLANKED_PIXELS: u64 = 1 << 26;
 
-/// What [`redact_text`] took out.
+/// What [`redact`] took out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
-pub struct RedactedText {
+pub struct Redacted {
     /// Glyphs taken out.
     pub glyphs: usize,
     /// Text-showing operators written again.
@@ -52,12 +64,68 @@ pub struct RedactedText {
     /// Strings taken out whole because their font could not be read: where each glyph lies is
     /// not known, only where the string starts.
     pub strings_unread: usize,
+    /// Images drawn under an area, written anew with their pixels there blanked.
+    pub images: usize,
+    /// Images drawn under an area and taken out whole: asked for, or not decoded.
+    pub images_removed: usize,
+    /// Paths painted under an area, taken out.
+    pub paths: usize,
 }
 
-/// Take out of page `page_index` (from 0) the glyphs drawn under `areas`, rectangles in the
-/// page's default user space (unrotated, y up), its form XObjects' included (see the module).
-/// Annotations are left as they are: flatten them first to redact what they show. Only text is
-/// taken out: images and paths under the areas stay.
+/// What becomes of an image drawn under an area.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ImageRedaction {
+    /// Its pixels under the areas blanked (made black, transparent where it has a soft mask), the
+    /// rest kept: the image is written anew, in RGB or gray, 8 bits per component.
+    #[default]
+    Pixels,
+    /// Taken out whole.
+    Remove,
+    /// Left as it is.
+    Keep,
+}
+
+/// Which paths painted over an area are taken out (a clipping path keeps clipping).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PathRedaction {
+    /// Those the areas touch, even in part: a line crossing an area goes whole, on both sides.
+    #[default]
+    Touched,
+    /// Those an area covers whole: a table's border crossing an area stays, a box drawn inside
+    /// it goes.
+    Covered,
+    /// None.
+    Keep,
+}
+
+/// What [`redact`] takes out under the areas, besides the text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RedactOptions {
+    pub images: ImageRedaction,
+    pub paths: PathRedaction,
+}
+
+impl RedactOptions {
+    #[must_use]
+    pub fn images(mut self, images: ImageRedaction) -> Self {
+        self.images = images;
+        self
+    }
+
+    #[must_use]
+    pub fn paths(mut self, paths: PathRedaction) -> Self {
+        self.paths = paths;
+        self
+    }
+}
+
+/// Take out of page `page_index` (from 0) what it draws under `areas`, rectangles in the page's
+/// default user space (unrotated, y up), its form XObjects' included (see the module): the
+/// glyphs, the images' pixels (or whole images, as `options` asks), the paths painted over an
+/// area. Annotations are left as they are: flatten them first to redact what they show.
 ///
 /// # Errors
 /// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or an area
@@ -65,11 +133,12 @@ pub struct RedactedText {
 /// [`sealwax_core::Error::Malformed`] for a content stream of the page that cannot be decoded
 /// (it would be lost); as [`Document::save_incremental`] for a modified document read again;
 /// [`sealwax_core::Error::LimitExceeded`] when a new object cannot be numbered.
-pub fn redact_text(
+pub fn redact(
     doc: &mut Document,
     page_index: usize,
     areas: &[Rect],
-) -> sealwax_core::Result<RedactedText> {
+    options: &RedactOptions,
+) -> sealwax_core::Result<Redacted> {
     let Some(Some(page_id)) = doc.page_ids().get(page_index).copied() else {
         return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
     };
@@ -88,7 +157,7 @@ pub fn redact_text(
         .filter(|a| a.area() > 0.0)
         .collect();
     if areas.is_empty() {
-        return Ok(RedactedText::default());
+        return Ok(Redacted::default());
     }
     // hayro reads the document as it stands: a modified one is read again, its objects keeping
     // their numbers.
@@ -103,7 +172,7 @@ pub fn redact_text(
         doc
     };
     let content = page_content(reader, page_id)?;
-    let plan = plan(reader, page_index, &content, &areas)?;
+    let plan = plan(reader, page_index, &content, &areas, *options)?;
     write(doc, page_id, &content, plan)
 }
 
@@ -201,12 +270,37 @@ struct Plan {
     draws: Vec<Draw>,
     /// The forms read, and their content decoded.
     forms: HashMap<ObjId, Vec<u8>>,
+    /// Operators taken out or written otherwise (paths, images removed), by content.
+    cuts: HashMap<Source, Vec<Replacement>>,
+    /// Images drawn under an area, by content: the `Do` or inline image, and the image anew.
+    images: HashMap<Source, Vec<(Range<usize>, Blanked)>>,
+    paths: usize,
+    images_removed: usize,
+}
+
+/// Bytes of a content, and what is written in their place.
+type Replacement = (Range<usize>, Vec<u8>);
+
+/// An image whose pixels under the areas are blanked: its samples as decoded, until they are
+/// blanked; then compressed (`FlateDecode`), so that a page of many images does not hold them
+/// all decoded. A stencil mask is then 1 bit per pixel, 0 painting.
+#[derive(Debug, Clone)]
+struct Blanked {
+    width: u32,
+    height: u32,
+    /// 3 (RGB), 1 (gray), 0 (a stencil mask: 1 marks painted).
+    channels: u8,
+    data: Vec<u8>,
+    /// The soft mask, its own size.
+    alpha: Option<(u32, u32, Vec<u8>)>,
+    interpolate: bool,
 }
 
 /// The text state, as far as placing glyphs goes (ISO 32000-1, 9.3).
 #[derive(Clone)]
 struct State<'a> {
     ctm: Affine,
+    line_width: f64,
     font: Option<Font<'a>>,
     size: f64,
     char_space: f64,
@@ -220,6 +314,7 @@ impl Default for State<'_> {
     fn default() -> Self {
         Self {
             ctm: Affine::IDENTITY,
+            line_width: 1.0,
             font: None,
             // hayro's, when no font size is set.
             size: 1.0,
@@ -234,6 +329,14 @@ impl Default for State<'_> {
 
 struct Walker<'a, 'r> {
     areas: &'r [KurboRect],
+    options: RedactOptions,
+    /// The most pixels an image is decoded with.
+    max_pixels: u64,
+    /// The pixels still to decode for this page: four of the largest images, then images under
+    /// an area are taken out whole.
+    budget: u64,
+    pdf: &'a Pdf,
+    cache: InterpreterCache<'a>,
     fonts: FontCache<'a>,
     settings: InterpreterSettings,
     plan: Plan,
@@ -253,6 +356,7 @@ fn plan(
     page_index: usize,
     content: &[u8],
     areas: &[KurboRect],
+    options: RedactOptions,
 ) -> sealwax_core::Result<Plan> {
     let pdf = reader.hayro();
     let pages = pdf.pages();
@@ -261,6 +365,11 @@ fn plan(
     };
     let mut walker = Walker {
         areas,
+        options,
+        max_pixels: reader.limits().max_image_pixels.min(MAX_BLANKED_PIXELS),
+        budget: 4 * reader.limits().max_image_pixels.min(MAX_BLANKED_PIXELS),
+        pdf,
+        cache: InterpreterCache::new(),
         fonts: FontCache::new(),
         settings: InterpreterSettings::default(),
         plan: Plan::default(),
@@ -311,6 +420,11 @@ impl<'a> Walker<'a, '_> {
         let mut stack: Vec<State<'a>> = Vec::new();
         let mut tm = Affine::IDENTITY;
         let mut tlm = Affine::IDENTITY;
+        // The path being built: its operators (another may come between them, a text object
+        // drawn in the middle of a path), the box of its points in user space, and whether it
+        // clips.
+        let mut path: Option<(Vec<Range<usize>>, Option<KurboRect>)> = None;
+        let mut clips = false;
         for (index, op) in operators(content).iter().enumerate() {
             let operator = &content[op.operator.clone()];
             let args = operands(&content[op.start..op.operator.start]);
@@ -320,7 +434,79 @@ impl<'a> Walker<'a, '_> {
                     _ => None,
                 }
             };
+            let points: Vec<(f64, f64)> = match operator {
+                b"m" | b"l" | b"c" | b"v" | b"y" => {
+                    let values: Vec<f64> = (0..args.len()).filter_map(number).collect();
+                    values
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|[x, y]| (*x, *y))
+                        .collect()
+                }
+                b"re" => match [0, 1, 2, 3].map(number) {
+                    [Some(x), Some(y), Some(w), Some(h)] => {
+                        vec![(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            if matches!(operator, b"m" | b"l" | b"c" | b"v" | b"y" | b"re" | b"h") {
+                let (ops, bounds) = path.get_or_insert((Vec::new(), None));
+                ops.push(op.start..op.end);
+                for (x, y) in points {
+                    let p = state.ctm * Point::new(x, y);
+                    if p.x.is_finite() && p.y.is_finite() {
+                        let point = KurboRect::from_points(p, p);
+                        *bounds = Some(bounds.map_or(point, |b| b.union(point)));
+                    }
+                }
+                continue;
+            }
             match operator {
+                b"W" | b"W*" => clips = true,
+                b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
+                    if let Some((built, bounds)) = path.take()
+                        && operator != b"n"
+                        && self.options.paths != PathRedaction::Keep
+                        && let Some(bounds) = bounds
+                    {
+                        let stroked = matches!(operator, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
+                        // Half the line's width in user space; a line of no width is drawn a
+                        // device pixel wide.
+                        let half = if stroked {
+                            (state.line_width * state.ctm.determinant().abs().sqrt() / 2.0).max(0.5)
+                        } else {
+                            0.0
+                        };
+                        let painted = bounds.inflate(half, half);
+                        let taken = self.areas.iter().any(|area| {
+                            if self.options.paths == PathRedaction::Covered {
+                                area.contains_rect(painted)
+                            } else {
+                                let overlap = area.intersect(painted);
+                                overlap.width() > 0.0 && overlap.height() > 0.0
+                            }
+                        });
+                        if taken {
+                            // A clipping path keeps clipping, painting nothing; any other goes,
+                            // operator by operator.
+                            let cuts = self.plan.cuts.entry(source).or_default();
+                            if clips {
+                                cuts.push((op.start..op.end, b"n".to_vec()));
+                            } else {
+                                cuts.extend(built.into_iter().map(|range| (range, Vec::new())));
+                                cuts.push((op.start..op.end, Vec::new()));
+                            }
+                            self.plan.paths += 1;
+                        }
+                    }
+                    path = None;
+                    clips = false;
+                }
+                b"w" => state.line_width = number(0).unwrap_or(state.line_width),
+                b"BI" => self.image(source, op, &content[op.start..op.end], resources, &state),
                 b"q" => stack.push(state.clone()),
                 b"Q" => {
                     if let Some(saved) = stack.pop() {
@@ -425,10 +611,13 @@ impl<'a> Walker<'a, '_> {
                         continue;
                     };
                     let dict = stream.dict();
-                    if dict
-                        .get::<hayro_interpret::hayro_syntax::object::Name>(b"Subtype")
-                        .is_none_or(|subtype| subtype.as_ref() != b"Form")
-                    {
+                    let subtype =
+                        dict.get::<hayro_interpret::hayro_syntax::object::Name>(b"Subtype");
+                    if subtype.as_ref().is_some_and(|s| s.as_ref() == b"Image") {
+                        self.image(source, op, &content[op.start..op.end], resources, &state);
+                        continue;
+                    }
+                    if subtype.is_none_or(|subtype| subtype.as_ref() != b"Form") {
                         continue;
                     }
                     let id = object_id(stream.obj_id());
@@ -457,6 +646,108 @@ impl<'a> Walker<'a, '_> {
                 _ => {}
             }
         }
+    }
+
+    /// An image drawn (`drawing` is its `Do`, or the inline image itself): under an area, its
+    /// pixels there blanked, or the image taken out, as the options ask.
+    fn image(
+        &mut self,
+        source: Source,
+        op: &Op,
+        drawing: &[u8],
+        resources: &Resources<'a>,
+        state: &State<'a>,
+    ) {
+        let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+            .map(|(x, y)| state.ctm * Point::new(x, y));
+        if self.options.images == ImageRedaction::Keep || !covered(&corners, self.areas) {
+            return;
+        }
+        let grabbed = if self.options.images == ImageRedaction::Pixels {
+            self.grab(drawing, resources).filter(|image| {
+                let pixels = u64::from(image.width) * u64::from(image.height);
+                let within = pixels <= self.budget;
+                self.budget = self.budget.saturating_sub(pixels);
+                within
+            })
+        } else {
+            None
+        };
+        let Some(mut image) = grabbed else {
+            // Not decoded, or to be taken out: taken out whole.
+            self.plan
+                .cuts
+                .entry(source)
+                .or_default()
+                .push((op.start..op.end, Vec::new()));
+            self.plan.images_removed += 1;
+            return;
+        };
+        // The areas in the image's unit square, then in its pixels: the first row on top.
+        let inverse = state.ctm.inverse();
+        for area in self.areas {
+            let corners = [
+                Point::new(area.x0, area.y0),
+                Point::new(area.x1, area.y0),
+                Point::new(area.x0, area.y1),
+                Point::new(area.x1, area.y1),
+            ]
+            .map(|p| inverse * p);
+            let (mut u0, mut v0, mut u1, mut v1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for p in corners {
+                (u0, v0, u1, v1) = (u0.min(p.x), v0.min(p.y), u1.max(p.x), v1.max(p.y));
+            }
+            let region = (u0.max(0.0), v0.max(0.0), u1.min(1.0), v1.min(1.0));
+            if !(region.2 > region.0 && region.3 > region.1) {
+                continue;
+            }
+            blank(
+                &mut image.data,
+                image.width,
+                image.height,
+                image.channels,
+                region,
+            );
+            if let Some((width, height, alpha)) = image.alpha.as_mut() {
+                blank(alpha, *width, *height, 1, region);
+            }
+        }
+        if image.channels == 0 {
+            image.data = packed_stencil(&image.data, image.width);
+        }
+        image.data = compressed(&image.data);
+        if let Some((_, _, alpha)) = image.alpha.as_mut() {
+            *alpha = compressed(alpha);
+        }
+        self.plan
+            .images
+            .entry(source)
+            .or_default()
+            .push((op.start..op.end, image));
+    }
+
+    /// The pixels of the image `drawing` draws, as hayro decodes them for rendering.
+    fn grab(&self, drawing: &[u8], resources: &Resources<'a>) -> Option<Blanked> {
+        let mut grabber = Grabber {
+            max_pixels: self.max_pixels,
+            found: None,
+        };
+        let mut context = Context::new(
+            Affine::IDENTITY,
+            KurboRect::new(-1e9, -1e9, 1e9, 1e9),
+            &self.cache,
+            self.pdf.xref(),
+            InterpreterSettings::default(),
+        );
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            interpret(
+                TypedIter::new(drawing),
+                resources,
+                &mut context,
+                &mut grabber,
+            );
+        }));
+        grabber.found
     }
 
     /// Place the codes `shown` shows, from text matrix `tm`, and note those under the areas.
@@ -610,6 +901,96 @@ impl<'a> Walker<'a, '_> {
     }
 }
 
+/// Blank the pixels of `region` (of the unit square, y up) in `data`: `channels` samples of 8 bits
+/// per pixel (0 for a stencil of one sample per pixel, 1 marking painted, made 0).
+fn blank(data: &mut [u8], width: u32, height: u32, channels: u8, region: (f64, f64, f64, f64)) {
+    let (u0, v0, u1, v1) = region;
+    let (w, h) = (f64::from(width), f64::from(height));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let span = |a: f64, b: f64, size: f64| -> (usize, usize) {
+        (
+            (a * size).floor().max(0.0) as usize,
+            (b * size).ceil().min(size) as usize,
+        )
+    };
+    let (x0, x1) = span(u0, u1, w);
+    // The first row is the top of the unit square.
+    let (y0, y1) = span(1.0 - v1, 1.0 - v0, h);
+    let step = usize::from(channels.max(1));
+    let row = width as usize * step;
+    for y in y0..y1 {
+        let start = y * row + x0 * step;
+        let end = (y * row + x1 * step).min(data.len());
+        if start < end {
+            data[start..end].fill(0);
+        }
+    }
+}
+
+/// A device keeping the first image drawn, decoded, when it has at most `max_pixels`.
+struct Grabber {
+    max_pixels: u64,
+    found: Option<Blanked>,
+}
+
+impl<'a> Device<'a> for Grabber {
+    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
+    fn push_clip_path(&mut self, _: &ClipPath) {}
+    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
+    fn draw_glyph_run(&mut self, _: &GlyphRun<'_, 'a>, _: DrawProps<'a>, _: &DrawMode) {}
+    fn pop_clip(&mut self) {}
+    fn pop_transparency_group(&mut self) {}
+
+    fn draw_image(&mut self, image: Image<'a, '_>, _: ImageDrawProps<'a>) {
+        if self.found.is_some()
+            || u64::from(image.width()) * u64::from(image.height()) > self.max_pixels
+        {
+            return;
+        }
+        match image {
+            Image::Raster(raster) => raster.with_rgba(
+                |data, alpha| {
+                    let interpolate = data.interpolate();
+                    let (width, height) = (data.width(), data.height());
+                    // Decoded larger than its dictionary said.
+                    if u64::from(width) * u64::from(height) > self.max_pixels {
+                        return;
+                    }
+                    let (channels, data) = match data {
+                        ImageData::Rgb(rgb) => (3, rgb.data),
+                        ImageData::Luma(luma) => (1, luma.data),
+                    };
+                    self.found = Some(Blanked {
+                        width,
+                        height,
+                        channels,
+                        data,
+                        alpha: alpha.map(|a| (a.width, a.height, a.data)),
+                        interpolate,
+                    });
+                },
+                None,
+            ),
+            Image::Stencil(stencil) => stencil.with_stencil(
+                |luma, _| {
+                    if u64::from(luma.width) * u64::from(luma.height) > self.max_pixels {
+                        return;
+                    }
+                    self.found = Some(Blanked {
+                        width: luma.width,
+                        height: luma.height,
+                        channels: 0,
+                        data: luma.data,
+                        alpha: None,
+                        interpolate: luma.interpolate,
+                    });
+                },
+                None,
+            ),
+        }
+    }
+}
+
 /// The box of the outline of the glyph `code` shows, in glyph units; `None` for a glyph without
 /// one (a space, a Type 3 glyph).
 fn ink(font: &Font<'_>, code: u32) -> Option<KurboRect> {
@@ -745,6 +1126,41 @@ fn replaced(content: &[u8], mut replacements: Vec<(Range<usize>, Vec<u8>)>) -> V
     out
 }
 
+/// A stencil of one sample per pixel (128 and over painted) as 1 bit per pixel, rows of whole
+/// bytes, 0 painting.
+fn packed_stencil(samples: &[u8], width: u32) -> Vec<u8> {
+    let width = width as usize;
+    let mut rows = Vec::with_capacity(samples.len() / 8 + 1);
+    for row in samples.chunks(width.max(1)) {
+        for byte in row.chunks(8) {
+            let mut bits = 0xFFu8;
+            for (at, value) in byte.iter().enumerate() {
+                if *value >= 128 {
+                    bits &= !(0x80 >> at);
+                }
+            }
+            rows.push(bits);
+        }
+    }
+    rows
+}
+
+/// `data` compressed with zlib.
+fn compressed(data: &[u8]) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    // Writing into a Vec cannot fail.
+    encoder
+        .write_all(data)
+        .and_then(|()| encoder.finish())
+        .unwrap_or_default()
+}
+
+/// A stream of data already compressed with zlib.
+fn compressed_stream(mut dict: Dict, data: Vec<u8>) -> Object {
+    dict.insert("Filter", Name::from("FlateDecode"));
+    Object::Stream(Stream { dict, data })
+}
+
 fn flate(mut dict: Dict, data: &[u8]) -> Object {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     // Writing into a Vec cannot fail.
@@ -768,8 +1184,13 @@ fn write(
     page: ObjId,
     content: &[u8],
     plan: Plan,
-) -> sealwax_core::Result<RedactedText> {
-    let mut report = RedactedText::default();
+) -> sealwax_core::Result<Redacted> {
+    let mut report = Redacted {
+        paths: plan.paths,
+        images_removed: plan.images_removed,
+        images: plan.images.values().map(Vec::len).sum(),
+        ..Redacted::default()
+    };
     for ops in plan.shown.values() {
         for (_, shown) in ops {
             report.operators += 1;
@@ -779,8 +1200,13 @@ fn write(
     }
     // The drawings to copy: those losing text, and those drawing them. A drawing comes after
     // the one drawing it.
+    let touched = |source: &Source| {
+        plan.shown.contains_key(source)
+            || plan.cuts.contains_key(source)
+            || plan.images.contains_key(source)
+    };
     let mut changed: Vec<bool> = (0..plan.draws.len())
-        .map(|draw| plan.shown.contains_key(&Source::Draw(draw)))
+        .map(|draw| touched(&Source::Draw(draw)))
         .collect();
     for draw in (0..plan.draws.len()).rev() {
         if changed[draw]
@@ -861,7 +1287,7 @@ fn write(
         .iter()
         .enumerate()
         .any(|(draw, c)| *c && plan.draws[draw].parent == Source::Page);
-    if !plan.shown.contains_key(&Source::Page) && !draws_changed {
+    if !touched(&Source::Page) && !draws_changed {
         return Ok(report);
     }
     let (data, resources) = rewrite_content(
@@ -880,6 +1306,53 @@ fn write(
     }
     doc.set_object(page, Object::Dict(page_dict));
     Ok(report)
+}
+
+/// A name for an image written anew, no other name of the page's.
+fn fresh_image_name(used: &mut HashSet<Vec<u8>>) -> Vec<u8> {
+    (0..)
+        .map(|n| format!("SwImage{n}").into_bytes())
+        .find(|name| used.insert(name.clone()))
+        .unwrap_or_default()
+}
+
+/// The image written anew: RGB or gray, 8 bits per component, its soft mask beside it; a stencil
+/// mask of 1 bit per pixel, 0 painting.
+fn image_object(doc: &mut Document, image: &Blanked) -> sealwax_core::Result<ObjId> {
+    let mut dict = Dict::new();
+    dict.insert("Type", Name::from("XObject"));
+    dict.insert("Subtype", Name::from("Image"));
+    dict.insert("Width", i64::from(image.width));
+    dict.insert("Height", i64::from(image.height));
+    if image.interpolate {
+        dict.insert("Interpolate", Object::Bool(true));
+    }
+    if image.channels == 0 {
+        dict.insert("ImageMask", Object::Bool(true));
+        dict.insert("BitsPerComponent", 1_i64);
+    } else {
+        dict.insert(
+            "ColorSpace",
+            Name::from(if image.channels == 3 {
+                "DeviceRGB"
+            } else {
+                "DeviceGray"
+            }),
+        );
+        dict.insert("BitsPerComponent", 8_i64);
+    }
+    if let Some((width, height, alpha)) = &image.alpha {
+        let mut mask = Dict::new();
+        mask.insert("Type", Name::from("XObject"));
+        mask.insert("Subtype", Name::from("Image"));
+        mask.insert("Width", i64::from(*width));
+        mask.insert("Height", i64::from(*height));
+        mask.insert("ColorSpace", Name::from("DeviceGray"));
+        mask.insert("BitsPerComponent", 8_i64);
+        let mask = doc.add_object(compressed_stream(mask, alpha.clone()))?;
+        dict.insert("SMask", Object::Ref(mask));
+    }
+    doc.add_object(compressed_stream(dict, image.data.clone()))
 }
 
 /// A name for the copy drawing `draw`, no other name of the page's.
@@ -927,7 +1400,7 @@ fn effective_resources(
 /// The content of `source` with its text-showing operators written again and its `Do`s of
 /// copied forms drawing the copies, and its resources naming them.
 fn rewrite_content(
-    doc: &Document,
+    doc: &mut Document,
     plan: &Plan,
     source: Source,
     content: &[u8],
@@ -944,7 +1417,19 @@ fn rewrite_content(
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(cuts) = plan.cuts.get(&source) {
+        replacements.extend(cuts.iter().cloned());
+    }
     let mut added: Vec<(Vec<u8>, ObjId)> = Vec::new();
+    for (range, image) in plan.images.get(&source).into_iter().flatten() {
+        let id = image_object(doc, image)?;
+        let name = fresh_image_name(used_names);
+        let mut call = b"/".to_vec();
+        call.extend_from_slice(&name);
+        call.extend_from_slice(b" Do");
+        replacements.push((range.clone(), call));
+        added.push((name, id));
+    }
     for (draw, entry) in plan.draws.iter().enumerate() {
         if entry.parent != source {
             continue;

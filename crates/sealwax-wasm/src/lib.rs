@@ -154,6 +154,30 @@ export interface NewAnnotation {
   contents?: string;
 }
 
+export interface RedactOptions {
+  /** What becomes of an image under an area: its pixels there blanked (the default), the whole image taken out, or kept. */
+  images?: "pixels" | "remove" | "keep";
+  /** Which paths painted over an area go: touched even in part (the default), covered whole, or none. */
+  paths?: "touched" | "covered" | "keep";
+}
+
+export interface Redacted {
+  glyphs: number;
+  operators: number;
+  forms: number;
+  stringsUnread: number;
+  images: number;
+  imagesRemoved: number;
+  paths: number;
+}
+
+export interface AppliedRedactions {
+  marks: number;
+  pages: number;
+  linksRemoved: number;
+  redacted: Redacted;
+}
+
 export interface TemplateContent {
   pages: number;
   /** The fields, each name once. */
@@ -1303,6 +1327,61 @@ impl Document {
             .map_err(|error| core_error(&error))
     }
 
+    /// Take out of page `pageIndex` (from 0) what it draws under `areas` (boxes in its default
+    /// user space, unrotated, y up): the glyphs (a glyph an area overlaps goes whole, nothing
+    /// after it moves), the images' pixels (`images`: "pixels", "remove" or "keep"), the paths
+    /// painted there (`paths`: "touched", "covered" or "keep"). Annotations stay: flatten first.
+    /// Follow with `rebuiltForRedaction()`: what the pages no longer reach stays in this
+    /// document.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for a bad area or option.
+    #[wasm_bindgen(js_name = redact, unchecked_return_type = "Redacted")]
+    pub fn redact(
+        &mut self,
+        page_index: usize,
+        #[wasm_bindgen(unchecked_param_type = "Box[]")] areas: Array,
+        #[wasm_bindgen(unchecked_param_type = "RedactOptions")] options: Option<JsValue>,
+    ) -> Result<Object, JsValue> {
+        let mut rects = Vec::new();
+        for area in areas.iter() {
+            let numbers: Option<Vec<f64>> = Array::is_array(&area)
+                .then(|| Array::from(&area).iter().map(|v| v.as_f64()).collect())
+                .flatten();
+            let [x1, y1, x2, y2] = numbers
+                .and_then(|n| <[f64; 4]>::try_from(n).ok())
+                .ok_or_else(|| argument("each area must be [x1, y1, x2, y2]"))?;
+            rects.push(sealwax_core::Rect::from_corners(x1, y1, x2, y2));
+        }
+        let options = redact_options(options.as_ref())?;
+        let done = sealwax_text::redact(&mut self.inner, page_index, &rects, &options)
+            .map_err(|error| core_error(&error))?;
+        Ok(redacted_object(&done))
+    }
+
+    /// Apply every redaction mark (`/Redact`): the other annotations flattened first (links
+    /// stay), what the pages draw under the marks taken out as `redact` does, each mark's area
+    /// painted with its interior colour and its overlay text written, the marks and the links
+    /// under them taken out. Follow with `rebuiltForRedaction()`.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for a bad option.
+    #[wasm_bindgen(js_name = applyRedactions, unchecked_return_type = "AppliedRedactions")]
+    pub fn apply_redactions(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "RedactOptions")] options: Option<JsValue>,
+    ) -> Result<Object, JsValue> {
+        let options = redact_options(options.as_ref())?;
+        let applied = sealwax_annots::apply_redactions(&mut self.inner, &options)
+            .map_err(|error| annots_error(&error))?;
+        let object = Object::new();
+        set(&object, "marks", count(applied.marks));
+        set(&object, "pages", count(applied.pages));
+        set(&object, "linksRemoved", count(applied.links_removed));
+        set(&object, "redacted", redacted_object(&applied.redacted));
+        Ok(object)
+    }
+
     /// Whether a page holds a redaction mark (a `/Redact` annotation).
     ///
     /// # Errors
@@ -1429,6 +1508,49 @@ fn photo_report(added: usize, unreadable: &[usize]) -> Object {
     set(&object, "added", count(added));
     let list: Array = unreadable.iter().map(|index| count(*index)).collect();
     set(&object, "unreadable", list);
+    object
+}
+
+fn redact_options(options: Option<&JsValue>) -> Result<sealwax_text::RedactOptions, JsValue> {
+    let text = |key: &str| {
+        options
+            .and_then(|o| get(o, key))
+            .and_then(|v| v.as_string())
+    };
+    let images = match text("images").as_deref() {
+        None | Some("pixels") => sealwax_text::ImageRedaction::Pixels,
+        Some("remove") => sealwax_text::ImageRedaction::Remove,
+        Some("keep") => sealwax_text::ImageRedaction::Keep,
+        Some(_) => {
+            return Err(argument(
+                "images must be \"pixels\", \"remove\" or \"keep\"",
+            ));
+        }
+    };
+    let paths = match text("paths").as_deref() {
+        None | Some("touched") => sealwax_text::PathRedaction::Touched,
+        Some("covered") => sealwax_text::PathRedaction::Covered,
+        Some("keep") => sealwax_text::PathRedaction::Keep,
+        Some(_) => {
+            return Err(argument(
+                "paths must be \"touched\", \"covered\" or \"keep\"",
+            ));
+        }
+    };
+    Ok(sealwax_text::RedactOptions::default()
+        .images(images)
+        .paths(paths))
+}
+
+fn redacted_object(done: &sealwax_text::Redacted) -> Object {
+    let object = Object::new();
+    set(&object, "glyphs", count(done.glyphs));
+    set(&object, "operators", count(done.operators));
+    set(&object, "forms", count(done.forms));
+    set(&object, "stringsUnread", count(done.strings_unread));
+    set(&object, "images", count(done.images));
+    set(&object, "imagesRemoved", count(done.images_removed));
+    set(&object, "paths", count(done.paths));
     object
 }
 

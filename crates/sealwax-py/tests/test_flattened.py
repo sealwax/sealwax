@@ -60,3 +60,28 @@ def test_a_redacted_copy_is_rebuilt_of_its_pages_alone():
     saved = rebuilt.save(xref="table")
     assert b"FIELDVALUE" not in saved and b"OLDPAGE" not in saved
     assert rebuilt.fields() == []
+
+
+def test_redaction_marks_applied_leave_nothing_under_them():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>",
+        stream("", b"BT /F1 12 Tf 72 700 Td (Hello secret world) Tj ET 0 0 1 rg 300 300 50 50 re f"),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Annot /Subtype /Redact /Rect [104 690 134 715] /IC [0 0 0] >>",
+    ]))
+    applied = document.apply_redactions(paths="covered")
+    assert (applied["marks"], applied["redacted"]["glyphs"]) == (1, 6)
+    rebuilt = sealwax.Document.from_bytes(document.rebuilt_for_redaction())
+    assert "secret" not in "".join(g["text"] or "" for g in rebuilt.glyphs(0))
+    # Asked directly: the blue box goes.
+    done = rebuilt.redact(0, [(290, 290, 360, 360)])
+    assert done["paths"] == 1
+    try:
+        rebuilt.redact(0, [(0, 0, 1, 1)], images="blur")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown option was accepted")

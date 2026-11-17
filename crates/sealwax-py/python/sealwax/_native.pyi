@@ -113,6 +113,21 @@ class Filled(TypedDict):
     kept: list[str]
     written: dict[str, Written]
 
+class Redacted(TypedDict):
+    glyphs: int
+    operators: int
+    forms: int
+    strings_unread: int
+    images: int
+    images_removed: int
+    paths: int
+
+class AppliedRedactions(TypedDict):
+    marks: int
+    pages: int
+    links_removed: int
+    redacted: Redacted
+
 class TemplateContent(TypedDict):
     pages: int
     fields: int
@@ -259,6 +274,15 @@ class Document:
     def insert_pages(self, at: int, pdf_contents: list[bytes]) -> bytes: ...
     def own_page_boxes(self) -> int: ...
     def clear_flattened_form(self) -> int: ...
+    def redact(
+        self,
+        page_index: int,
+        areas: list[tuple[float, float, float, float]],
+        *,
+        images: str = "pixels",
+        paths: str = "touched",
+    ) -> Redacted: ...
+    def apply_redactions(self, *, images: str = "pixels", paths: str = "touched") -> AppliedRedactions: ...
     def has_redaction_marks(self) -> bool: ...
     def rebuilt_for_redaction(self) -> bytes: ...
     def apply_xfdf(self, xfdf: str, *, flatten: bool = True) -> Applied: ...

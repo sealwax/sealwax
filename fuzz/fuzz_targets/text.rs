@@ -1,7 +1,7 @@
 #![no_main]
 //! Whatever the bytes: interpreting every page to count what its glyphs map to, reading each
 //! page's glyphs (its content instrumented to name fonts, the structure looked up for
-//! `/ActualText`, its annotations drawn), and redacting the text of the first page's middle,
+//! `/ActualText`, its annotations drawn), and redacting the first page's middle (text, images, paths),
 //! never panics (hayro-interpret runs here with the `unsafe` and `images` features of
 //! hayro-syntax on); a page redacted saves and reads back.
 //!
@@ -9,7 +9,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use sealwax_core::{Document, OpenOptions, Rect, SaveOptions};
-use sealwax_text::{glyphs, redact_text, text_census};
+use sealwax_text::{RedactOptions, glyphs, redact, text_census};
 
 fuzz_target!(|data: &[u8]| {
     let options = OpenOptions::default().max_file_bytes(4 << 20);
@@ -35,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
     if document.page_count() > 0 {
         let mut redacted = document;
         let middle = Rect::from_corners(100.0, 100.0, 400.0, 500.0);
-        if redact_text(&mut redacted, 0, &[middle]).is_ok() {
+        if redact(&mut redacted, 0, &[middle], &RedactOptions::default()).is_ok() {
             let saved = redacted.save(&SaveOptions::default()).expect("a page redacted saves");
             Document::open(saved, &OpenOptions::default()).expect("and reads back");
         }

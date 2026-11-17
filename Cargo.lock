@@ -1035,6 +1035,7 @@ dependencies = [
  "png",
  "quick-xml",
  "sealwax-core",
+ "sealwax-text",
  "serde",
  "serde_json",
  "thiserror",
@@ -1136,6 +1137,7 @@ dependencies = [
  "sealwax-annots",
  "sealwax-core",
  "sealwax-raster",
+ "sealwax-text",
  "wasm-bindgen",
 ]
 

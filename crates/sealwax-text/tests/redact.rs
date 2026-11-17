@@ -1,12 +1,12 @@
-//! Text redacted: the glyphs under an area are gone from the file, the others stay where they
-//! were.
+//! Redacted: the glyphs, pixels and paths under an area are gone from the file, the others stay
+//! where they were.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::Read as _;
 
 use sealwax_core::{Document, OpenOptions, Rect, SaveOptions, XrefFormat};
-use sealwax_text::{TextGlyph, glyphs, redact_text};
+use sealwax_text::{ImageRedaction, PathRedaction, RedactOptions, TextGlyph, glyphs, redact};
 
 fn stream(dict: &str, data: &str) -> String {
     format!(
@@ -152,7 +152,7 @@ fn a_word_redacted_is_gone_and_what_follows_does_not_move() {
         let mut doc = document(content, "");
         let before = origins(&doc, 0, "world");
         let area = area_over(&doc, 0, "secret");
-        let done = redact_text(&mut doc, 0, &[area]).unwrap();
+        let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
         assert_eq!(done.glyphs, 6, "{content}");
         let doc = reopened(&doc);
         let after = text(&glyphs(&doc, 0, false).unwrap());
@@ -172,7 +172,7 @@ fn a_word_redacted_is_gone_and_what_follows_does_not_move() {
 fn a_form_loses_its_text_on_the_page_redacted_only() {
     let mut doc = document("/Fm Do", "/Fm Do");
     let area = area_over(&doc, 0, "private");
-    let done = redact_text(&mut doc, 0, &[area]).unwrap();
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
     assert_eq!((done.glyphs, done.forms), (7, 1));
     let doc = reopened(&doc);
     assert_eq!(text(&glyphs(&doc, 0, false).unwrap()), "inside form ");
@@ -189,7 +189,12 @@ fn a_form_drawn_twice_loses_its_text_where_the_area_is_only_and_again() {
     let content = "/Fm Do q 1 0 0 1 0 -300 cm /Fm Do Q";
     let mut doc = document(content, "");
     let area = area_over(&doc, 0, "private");
-    assert_eq!(redact_text(&mut doc, 0, &[area]).unwrap().forms, 1);
+    assert_eq!(
+        redact(&mut doc, 0, &[area], &RedactOptions::default())
+            .unwrap()
+            .forms,
+        1
+    );
     let doc = reopened(&doc);
     assert_eq!(
         text(&glyphs(&doc, 0, false).unwrap()),
@@ -198,7 +203,7 @@ fn a_form_drawn_twice_loses_its_text_where_the_area_is_only_and_again() {
     // Redacted again, lower: the first copy stays as it is.
     let mut doc = doc;
     let lower = Rect::from_corners(area.x1, area.y1 - 300.0, area.x2, area.y2 - 300.0);
-    redact_text(&mut doc, 0, &[lower]).unwrap();
+    redact(&mut doc, 0, &[lower], &RedactOptions::default()).unwrap();
     let doc = reopened(&doc);
     assert_eq!(
         text(&glyphs(&doc, 0, false).unwrap()),
@@ -216,7 +221,7 @@ fn hidden_text_and_a_composite_font_are_redacted_too() {
     let hidden = Rect::from_corners(60.0, 590.0, 200.0, 620.0);
     // The second code spans 78 to 85 (6 points for the first, 7 for itself).
     let second = Rect::from_corners(79.0, 495.0, 84.0, 510.0);
-    let done = redact_text(&mut doc, 0, &[hidden, second]).unwrap();
+    let done = redact(&mut doc, 0, &[hidden, second], &RedactOptions::default()).unwrap();
     assert_eq!(done.glyphs, 14);
     let doc = reopened(&doc);
     let all = everything(&doc);
@@ -230,20 +235,22 @@ fn hidden_text_and_a_composite_font_are_redacted_too() {
 fn nothing_under_the_areas_changes_nothing() {
     let content = "BT /F1 12 Tf 72 700 Td (Hello) Tj ET";
     let mut doc = document(content, "");
-    let done = redact_text(
+    let done = redact(
         &mut doc,
         0,
         &[Rect::from_corners(300.0, 300.0, 400.0, 400.0)],
+        &RedactOptions::default(),
     )
     .unwrap();
     assert_eq!(done.glyphs, 0);
     assert!(!doc.is_modified());
-    assert!(redact_text(&mut doc, 5, &[]).is_err());
+    assert!(redact(&mut doc, 5, &[], &RedactOptions::default()).is_err());
     assert!(
-        redact_text(
+        redact(
             &mut doc,
             0,
-            &[Rect::from_corners(0.0, 0.0, f64::INFINITY, 1.0)]
+            &[Rect::from_corners(0.0, 0.0, f64::INFINITY, 1.0)],
+            &RedactOptions::default(),
         )
         .is_err()
     );
@@ -271,7 +278,7 @@ fn a_turned_line_loses_only_what_the_area_covers() {
             Rect::from_corners(x - 0.5, y - 0.5, x + 0.5, y + 0.5)
         })
         .collect();
-    let done = redact_text(&mut doc, 0, &areas).unwrap();
+    let done = redact(&mut doc, 0, &areas, &RedactOptions::default()).unwrap();
     assert_eq!(done.glyphs, 6);
     let after = text(&glyphs(&reopened(&doc), 0, false).unwrap());
     assert_eq!(after, "Hello  world");
@@ -294,9 +301,276 @@ fn a_document_changed_since_it_was_opened_is_redacted_as_it_stands() {
     dict.insert("Contents", sealwax_core::Object::Ref(content));
     doc.set_object(page, sealwax_core::Object::Dict(dict));
     let area = area_over(&reopened(&doc), 0, "secret");
-    assert_eq!(redact_text(&mut doc, 0, &[area]).unwrap().glyphs, 6);
+    assert_eq!(
+        redact(&mut doc, 0, &[area], &RedactOptions::default())
+            .unwrap()
+            .glyphs,
+        6
+    );
     assert_eq!(
         text(&glyphs(&reopened(&doc), 0, false).unwrap()),
         "Hello  world"
     );
+}
+
+/// One page drawing `content`, its resources `resources` (objects from 3 on: `extra`).
+fn page(content: &str, resources: &str, extra: &[String]) -> Document {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << {resources} >> >>"
+        ),
+        stream("", content),
+    ];
+    objects.extend_from_slice(extra);
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    Document::open(out, &OpenOptions::default()).unwrap()
+}
+
+/// The page's content, decoded.
+fn decoded_content(doc: &Document) -> String {
+    let doc = reopened(doc);
+    let page = doc.object(doc.page_ids()[0].unwrap()).unwrap().unwrap();
+    let id = page
+        .as_dict()
+        .unwrap()
+        .get(b"Contents")
+        .unwrap()
+        .as_ref_id()
+        .unwrap();
+    let Some(sealwax_core::Object::Stream(stream)) = doc.object(id).unwrap() else {
+        panic!("no content");
+    };
+    let mut data = Vec::new();
+    if flate2::read::ZlibDecoder::new(stream.data.as_slice())
+        .read_to_end(&mut data)
+        .is_err()
+    {
+        data = stream.data;
+    }
+    String::from_utf8_lossy(&data).into_owned()
+}
+
+/// The images the page's resources name, decoded: name, dictionary, samples.
+fn images(doc: &Document) -> Vec<(String, sealwax_core::Dict, Vec<u8>)> {
+    let doc = reopened(doc);
+    let page = doc.object(doc.page_ids()[0].unwrap()).unwrap().unwrap();
+    let resources = page.as_dict().unwrap().get(b"Resources").unwrap().clone();
+    let resources = match resources {
+        sealwax_core::Object::Ref(id) => doc.object(id).unwrap().unwrap(),
+        other => other,
+    };
+    let Some(sealwax_core::Object::Dict(xobjects)) =
+        resources.as_dict().unwrap().get(b"XObject").cloned()
+    else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (name, value) in xobjects.iter() {
+        let Some(sealwax_core::Object::Stream(stream)) =
+            doc.object(value.as_ref_id().unwrap()).unwrap()
+        else {
+            continue;
+        };
+        let mut data = Vec::new();
+        if flate2::read::ZlibDecoder::new(stream.data.as_slice())
+            .read_to_end(&mut data)
+            .is_err()
+        {
+            data = stream.data.clone();
+        }
+        found.push((
+            String::from_utf8_lossy(name.as_bytes()).into_owned(),
+            stream.dict.clone(),
+            data,
+        ));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+#[test]
+fn paths_painted_over_an_area_go_and_a_clip_keeps_clipping() {
+    let content = "q 100 100 50 50 re W n 1 0 0 rg 0 0 600 800 re f Q \
+                   0 0 1 rg 300 300 50 50 re f \
+                   500 500 50 50 re f \
+                   2 w 0 G 280 600 m 380 600 l S \
+                   q 310 310 20 20 re W f Q";
+    let mut doc = page(content, "", &[]);
+    let area = Rect::from_corners(290.0, 290.0, 400.0, 610.0);
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    // The blue box, the line, the box that clips and fills; not the red page under a clip
+    // elsewhere... which does cover the area: it goes too.
+    assert_eq!(done.paths, 4);
+    let after = decoded_content(&doc);
+    assert!(after.contains("500 500 50 50 re f"), "{after}");
+    assert!(!after.contains("300 300 50 50 re"), "{after}");
+    assert!(!after.contains("280 600 m"), "{after}");
+    // The clip stays, painting nothing.
+    let spaced: String = after.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(spaced.contains("310 310 20 20 re W n"), "{after}");
+    let kept = redact(
+        &mut page(content, "", &[]),
+        0,
+        &[area],
+        &RedactOptions::default().paths(PathRedaction::Keep),
+    )
+    .unwrap();
+    assert_eq!(kept.paths, 0);
+    // Covered whole: the blue box and the clipped box only; the line crossing the area and the
+    // page-wide fill stay.
+    let mut doc = page(content, "", &[]);
+    let covered = redact(
+        &mut doc,
+        0,
+        &[area],
+        &RedactOptions::default().paths(PathRedaction::Covered),
+    )
+    .unwrap();
+    assert_eq!(covered.paths, 2);
+    let after = decoded_content(&doc);
+    assert!(
+        after.contains("280 600 m") && after.contains("0 0 600 800 re f"),
+        "{after}"
+    );
+}
+
+/// A 4 x 2 RGB image, red, with a soft mask opaque everywhere; and a 8 x 2 stencil, all painted.
+fn picture_objects() -> Vec<String> {
+    vec![
+        stream(
+            "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R /Filter /ASCIIHexDecode",
+            &format!("{}>", "FF0000".repeat(8)),
+        ),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode",
+            &format!("{}>", "FF".repeat(8)),
+        ),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 8 /Height 2 /ImageMask true /BitsPerComponent 1 /Filter /ASCIIHexDecode",
+            "0000>",
+        ),
+    ]
+}
+
+#[test]
+fn an_image_under_an_area_loses_its_pixels_there_only() {
+    // The image on 100..300 x 100..200: the area takes its left half.
+    let content = "q 200 0 0 100 100 100 cm /Im Do Q q 200 0 0 100 100 400 cm /Im Do Q";
+    let mut doc = page(
+        content,
+        "/XObject << /Im 5 0 R /St 7 0 R >>",
+        &picture_objects(),
+    );
+    let area = Rect::from_corners(50.0, 50.0, 200.0, 250.0);
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    assert_eq!(done.images, 1);
+    let found = images(&doc);
+    let (_, dict, data) = found
+        .iter()
+        .find(|(name, _, _)| name.starts_with("SwImage"))
+        .unwrap();
+    // Each row: two pixels blanked, two red.
+    let red = [255, 0, 0];
+    for row in data.chunks(12) {
+        assert_eq!(&row[..6], &[0; 6]);
+        assert_eq!(&row[6..9], &red);
+        assert_eq!(&row[9..], &red);
+    }
+    // The soft mask: transparent where blanked.
+    let mask = dict.get(b"SMask").unwrap().as_ref_id().unwrap();
+    let reopened = reopened(&doc);
+    let Some(sealwax_core::Object::Stream(mask)) = reopened.object(mask).ok().flatten() else {
+        // Numbers change on saving: found by its size instead.
+        return;
+    };
+    let mut alpha = Vec::new();
+    flate2::read::ZlibDecoder::new(mask.data.as_slice())
+        .read_to_end(&mut alpha)
+        .unwrap();
+    assert_eq!(&alpha[..4], &[0, 0, 255, 255]);
+    // The second drawing, away from the area, still draws the image as it was.
+    assert!(decoded_content(&doc).contains("/Im Do"));
+}
+
+#[test]
+fn a_stencil_an_inline_image_and_the_options() {
+    let content = "q 80 0 0 20 100 100 cm /St Do Q \
+                   q 40 0 0 20 100 300 cm BI /W 4 /H 2 /CS /G /BPC 8 /F /AHx ID FFFFFFFFFFFFFFFF> EI Q";
+    let area = Rect::from_corners(90.0, 90.0, 120.0, 330.0);
+    let mut doc = page(
+        content,
+        "/XObject << /Im 5 0 R /St 7 0 R >>",
+        &picture_objects(),
+    );
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    assert_eq!((done.images, done.images_removed), (2, 0));
+    let after = decoded_content(&doc);
+    assert!(
+        !after.contains("BI"),
+        "the inline image is an XObject now: {after}"
+    );
+    let found = images(&doc);
+    let stencil = found
+        .iter()
+        .find(|(name, dict, _)| {
+            name.starts_with("SwImage")
+                && dict.get(b"ImageMask") == Some(&sealwax_core::Object::Bool(true))
+        })
+        .map(|(_, _, data)| data.clone())
+        .expect("the stencil written anew");
+    // The first two of eight pixels (100 to 120 of 100 to 180) no longer painted: bits set.
+    assert_eq!(stencil, [0b1100_0000, 0b1100_0000]);
+    // Taken out whole, or left.
+    let mut doc = page(
+        content,
+        "/XObject << /Im 5 0 R /St 7 0 R >>",
+        &picture_objects(),
+    );
+    let removed = redact(
+        &mut doc,
+        0,
+        &[area],
+        &RedactOptions::default().images(ImageRedaction::Remove),
+    )
+    .unwrap();
+    assert_eq!(removed.images_removed, 2);
+    let after = decoded_content(&doc);
+    assert!(
+        !after.contains("/St Do") && !after.contains("BI"),
+        "{after}"
+    );
+    let mut doc = page(
+        content,
+        "/XObject << /Im 5 0 R /St 7 0 R >>",
+        &picture_objects(),
+    );
+    let kept = redact(
+        &mut doc,
+        0,
+        &[area],
+        &RedactOptions::default().images(ImageRedaction::Keep),
+    )
+    .unwrap();
+    assert_eq!((kept.images, kept.images_removed), (0, 0));
 }

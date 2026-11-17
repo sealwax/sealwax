@@ -23,6 +23,7 @@ mod jpeg;
 mod page;
 mod pdf;
 mod photos;
+mod redactions;
 mod template;
 mod text;
 pub mod xfdf;
@@ -41,6 +42,7 @@ pub use fields::{
 pub use flatten::Flattened;
 pub use image::{MAX_PIXELS, PictureError};
 pub use photos::{PhotoPages, add_photo_pages, photos_document};
+pub use redactions::{Redactions, apply_redactions};
 pub use template::{Cleared, TemplateContent, TemplateOptions, clear_template, template_content};
 
 use page::Placed;

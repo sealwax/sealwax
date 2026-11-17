@@ -891,6 +891,7 @@ dependencies = [
  "png",
  "quick-xml",
  "sealwax-core",
+ "sealwax-text",
  "serde_json",
  "thiserror",
 ]

@@ -308,3 +308,22 @@ test("annotations are made with their appearance, and bad ones refused", () => {
   assert.deepEqual(at(50, 50), [0, 0, 255]);
   assert.deepEqual(at(150, 50), [0, 255, 0]);
 });
+
+test("redaction marks are applied and areas redacted", () => {
+  const marked = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>",
+    stream("BT /F1 12 Tf 72 700 Td (Hello secret world) Tj ET"),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Annot /Subtype /Redact /Rect [104 690 134 715] /IC [0 0 0] >>",
+  ]);
+  const doc = Document.fromBytes(marked);
+  const applied = doc.applyRedactions();
+  assert.equal(applied.marks, 1);
+  assert.equal(applied.redacted.glyphs, 6);
+  const rebuilt = Document.fromBytes(doc.rebuiltForRedaction());
+  assert.equal(new TextDecoder().decode(rebuilt.save({ xref: "table" })).includes("secret"), false);
+  assert.deepEqual(rebuilt.redact(0, [[60, 690, 80, 715]], { images: "keep" }).glyphs, 1);
+  assert.throws(() => rebuilt.redact(0, [[1, 2]]), RangeError);
+});

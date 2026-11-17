@@ -1135,6 +1135,58 @@ impl Document {
         run(py, || Ok(inner.clear_flattened_form()?))
     }
 
+    /// Take out of page `page_index` (from 0) what it draws under `areas`, rectangles
+    /// (x1, y1, x2, y2) in its default user space (unrotated, y up): the glyphs (a glyph whose box
+    /// an area overlaps goes whole, nothing after it moves), the images' pixels (`images`
+    /// "pixels", or "remove" whole, or "keep"), the paths painted there (`paths` "touched": even
+    /// in part, "covered": whole, or "keep"). Form XObjects losing content are copied for the
+    /// drawing that loses it. Annotations stay: flatten first. Returns the counts: `glyphs`,
+    /// `operators`, `forms`, `strings_unread`, `images`, `images_removed`, `paths`. Follow with
+    /// `rebuilt_for_redaction()`: what the pages no longer reach stays in this document.
+    #[pyo3(signature = (page_index, areas, *, images = "pixels", paths = "touched"))]
+    fn redact<'py>(
+        &mut self,
+        py: Python<'py>,
+        page_index: usize,
+        areas: Vec<(f64, f64, f64, f64)>,
+        images: &str,
+        paths: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let options = redact_options(images, paths)?;
+        let areas: Vec<pdf::Rect> = areas
+            .into_iter()
+            .map(|(x1, y1, x2, y2)| pdf::Rect::from_corners(x1, y1, x2, y2))
+            .collect();
+        let inner = &mut self.inner;
+        let done = run(py, || {
+            Ok(pdf::text::redact(inner, page_index, &areas, &options)?)
+        })?;
+        redacted_dict(py, &done)
+    }
+
+    /// Apply every redaction mark (`/Redact`): the other annotations flattened first (links
+    /// stay), what the pages draw under the marks taken out as `redact` does, each mark's area
+    /// painted with its interior colour and its overlay text written, the marks and the links
+    /// under them taken out. Returns `marks`, `pages`, `links_removed` and `redacted` (the
+    /// counts of `redact`, all pages together). Follow with `rebuilt_for_redaction()`.
+    #[pyo3(signature = (*, images = "pixels", paths = "touched"))]
+    fn apply_redactions<'py>(
+        &mut self,
+        py: Python<'py>,
+        images: &str,
+        paths: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let options = redact_options(images, paths)?;
+        let inner = &mut self.inner;
+        let applied = run(py, || Ok(pdf::annots::apply_redactions(inner, &options)?))?;
+        let dict = PyDict::new(py);
+        dict.set_item("marks", applied.marks)?;
+        dict.set_item("pages", applied.pages)?;
+        dict.set_item("links_removed", applied.links_removed)?;
+        dict.set_item("redacted", redacted_dict(py, &applied.redacted)?)?;
+        Ok(dict)
+    }
+
     /// Whether a page holds a redaction mark (a `/Redact` annotation).
     fn has_redaction_marks(&self, py: Python<'_>) -> PyResult<bool> {
         let inner = &self.inner;
@@ -1479,6 +1531,44 @@ fn photos_to_pdf<'py>(
         Ok((doc.save(&pdf::SaveOptions::default())?, report.unreadable))
     })?;
     Ok((PyBytes::new(py, &data), unreadable))
+}
+
+fn redact_options(images: &str, paths: &str) -> PyResult<pdf::text::RedactOptions> {
+    let images = match images {
+        "pixels" => pdf::text::ImageRedaction::Pixels,
+        "remove" => pdf::text::ImageRedaction::Remove,
+        "keep" => pdf::text::ImageRedaction::Keep,
+        _ => {
+            return Err(PyValueError::new_err(
+                "images must be \"pixels\", \"remove\" or \"keep\"",
+            ));
+        }
+    };
+    let paths = match paths {
+        "touched" => pdf::text::PathRedaction::Touched,
+        "covered" => pdf::text::PathRedaction::Covered,
+        "keep" => pdf::text::PathRedaction::Keep,
+        _ => {
+            return Err(PyValueError::new_err(
+                "paths must be \"touched\", \"covered\" or \"keep\"",
+            ));
+        }
+    };
+    Ok(pdf::text::RedactOptions::default()
+        .images(images)
+        .paths(paths))
+}
+
+fn redacted_dict<'py>(py: Python<'py>, done: &pdf::text::Redacted) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("glyphs", done.glyphs)?;
+    dict.set_item("operators", done.operators)?;
+    dict.set_item("forms", done.forms)?;
+    dict.set_item("strings_unread", done.strings_unread)?;
+    dict.set_item("images", done.images)?;
+    dict.set_item("images_removed", done.images_removed)?;
+    dict.set_item("paths", done.paths)?;
+    Ok(dict)
 }
 
 /// The documents merged into one, in order, each flattened first. With `flatten=False`, their
