@@ -13,6 +13,7 @@ use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Result, decode_tex
 use crate::draw;
 use crate::flatten::{self, Font, Normal};
 use crate::pdf;
+use crate::text;
 
 /// Field flags (ISO 32000-1, 12.7.3.1, 12.7.4.2, 12.7.4.4).
 const READ_ONLY: i64 = 1;
@@ -20,6 +21,7 @@ const REQUIRED: i64 = 1 << 1;
 const RADIO: i64 = 1 << 15;
 const PUSH_BUTTON: i64 = 1 << 16;
 const COMBO: i64 = 1 << 17;
+const EDIT: i64 = 1 << 18;
 
 /// What a field is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,8 @@ pub struct Field {
     pub max_length: Option<i64>,
     /// A choice field's options (`/Opt`).
     pub choices: Vec<FieldChoice>,
+    /// A combo box that takes text typed beside its options (`Edit`).
+    pub editable: bool,
     /// A button's states, the names of its normal appearances (`/AP /N`), as the document spells
     /// them (bytes), `Off` included, in the order of their bytes.
     pub button_states: Vec<Vec<u8>>,
@@ -96,30 +100,91 @@ pub struct Field {
 /// What filling a form did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct Filled {
     /// The occurrences written: widgets of a field named in the values.
     pub occurrences: usize,
     /// Characters of text values that WinAnsiEncoding does not have, drawn as `?` in the
     /// appearance (the value itself keeps them).
     pub characters_replaced: usize,
-    /// The check boxes and radio buttons, by full name, given a state none of their widgets has:
-    /// they show `Off`. A name spelled otherwise than the document spells it (`Fran#E7ais` given
-    /// as its UTF-8 text) lands here. In the order of the names' bytes.
-    pub unmatched: Vec<String>,
+    /// The names given that were not written, each field left as it was, in the order of their
+    /// bytes: no field on the pages has that name, the field takes no value (a signature, a push
+    /// button), a check box or radio button given a state none of its widgets has (a state given
+    /// as its UTF-8 text while the document spells it `Fran#E7ais` included), and, filling
+    /// [`FillOptions::strict`]ly, a value the field does not allow.
+    pub refused: Vec<String>,
+    /// Filling with [`FillOptions::keep_filled`]: the fields left as they were because they held
+    /// another value, in the order of their names' bytes.
+    pub kept: Vec<String>,
+    /// Each field written, by full name: the value it holds now and the one it held before.
+    pub written: BTreeMap<String, Written>,
+}
+
+/// A field written: its value, and the one it held before, each read as one text (a text or
+/// choice field's value, several selected joined by `, `, empty when it has none; a button's
+/// state, `Off` when it has none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct Written {
+    pub value: String,
+    pub previous: String,
+}
+
+impl Written {
+    /// A field written `value`, which held `previous` before: what [`unfill_fields`] undoes.
+    #[must_use]
+    pub fn new(value: &str, previous: &str) -> Self {
+        Self {
+            value: value.to_owned(),
+            previous: previous.to_owned(),
+        }
+    }
+}
+
+/// How [`fill_fields_with`] fills.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FillOptions {
+    /// Leave a field holding another value than the one given as it is (named in
+    /// [`Filled::kept`]): a value typed by hand is not overwritten. An empty field, or a button
+    /// `Off`, is filled.
+    pub keep_filled: bool,
+    /// Fill as a reader lets a person type: refuse (named in [`Filled::refused`], the field left
+    /// as it was) a read-only field, a text longer than the field's maximum length, characters
+    /// its font cannot draw (WinAnsiEncoding's, which would be drawn as `?`), and a choice the
+    /// field does not offer (a combo box that takes typed text excepted).
+    pub strict: bool,
+}
+
+impl FillOptions {
+    /// Keep the fields holding another value, or not.
+    #[must_use]
+    pub fn keep_filled(mut self, keep: bool) -> Self {
+        self.keep_filled = keep;
+        self
+    }
+
+    /// Refuse what a reader would not let a person type, or not.
+    #[must_use]
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
 }
 
 /// A widget of a page, and the field it belongs to.
-struct Widget {
+pub(crate) struct Widget {
     /// The widget's object, when it is one (not written in place in `/Annots`).
-    id: Option<ObjId>,
-    dict: Dict,
+    pub(crate) id: Option<ObjId>,
+    pub(crate) dict: Dict,
     /// The terminal field: the widget itself when it has a `/T`, else its parent.
-    field: Option<ObjId>,
-    name: String,
+    pub(crate) field: Option<ObjId>,
+    pub(crate) name: String,
 }
 
 /// The widgets of page `index`, in the order of its `/Annots`.
-fn widgets(doc: &Document, page: ObjId) -> Result<Vec<Widget>> {
+pub(crate) fn widgets(doc: &Document, page: ObjId) -> Result<Vec<Widget>> {
     let Some(Object::Dict(page)) = doc.object(page)? else {
         return Ok(Vec::new());
     };
@@ -178,7 +243,7 @@ fn full_name(doc: &Document, widget: &Dict) -> Result<String> {
     Ok(parts.join("."))
 }
 
-fn field_kind(doc: &Document, widget: &Dict) -> Result<FieldKind> {
+pub(crate) fn field_kind(doc: &Document, widget: &Dict) -> Result<FieldKind> {
     let flags = pdf::inherited(doc, widget, b"Ff")?
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
@@ -339,6 +404,7 @@ pub fn fields(doc: &Document, page_index: Option<usize>) -> Result<Vec<Field>> {
                 read_only: flags & READ_ONLY != 0,
                 max_length: pdf::inherited(doc, dict, b"MaxLen")?.and_then(|v| v.as_i64()),
                 choices,
+                editable: kind == FieldKind::ComboBox && flags & EDIT != 0,
                 button_states: if matches!(kind, FieldKind::CheckBox | FieldKind::Radio) {
                     states(doc, dict)?
                 } else {
@@ -411,13 +477,58 @@ impl FillValue {
 ///   the field's value becomes that name (`Off` for an empty value). The name is written with the
 ///   bytes given, never re-encoded.
 ///
-/// Signature fields and push buttons are left as they are. Returns the occurrences written, and
-/// the buttons given a state none of their widgets has ([`Filled::unmatched`]).
+/// A name no field on the pages has, a signature field or push button, and a button given a state
+/// none of its widgets has are refused, the field left as it was ([`Filled::refused`]). Returns
+/// the occurrences written, and each field written with the value it held before
+/// ([`Filled::written`]).
 ///
 /// # Errors
 /// As [`fields`]; [`sealwax_core::Error::LimitExceeded`] when a new object cannot be numbered.
 pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> Result<Filled> {
+    fill_fields_with(doc, values, &FillOptions::default())
+}
+
+/// As [`fill_fields`], with `options`: the fields already holding another value kept
+/// ([`FillOptions::keep_filled`]), what a reader would not let a person type refused
+/// ([`FillOptions::strict`]).
+///
+/// # Errors
+/// As [`fill_fields`].
+pub fn fill_fields_with(
+    doc: &mut Document,
+    values: &HashMap<String, FillValue>,
+    options: &FillOptions,
+) -> Result<Filled> {
     let mut filled = Filled::default();
+    let found = fields(doc, None)?;
+    let by_name = by_name(&found);
+    let mut names: Vec<&String> = values.keys().collect();
+    names.sort();
+    let mut accepted: HashMap<&str, &FillValue> = HashMap::new();
+    for name in names {
+        let value = &values[name];
+        let Some(occurrences) = by_name.get(name.as_str()) else {
+            filled.refused.push(name.clone());
+            continue;
+        };
+        let Some(written) = takes(occurrences, value, options.strict) else {
+            filled.refused.push(name.clone());
+            continue;
+        };
+        let previous = held(occurrences);
+        if options.keep_filled && !empty(occurrences, &previous) && previous != written {
+            filled.kept.push(name.clone());
+            continue;
+        }
+        filled.written.insert(
+            name.clone(),
+            Written {
+                value: written,
+                previous,
+            },
+        );
+        accepted.insert(name, value);
+    }
     let acro_form = match doc.object(doc.catalog_id())? {
         Some(Object::Dict(catalog)) => {
             pdf::dict(doc, catalog.get(b"AcroForm"))?.unwrap_or_default()
@@ -425,12 +536,10 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
         _ => Dict::new(),
     };
     let mut font: Option<ObjId> = None;
-    // Each button given a state, and whether one of its widgets has it.
-    let mut buttons: BTreeMap<String, bool> = BTreeMap::new();
     for page in doc.page_ids().into_iter().flatten() {
         doc.check_time()?;
         for widget in widgets(doc, page)? {
-            let Some(value) = values.get(&widget.name) else {
+            let Some(value) = accepted.get(widget.name.as_str()) else {
                 continue;
             };
             let Some(widget_id) = widget.id else {
@@ -444,9 +553,6 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
                     let has_state = states(doc, &widget.dict)?
                         .iter()
                         .any(|state| state == wanted);
-                    if !wanted.is_empty() {
-                        *buttons.entry(widget.name.clone()).or_default() |= has_state;
-                    }
                     let state: &[u8] = if has_state && !wanted.is_empty() {
                         wanted
                     } else {
@@ -503,11 +609,138 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
             filled.occurrences += 1;
         }
     }
-    filled.unmatched = buttons
-        .into_iter()
-        .filter_map(|(name, matched)| (!matched).then_some(name))
-        .collect();
     Ok(filled)
+}
+
+/// Give each field `written` names the value it held before, unless it was changed since (its
+/// value is no longer the one written) or refuses it: those are returned, in the order of their
+/// names' bytes, left as they are. A name the form no longer has is passed over.
+///
+/// # Errors
+/// As [`fill_fields`].
+pub fn unfill_fields(
+    doc: &mut Document,
+    written: &BTreeMap<String, Written>,
+) -> Result<Vec<String>> {
+    let found = fields(doc, None)?;
+    let by_name = by_name(&found);
+    let mut kept = Vec::new();
+    let mut restored = HashMap::new();
+    for (name, field) in written {
+        let Some(occurrences) = by_name.get(name.as_str()) else {
+            continue;
+        };
+        if held(occurrences) != field.value {
+            kept.push(name.clone());
+            continue;
+        }
+        let value = if is_button(occurrences) {
+            // The state as the document spells it: its bytes, which may not be UTF-8.
+            occurrences
+                .iter()
+                .flat_map(|occurrence| &occurrence.button_states)
+                .find(|state| name_text(state) == field.previous)
+                .map_or_else(
+                    || FillValue::Text(String::new()),
+                    |state| FillValue::Bytes(state.clone()),
+                )
+        } else {
+            FillValue::Text(field.previous.clone())
+        };
+        restored.insert(name.clone(), value);
+    }
+    let filled = fill_fields(doc, &restored)?;
+    kept.extend(filled.refused);
+    kept.sort();
+    kept.dedup();
+    Ok(kept)
+}
+
+/// The occurrences of each name.
+fn by_name(found: &[Field]) -> HashMap<&str, Vec<&Field>> {
+    let mut by_name: HashMap<&str, Vec<&Field>> = HashMap::new();
+    for field in found {
+        by_name.entry(field.name.as_str()).or_default().push(field);
+    }
+    by_name
+}
+
+fn is_button(occurrences: &[&Field]) -> bool {
+    occurrences
+        .first()
+        .is_some_and(|field| matches!(field.kind, FieldKind::CheckBox | FieldKind::Radio))
+}
+
+/// A field's value as one text: a text or choice field's (several joined by `, `, empty when it
+/// has none), a button's state (`Off` when it has none).
+fn held(occurrences: &[&Field]) -> String {
+    let Some(first) = occurrences.first() else {
+        return String::new();
+    };
+    match &first.value {
+        Some(FieldValue::Text(text)) => text.clone(),
+        Some(FieldValue::Name(name)) => name_text(name),
+        Some(FieldValue::List(list)) => list.join(", "),
+        None if is_button(occurrences) => occurrences
+            .iter()
+            .filter_map(|occurrence| occurrence.state.as_deref())
+            .find(|state| *state != b"Off")
+            .map_or_else(|| "Off".to_owned(), name_text),
+        None => String::new(),
+    }
+}
+
+/// A field with no value: an empty text, a button `Off`.
+fn empty(occurrences: &[&Field], value: &str) -> bool {
+    value.is_empty() || (is_button(occurrences) && value == "Off")
+}
+
+/// The value the field will hold once given `value`, read as [`held`] reads it; `None` when it
+/// refuses it.
+fn takes(occurrences: &[&Field], value: &FillValue, strict: bool) -> Option<String> {
+    let first = occurrences.first()?;
+    if strict && first.read_only {
+        return None;
+    }
+    match first.kind {
+        FieldKind::CheckBox | FieldKind::Radio => {
+            let wanted = value.bytes();
+            if wanted.is_empty() || wanted == b"Off" {
+                return Some("Off".to_owned());
+            }
+            occurrences
+                .iter()
+                .any(|occurrence| occurrence.button_states.iter().any(|s| s == wanted))
+                .then(|| name_text(wanted))
+        }
+        FieldKind::Text | FieldKind::ComboBox | FieldKind::ListBox => {
+            let text = value.text();
+            if strict {
+                let drawn =
+                    |c: char| matches!(c, '\n' | '\r' | '\t') || text::win_ansi(c).is_some();
+                if !text.chars().all(drawn) {
+                    return None;
+                }
+                let too_long = first.max_length.is_some_and(|max| {
+                    i64::try_from(text.chars().count()).unwrap_or(i64::MAX) > max
+                });
+                if first.kind == FieldKind::Text && too_long {
+                    return None;
+                }
+                let offered = first.choices.iter().any(|choice| match choice {
+                    FieldChoice::Single(export) | FieldChoice::Pair { export, .. } => {
+                        *export == text
+                    }
+                });
+                if first.kind != FieldKind::Text && !text.is_empty() && !first.editable && !offered
+                {
+                    return None;
+                }
+            }
+            Some(text)
+        }
+        _ => None,
+    }
 }
 
 fn set_key(doc: &mut Document, id: ObjId, key: &str, value: Object) -> Result<()> {

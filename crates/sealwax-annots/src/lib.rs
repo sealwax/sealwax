@@ -20,6 +20,7 @@ mod generate;
 mod image;
 mod page;
 mod pdf;
+mod template;
 mod text;
 pub mod xfdf;
 
@@ -30,11 +31,12 @@ use sealwax_core::{Dict, Document, ObjId, Object, PageGeometry, Rect};
 
 pub use create::{NewField, NewFieldKind, add_field};
 pub use fields::{
-    Field, FieldChoice, FieldKind, FieldValue, FillValue, Filled, field_values, fields,
-    fill_fields, name_text,
+    Field, FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Filled, Written,
+    field_values, fields, fill_fields, fill_fields_with, name_text, unfill_fields,
 };
 pub use flatten::Flattened;
 pub use image::{MAX_PIXELS, PictureError};
+pub use template::{Cleared, TemplateContent, TemplateOptions, clear_template, template_content};
 
 use page::Placed;
 

@@ -86,7 +86,12 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
         return Err(sealwax_core::Error::InvalidArgument { what: "field name" }.into());
     }
     let mut names: Vec<String> = fields(doc, None)?.into_iter().map(|f| f.name).collect();
-    names.extend(form_names(doc)?);
+    names.extend(
+        form_tree(doc)?
+            .into_iter()
+            .filter(|node| !node.name.is_empty())
+            .map(|node| node.name),
+    );
     let taken = names.iter().any(|existing| {
         *existing == field.name
             || existing
@@ -184,9 +189,19 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
     Ok(id)
 }
 
-/// The full names of the form's fields, from its `/Fields` down, those without a widget on a page
-/// included.
-fn form_names(doc: &Document) -> Result<Vec<String>> {
+/// A node of the form's field tree, from its `/Fields` down.
+pub(crate) struct FormNode {
+    /// Its full name; empty for a node without a partial name of its own nor above it.
+    pub(crate) name: String,
+    /// Its object, when it is one.
+    pub(crate) id: Option<ObjId>,
+    /// It has a partial name (`/T`) and none of its kids has: a field that holds a value.
+    pub(crate) terminal: bool,
+}
+
+/// The nodes of the form's field tree, those without a widget on a page included; 32 levels deep
+/// and 100,000 nodes at most, each once.
+pub(crate) fn form_tree(doc: &Document) -> Result<Vec<FormNode>> {
     let (form, _) = form(doc)?;
     let top = match form.get(b"Fields") {
         Some(value) => match pdf::resolved(doc, value)? {
@@ -195,37 +210,53 @@ fn form_names(doc: &Document) -> Result<Vec<String>> {
         },
         None => return Ok(Vec::new()),
     };
-    let mut names = Vec::new();
+    let mut nodes = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut stack: Vec<(Object, String, usize)> =
         top.into_iter().map(|f| (f, String::new(), 0)).collect();
     while let Some((value, parent, depth)) = stack.pop() {
-        if depth > 32 || names.len() > 100_000 {
+        if depth > 32 || nodes.len() > 100_000 {
             break;
         }
-        if let Object::Ref(id) = value
-            && !seen.insert(id)
-        {
-            continue;
-        }
+        let id = match value {
+            Object::Ref(id) if !seen.insert(id) => continue,
+            Object::Ref(id) => Some(id),
+            _ => None,
+        };
         let Some(Object::Dict(node)) = pdf::resolved(doc, &value)? else {
             continue;
         };
         let mut name = parent;
-        if let Some(Object::String(partial)) = node.get(b"T") {
+        let named = if let Some(Object::String(partial)) = node.get(b"T") {
             if !name.is_empty() {
                 name.push('.');
             }
             name.push_str(&sealwax_core::decode_text_string(partial));
-            names.push(name.clone());
+            true
+        } else {
+            false
+        };
+        let kids = match node.get(b"Kids") {
+            Some(kids) => match pdf::resolved(doc, kids)? {
+                Some(Object::Array(kids)) => kids,
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        let mut named_kids = false;
+        for kid in &kids {
+            if let Some(Object::Dict(kid)) = pdf::resolved(doc, kid)? {
+                named_kids |= kid.contains_key(b"T");
+            }
         }
-        if let Some(kids) = node.get(b"Kids")
-            && let Some(Object::Array(kids)) = pdf::resolved(doc, kids)?
-        {
-            stack.extend(kids.into_iter().map(|kid| (kid, name.clone(), depth + 1)));
-        }
+        nodes.push(FormNode {
+            name: name.clone(),
+            id,
+            terminal: named && !named_kids,
+        });
+        stack.extend(kids.into_iter().map(|kid| (kid, name.clone(), depth + 1)));
     }
-    Ok(names)
+    Ok(nodes)
 }
 
 /// `rect` given on a page as it shows (turned by `rotation`, from the top-left corner of
@@ -316,7 +347,7 @@ fn form_fonts(doc: &mut Document) -> Result<FormFonts> {
 }
 
 /// Where the form's dictionary is written.
-enum FormLocation {
+pub(crate) enum FormLocation {
     /// In the catalog.
     Inline,
     /// An object of its own.
@@ -324,7 +355,7 @@ enum FormLocation {
 }
 
 /// The form (an empty one when the document has none), and where it is written.
-fn form(doc: &Document) -> Result<(Dict, FormLocation)> {
+pub(crate) fn form(doc: &Document) -> Result<(Dict, FormLocation)> {
     let Some(Object::Dict(catalog)) = doc.object(doc.catalog_id())? else {
         return Err(Error::Pdf(sealwax_core::Error::Malformed));
     };
@@ -338,7 +369,7 @@ fn form(doc: &Document) -> Result<(Dict, FormLocation)> {
     })
 }
 
-fn store_form(doc: &mut Document, form: Dict, location: FormLocation) -> Result<()> {
+pub(crate) fn store_form(doc: &mut Document, form: Dict, location: FormLocation) -> Result<()> {
     match location {
         FormLocation::Object(id) => doc.set_object(id, Object::Dict(form)),
         FormLocation::Inline => {

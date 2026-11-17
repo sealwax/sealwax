@@ -106,12 +106,7 @@ fn a_date_carries_its_actions_and_a_check_box_its_states() {
     assert_eq!(agree.kind, FieldKind::CheckBox);
     assert_eq!(agree.button_states, [b"Off".to_vec(), b"Yes".to_vec()]);
     let checked = HashMap::from([("agree".to_owned(), FillValue::Text("Yes".into()))]);
-    assert!(
-        fill_fields(&mut doc, &checked)
-            .unwrap()
-            .unmatched
-            .is_empty()
-    );
+    assert!(fill_fields(&mut doc, &checked).unwrap().refused.is_empty());
     assert_eq!(values(&doc)["agree"], ["Yes"]);
     assert!(matches!(doc.object(widget).unwrap(), Some(Object::Dict(_))));
 }

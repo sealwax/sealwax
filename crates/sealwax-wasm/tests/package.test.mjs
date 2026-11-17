@@ -90,11 +90,27 @@ test("fields are read, filled and read back", () => {
   );
   assert.deepEqual(fields[1].buttonStates, [new TextEncoder().encode("Off"), new TextEncoder().encode("Yes")]);
   const filled = doc.fillFields({ name: "Élodie", agree: new TextEncoder().encode("Yes"), nobody: "x" });
-  assert.deepEqual(filled, { occurrences: 2, charactersReplaced: 0, unmatched: [] });
+  assert.deepEqual(filled, {
+    occurrences: 2,
+    charactersReplaced: 0,
+    refused: ["nobody"],
+    kept: [],
+    written: { agree: { value: "Yes", previous: "Off" }, name: { value: "Élodie", previous: "" } },
+  });
   assert.ok(doc.isModified());
   const reopened = Document.fromBytes(doc.save());
   assert.deepEqual(reopened.fieldValues(), { name: ["Élodie"], agree: ["Yes"] });
-  assert.deepEqual(reopened.fillFields({ agree: "Maybe" }).unmatched, ["agree"]);
+  assert.deepEqual(reopened.fillFields({ agree: "Maybe" }).refused, ["agree"]);
+  // Kept: a field holding another value; written: one given the value it holds.
+  const kept = reopened.fillFields({ name: "Lise", agree: "Yes" }, { keepFilled: true });
+  assert.deepEqual([kept.kept, Object.keys(kept.written)], [["name"], ["agree"]]);
+  const again = reopened.fillFields({ name: "Lise" });
+  assert.deepEqual(reopened.unfillFields(again.written), []);
+  assert.deepEqual(reopened.fieldValues().name, ["Élodie"]);
+  assert.throws(() => reopened.unfillFields({ name: { value: "x" } }), RangeError);
+  assert.equal(reopened.templateContent().fields, 2);
+  assert.deepEqual(reopened.clearTemplate({ title: "Modèle" }), { fields: 2, annotationsRemoved: 0 });
+  assert.deepEqual(Document.fromBytes(reopened.save()).fieldValues(), { name: [""], agree: ["Off"] });
 });
 
 test("a page renders to PNG, pages merge and are taken out", () => {
