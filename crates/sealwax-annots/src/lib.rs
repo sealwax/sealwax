@@ -328,6 +328,7 @@ pub fn apply_xfdf_with(
     applied.pages = changed.into_iter().collect();
     let mut by_page: BTreeMap<ObjId, Vec<Placed>> = BTreeMap::new();
     let mut helvetica: Option<ObjId> = None;
+    let mut helvetica_bold: Option<ObjId> = None;
     // The programs embedded, by the program: one font per program for this XFDF's texts.
     let mut embedded: Vec<(Arc<font::Program>, font::Embedded)> = Vec::new();
     for (page, item) in prepared {
@@ -375,6 +376,19 @@ pub fn apply_xfdf_with(
                         let (drawing, replaced) = draw::free_text_with(&text, width, height, font);
                         applied.characters_replaced += replaced;
                         fonts.insert(font::TextFont::resource(font), Object::Ref(font.id));
+                        drawing
+                    }
+                    None if font::HelveticaBold::named(text.font.as_deref()) => {
+                        let (drawing, replaced) =
+                            draw::free_text_with(&text, width, height, &font::HelveticaBold);
+                        applied.characters_replaced += replaced;
+                        let font = match helvetica_bold {
+                            Some(font) => font,
+                            None => *helvetica_bold.insert(
+                                doc.add_object(flatten::font_dict(flatten::Font::HelveticaBold))?,
+                            ),
+                        };
+                        fonts.insert("HeBo", Object::Ref(font));
                         drawing
                     }
                     None => {

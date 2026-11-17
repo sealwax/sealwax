@@ -39,6 +39,9 @@ All notable changes to sealwax are recorded here. The format follows
   `ToUnicode` map): each character the font has drawn as it is, and read back. A character it
   lacks is drawn as its `?` and counted; `.notdef` is never shown. The documents convert to PDF/A
   as before. Without fonts, Helvetica as before.
+- Free texts in Helvetica-Bold drawn in Helvetica-Bold, a standard font (its WinAnsiEncoding
+  widths, Adobe's metrics), rather than in Helvetica; a program given for `Helvetica-Bold` takes
+  its place.
 
 ### Changed
 

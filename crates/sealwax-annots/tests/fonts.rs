@@ -411,3 +411,45 @@ fn the_program_embedded_keeps_the_glyphs_used_only_and_its_widths_are_the_progra
         .collect();
     assert_eq!(with_outline, [0, 3, 9]);
 }
+
+#[test]
+fn helvetica_bold_is_drawn_in_helvetica_bold_with_its_widths() {
+    let mut doc = page();
+    let xfdf = exported(&[
+        free_text("100,600,400,630", "Bold", "Helvetica-Bold"),
+        free_text("100,500,400,530", "Bold", "Helvetica"),
+    ]);
+    let applied = apply_xfdf_with(&mut doc, &xfdf, &ApplyOptions::new(), |_| None).unwrap();
+    assert_eq!(applied.characters_replaced, 0);
+    let doc = saved(&doc);
+    let glyphs = sealwax_text::glyphs(&doc, 0, false).unwrap();
+    let fonts: Vec<&str> = glyphs.iter().filter_map(|g| g.font.as_deref()).collect();
+    assert_eq!(
+        fonts,
+        ["Helvetica-Bold"; 4]
+            .iter()
+            .chain(&["Helvetica"; 4])
+            .copied()
+            .collect::<Vec<_>>()
+    );
+    // "Bold" at 14 points: 722 + 611 + 278 + 611 in Helvetica-Bold, 667 + 556 + 222 + 556 in
+    // Helvetica, thousandths of the size.
+    let width = |range: std::ops::Range<usize>| {
+        glyphs[range.end - 1].end[0] - glyphs[range.start].origin[0]
+    };
+    assert!((width(0..4) - 2.222 * 14.0).abs() < 1e-6, "{}", width(0..4));
+    assert!((width(4..8) - 2.001 * 14.0).abs() < 1e-6, "{}", width(4..8));
+    // A program given for Helvetica-Bold takes its place.
+    let fonts = TextFonts::new().named(
+        "Helvetica-Bold",
+        program("Bold-Font", &['B', 'o', 'l', 'd']),
+    );
+    let mut doc = page();
+    apply_xfdf_with(&mut doc, &xfdf, &ApplyOptions::new().fonts(fonts), |_| None).unwrap();
+    let (text, fonts) = shown(&saved(&doc));
+    assert_eq!(text, "BoldBold");
+    assert!(
+        fonts[0].ends_with("+Bold-Font") && fonts[1] == "Helvetica",
+        "{fonts:?}"
+    );
+}
