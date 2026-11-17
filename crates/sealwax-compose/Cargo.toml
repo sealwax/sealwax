@@ -1,0 +1,30 @@
+[package]
+name = "sealwax-compose"
+description = "PDF documents written from laid-out pages: glyphs, paths, pictures and links."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sealwax-core.workspace = true
+# Content streams compressed (MIT OR Apache-2.0); already in the tree.
+flate2 = "1"
+# Font programs read: tables, `cmap`, advances, names (MIT OR Apache-2.0); already in the tree.
+read-fonts = "0.46"
+# Font programs cut to the glyphs drawn, TrueType and CFF, for PDF (typst's; MIT OR Apache-2.0,
+# no dependencies, no `unsafe`).
+subsetter = "0.2.6"
+thiserror.workspace = true
+
+[dev-dependencies]
+sealwax-raster.workspace = true
+sealwax-text.workspace = true
+
+[lints]
+workspace = true

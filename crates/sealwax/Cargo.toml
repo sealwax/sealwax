@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 sealwax-core.workspace = true
 sealwax-annots.workspace = true
+sealwax-compose.workspace = true
 sealwax-pdfa.workspace = true
 sealwax-raster.workspace = true
 sealwax-sign.workspace = true

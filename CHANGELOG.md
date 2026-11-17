@@ -6,6 +6,19 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sealwax-compose`: a new document written from laid-out pages (`compose` and `Composition`),
+  for what another engine lays out (a word processor's document, HTML) to become a PDF that the
+  rest of sealwax archives, fills and signs. Pages hold glyph runs, each glyph where the layout
+  put it, paths filled and stroked, clips, transforms, linear gradients (in linear light, as Word
+  draws them, or in sRGB), pictures already encoded (JPEG passed through) and link areas (to an
+  address or a page). Fonts are embedded as subsets with their `ToUnicode` maps, TrueType or
+  CFF outlines, from a file or a collection (`font`, cut by subsetter); a standard-14 font is
+  written with the widths the layout measured. What cannot be written (a program that cannot
+  be embedded, a picture past `max_image_pixels`) is left out and counted (`Composed::skipped`);
+  the deadline is checked as pages are written. A fuzz target covers the font programs.
+
 ### Changed
 
 - A page rendered again (at another scale, in parts, after another page of the same document)
@@ -14,6 +27,11 @@ All notable changes to sealwax are recorded here. The format follows
   as fast as thumbnails and about a fifth faster at twice their size. Each thread keeps them for
   the document it rendered last, until it renders another, `release_cache()` in Python, or, in
   WebAssembly, a document freed. A scanned page's image is still decoded on every render.
+- The fonts given for free texts (`TextFonts`; `fonts` and `default_font` in Python, `fonts` and
+  `defaultFont` in WebAssembly) may be OpenType programs with CFF outlines, or collections (their
+  first face), as well as TrueType programs: they are embedded as `sealwax-compose` embeds
+  fonts. The subset now holds the glyphs used only, numbered from 1 (they kept their
+  place among emptied ones): the PDF's bytes change, not what it draws or reads back.
 
 ### Fixed
 

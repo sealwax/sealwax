@@ -7,6 +7,8 @@ pub use sealwax_core::*;
 
 /// Annotations: a signing page's XFDF applied, annotations flattened, documents merged.
 pub use sealwax_annots as annots;
+/// A new document written from laid-out pages.
+pub use sealwax_compose as compose;
 /// Conversion to PDF/A-3 (levels b, u and a).
 pub use sealwax_pdfa as pdfa;
 /// Pages rendered to images: the grayscale PDF a fax sends.

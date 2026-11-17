@@ -258,10 +258,10 @@ export interface ApplyXfdfOptions {
   /** Take the document's annotations (links but) and form out first, nothing of them painted:
    * the pages show their content and the XFDF alone. */
   removeAnnotations?: boolean;
-  /** TrueType programs for the free texts, by the font the XFDF names (`{ Caveat: bytes }`),
+  /** TrueType or OpenType programs for the free texts, by the font the XFDF names (`{ Caveat: bytes }`),
    * embedded: each character the font has drawn as it is. */
   fonts?: Record<string, Uint8Array>;
-  /** The TrueType program for the free texts whose font has none of its own; without it,
+  /** The TrueType or OpenType program for the free texts whose font has none of its own; without it,
    * Helvetica (the characters WinAnsiEncoding lacks drawn as `?`). */
   defaultFont?: Uint8Array;
 }

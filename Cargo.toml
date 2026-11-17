@@ -8,6 +8,7 @@ members = [
     "crates/sealwax-annots",
     "crates/sealwax-raster",
     "crates/sealwax-sign",
+    "crates/sealwax-compose",
     "crates/sealwax-cli",
     "crates/sealwax-py",
     "crates/sealwax-wasm",
@@ -22,6 +23,7 @@ default-members = [
     "crates/sealwax-annots",
     "crates/sealwax-raster",
     "crates/sealwax-sign",
+    "crates/sealwax-compose",
     "crates/sealwax-cli",
 ]
 
@@ -44,6 +46,7 @@ sealwax-pdfa = { path = "crates/sealwax-pdfa", version = "0.3.0" }
 sealwax-annots = { path = "crates/sealwax-annots", version = "0.3.0" }
 sealwax-raster = { path = "crates/sealwax-raster", version = "0.3.0" }
 sealwax-sign = { path = "crates/sealwax-sign", version = "0.3.0" }
+sealwax-compose = { path = "crates/sealwax-compose", version = "0.3.0" }
 
 # Reading. Default features off: no image decoders and no `unsafe` feature for now; revisit with
 # measurements.
