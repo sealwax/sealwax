@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use sealwax_annots::{FillValue, fill_fields};
+use sealwax_annots::{FillValue, NewField, NewFieldKind, add_field, fill_fields};
 use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
 use sealwax_raster::{Error, RenderOptions, render, render_png};
 
@@ -306,4 +306,45 @@ fn a_modified_document_is_read_again_once_until_it_changes() {
         !std::sync::Arc::ptr_eq(&first, &changed),
         "read again after a change"
     );
+}
+
+#[test]
+fn a_field_created_on_a_turned_page_shows_where_it_was_placed_and_reads_upright() {
+    for rotate in [0, 90, 180, 270] {
+        let mut doc = open(document(
+            b"",
+            &format!("/MediaBox [0 0 600 800] /Rotate {rotate}"),
+            "",
+            &[],
+        ));
+        // Placed on the page as it shows, from its top-left corner.
+        let (x1, y1, x2, y2) = (100, 50, 400, 90);
+        let rect = [f64::from(x1), f64::from(y1), f64::from(x2), f64::from(y2)];
+        add_field(
+            &mut doc,
+            &NewField::new("name", NewFieldKind::Text, 0, rect),
+        )
+        .unwrap();
+        let values = HashMap::from([("name".to_owned(), FillValue::Text("WWWWWWWW".to_owned()))]);
+        fill_fields(&mut doc, &values).unwrap();
+        let image = Image::decode(&render_png(&doc, 0, 1.0).unwrap());
+        let inside = image.dark(x1, y1, x2, y2);
+        assert!(inside > 50, "{rotate}: the field shows where it was placed");
+        let all = image.dark(0, 0, image.width, image.height);
+        assert_eq!(all, inside, "{rotate}: nothing shows elsewhere");
+        // The text runs along the field, upright: its ink is wider than high.
+        let (mut left, mut right, mut top, mut bottom) = (u32::MAX, 0, u32::MAX, 0);
+        for y in (y1 + 3)..(y2 - 3) {
+            for x in (x1 + 3)..(x2 - 3) {
+                if image.at(x, y).iter().any(|c| *c < 128) {
+                    (left, right, top, bottom) =
+                        (left.min(x), right.max(x), top.min(y), bottom.max(y));
+                }
+            }
+        }
+        assert!(
+            right - left > 3 * (bottom - top),
+            "{rotate}: the text reads along the field"
+        );
+    }
 }

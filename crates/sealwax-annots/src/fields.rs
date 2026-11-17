@@ -475,7 +475,12 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
                     };
                     let choice = kind != FieldKind::Text;
                     let field = flatten::text_field(doc, &acro_form, &dict, choice)?;
-                    let (width, height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
+                    // Drawn in the widget's own frame: turned by `/MK /R`, its sides swap.
+                    let turns = flatten::widget_turns(doc, &dict)?;
+                    let (mut width, mut height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
+                    if turns % 2 == 1 {
+                        (width, height) = (height, width);
+                    }
                     let (drawing, replaced) = draw::text_field(&field, width, height);
                     filled.characters_replaced += replaced;
                     let font_id = match font {
@@ -486,8 +491,9 @@ pub fn fill_fields(doc: &mut Document, values: &HashMap<String, FillValue>) -> R
                     fonts.insert("Helv", Object::Ref(font_id));
                     let mut resources = Dict::new();
                     resources.insert("Font", fonts);
-                    let form =
-                        doc.add_object(flatten::form_stream(&drawing, width, height, resources))?;
+                    let form = doc.add_object(flatten::turned_form_stream(
+                        &drawing, width, height, resources, turns,
+                    ))?;
                     let mut appearances = Dict::new();
                     appearances.insert("N", Object::Ref(form));
                     set_key(doc, widget_id, "AP", Object::Dict(appearances))?;

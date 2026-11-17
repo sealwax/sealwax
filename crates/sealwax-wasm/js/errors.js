@@ -29,12 +29,16 @@ export class PdfTimeoutError extends PdfLimitError {}
 /** The XFDF cannot be applied. */
 export class XfdfError extends PdfError {}
 
+/** A field to create is named as one the form already has. */
+export class FieldNameTakenError extends PdfError {}
+
 const KINDS = {
   read: PdfReadError,
   password: PdfPasswordError,
   limit: PdfLimitError,
   timeout: PdfTimeoutError,
   xfdf: XfdfError,
+  name: FieldNameTakenError,
 };
 
 /** Called by the WebAssembly module: the error of `kind`, never quoting a document's content. */

@@ -12,3 +12,5 @@ export class PdfLimitError extends PdfError {
 export class PdfTimeoutError extends PdfLimitError {}
 /** The XFDF cannot be applied. */
 export class XfdfError extends PdfError {}
+/** A field to create is named as one the form already has. */
+export class FieldNameTakenError extends PdfError {}

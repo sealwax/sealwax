@@ -156,6 +156,7 @@ fn core_error(error: &sealwax_core::Error) -> JsValue {
         Error::LimitExceeded { what } => make_error("limit", &message, Some((*what).to_owned())),
         Error::Timeout => make_error("timeout", &message, Some("deadline".to_owned())),
         Error::InvalidArgument { .. } => make_error("argument", &message, None),
+        Error::FieldNameTaken => make_error("name", &message, None),
         _ => make_error("pdf", &message, None),
     }
 }
@@ -671,6 +672,52 @@ impl Document {
             .collect();
         set(&object, "unmatched", unmatched);
         Ok(object)
+    }
+
+    /// Create a field: `kind` "text", "date" (a text field carrying Acrobat's `yyyy-mm-dd` date
+    /// actions) or "checkbox" (states `Yes` and `Off`), named `name` (not empty, no period), on
+    /// page `pageIndex` (from 0) at `rect` ([x1, y1, x2, y2]) on the page as it shows: turned by
+    /// its rotation, from the top-left corner of its crop box, y down, in points. It gets a gray
+    /// border one point wide and no background, and turns with the page so that its text reads
+    /// upright. The form is created if the document has none.
+    ///
+    /// # Errors
+    /// A `FieldNameTakenError` when the form already has a field of that name; a `RangeError`
+    /// for a bad kind, name, page or rectangle.
+    #[wasm_bindgen(js_name = addField)]
+    pub fn add_field(
+        &mut self,
+        #[wasm_bindgen(
+            unchecked_param_type = "{ name: string; kind: \"text\" | \"date\" | \"checkbox\"; pageIndex: number; rect: Box; required?: boolean }"
+        )]
+        field: JsValue,
+    ) -> Result<(), JsValue> {
+        let name = get(&field, "name")
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| argument("name must be a string"))?;
+        let kind = match get(&field, "kind").and_then(|v| v.as_string()).as_deref() {
+            Some("text") => sealwax_annots::NewFieldKind::Text,
+            Some("date") => sealwax_annots::NewFieldKind::Date,
+            Some("checkbox") => sealwax_annots::NewFieldKind::CheckBox,
+            _ => return Err(argument("kind must be \"text\", \"date\" or \"checkbox\"")),
+        };
+        let page = get(&field, "pageIndex")
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+            .ok_or_else(|| argument("pageIndex must be a whole number"))?;
+        let rect: Vec<f64> = get(&field, "rect")
+            .map(|r| Array::from(&r).iter().filter_map(|v| v.as_f64()).collect())
+            .unwrap_or_default();
+        let [x1, y1, x2, y2] = rect[..] else {
+            return Err(argument("rect must be [x1, y1, x2, y2]"));
+        };
+        let required = get(&field, "required").is_some_and(|v| v.is_truthy());
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let new = sealwax_annots::NewField::new(&name, kind, page as usize, [x1, y1, x2, y2])
+            .required(required);
+        sealwax_annots::add_field(&mut self.inner, &new)
+            .map(|_| ())
+            .map_err(|error| annots_error(&error))
     }
 
     /// Every occurrence's value, by full name: a text or choice field's value, a button's state
