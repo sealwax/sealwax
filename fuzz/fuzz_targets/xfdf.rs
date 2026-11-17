@@ -23,6 +23,7 @@ fuzz_target!(|data: &[u8]| {
             let rotation = match mark {
                 xfdf::Mark::Picture(picture) => picture.rotation,
                 xfdf::Mark::Text(text) => text.rotation,
+                xfdf::Mark::Ink(_) => 0,
             };
             assert!(matches!(rotation, 0 | 90 | 180 | 270));
         }

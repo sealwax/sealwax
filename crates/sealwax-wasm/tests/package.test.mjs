@@ -485,6 +485,18 @@ test("a font that is no TrueType program is refused before anything changes", ()
   assert.equal(doc.applyXfdf(xfdf).charactersReplaced, 1);
 });
 
+test("a drawn signature is written and drawn", () => {
+  const xfdf = sealwax.xfdfFor([
+    { kind: "ink", pageIndex: 0, name: "i1", strokes: [[[100, 600], [120, 630], [150, 615]], [[160, 605]]], width: 1.5 },
+  ]);
+  const doc = Document.fromBytes(form());
+  const applied = doc.applyXfdf(xfdf, { flatten: false });
+  assert.deepEqual([applied.inks, applied.pictures, applied.texts], [1, 0, 0]);
+  assert.deepEqual(applied.pages, [0]);
+  assert.throws(() => sealwax.xfdfFor([{ kind: "ink", pageIndex: 0, name: "i1", strokes: [[[1, 2, 3]]] }]), RangeError);
+  assert.throws(() => sealwax.xfdfFor([{ kind: "ink", pageIndex: 0, name: "i1", strokes: [[]] }]), sealwax.XfdfError);
+});
+
 // Last: a panic stops the module, and reset() makes another.
 test("after a panic every call throws until reset(), and older documents stay refused", async () => {
   const bytes = build([

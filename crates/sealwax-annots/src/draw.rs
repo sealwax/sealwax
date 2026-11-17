@@ -393,6 +393,31 @@ const CENTRE_DROP: f64 = 0.6375;
 const TOP_DROP: f64 = 0.75;
 const BOTTOM_DROP: f64 = 0.8;
 
+/// The strokes of a drawing (an XFDF's `<ink>`), each a line through its points with round caps
+/// and joins (a single point a dot), in its colour and width, moved so that `origin` is at 0, 0.
+pub(crate) fn ink(
+    strokes: &[Vec<[f64; 2]>],
+    colour: &[f64],
+    width: f64,
+    origin: [f64; 2],
+) -> Vec<u8> {
+    let stroke = color(colour, true).unwrap_or_else(|| "0 G".to_owned());
+    let point = |p: &[f64; 2]| format!("{} {}", number(p[0] - origin[0]), number(p[1] - origin[1]));
+    let mut out = format!("q 1 J 1 j {} w {stroke}\n", number(width));
+    for points in strokes.iter().filter(|s| !s.is_empty()) {
+        out.push_str(&format!("{} m", point(&points[0])));
+        for p in &points[1..] {
+            out.push_str(&format!(" {} l", point(p)));
+        }
+        if points.len() == 1 {
+            out.push_str(&format!(" {} l", point(&points[0])));
+        }
+        out.push_str(" S\n");
+    }
+    out.push('Q');
+    out.into_bytes()
+}
+
 /// The free text of an XFDF (`<freetext>`), drawn in its rectangle: Helvetica at its size and
 /// colour, a padding of twice the border's width, the lines the viewer showed when it gave them, else its contents wrapped to the rectangle; its border and background when it has
 /// them. Returns the drawing and the characters WinAnsiEncoding does not have.

@@ -154,6 +154,21 @@ def test_a_font_that_is_no_truetype_program_is_refused_and_nothing_changes():
     assert applied["characters_replaced"] == 1
 
 
+def test_a_drawn_signature_is_written_and_drawn():
+    xfdf = sealwax.xfdf_for([
+        {"kind": "ink", "page_index": 0, "name": "i1", "strokes": [[(100, 200), (120, 230), (150, 215)], [(160, 205)]],
+         "width": 1.5, "custom_data": {"trn-signature-type": "ink"}},
+    ])
+    assert "<ink " in xfdf and "<gesture>" in xfdf
+    doc = sealwax.Document.from_bytes(text_page())
+    applied = doc.apply_xfdf(xfdf)
+    assert (applied["inks"], applied["pictures"], applied["texts"]) == (1, 0, 0)
+    with pytest.raises(ValueError):
+        sealwax.xfdf_for([{"kind": "ink", "page_index": 0, "name": "i1", "strokes": [[(1, 2, 3)]]}])
+    with pytest.raises(sealwax.XfdfError):
+        sealwax.xfdf_for([{"kind": "ink", "page_index": 0, "name": "i1", "strokes": [[]]}])
+
+
 def test_merge_names_the_source_that_failed():
     merged = sealwax.merge_bytes([text_page(), text_page(annots="[6 0 R]")])
     assert sealwax.Document.from_bytes(merged).page_count == 2

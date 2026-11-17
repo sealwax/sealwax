@@ -1,8 +1,8 @@
 //! XFDF applied to PDF documents, and annotations flattened into their pages.
 //!
-//! - [`apply_xfdf`] draws the pictures and texts of the XFDF a signing page exports into the
-//!   pages, after flattening what the document had. Fails closed: an annotation it cannot draw
-//!   refuses the whole XFDF, before any page changes. `<delete>` is read but never applied: a
+//! - [`apply_xfdf`] draws the pictures, texts and drawings of the XFDF a signing page exports
+//!   into the pages, after flattening what the document had. Fails closed: an annotation it
+//!   cannot draw refuses the whole XFDF, before any page changes. `<delete>` is read but never applied: a
 //!   signing page only deletes its own placeholders, and a signer must not take an annotation of
 //!   the original PDF out of the signed one.
 //!   [`apply_xfdf_described`] gives each picture an alternate description (whose signature it
@@ -118,6 +118,8 @@ pub struct Applied {
     pub pictures: usize,
     /// Free texts drawn.
     pub texts: usize,
+    /// Drawings (`<ink>`: signatures drawn by hand) drawn.
+    pub inks: usize,
     /// Characters of the texts WinAnsiEncoding does not have, drawn as `?`.
     pub characters_replaced: usize,
     /// Deletions read and, by design, not applied.
@@ -191,6 +193,9 @@ enum Prepared {
     Text {
         text: xfdf::Text,
     },
+    Ink {
+        ink: xfdf::Ink,
+    },
 }
 
 /// What the pictures of one XFDF or one list of stamps may spend, checked before any page
@@ -230,7 +235,7 @@ impl Budget {
 }
 
 /// Apply the XFDF a signing page exported: flatten what the document has when `flatten` is
-/// set, then draw the XFDF's pictures and texts on top, in its order.
+/// set, then draw the XFDF's pictures, texts and drawings on top, in its order.
 ///
 /// # Errors
 ///
@@ -294,6 +299,7 @@ pub fn apply_xfdf_with(
         let (page_number, rect) = match &mark {
             xfdf::Mark::Picture(picture) => (picture.page_number, picture.rect),
             xfdf::Mark::Text(text) => (text.page_number, text.rect),
+            xfdf::Mark::Ink(ink) => (ink.page_number, ink.rect),
         };
         let page = checked_page(&pages, &geometry, page_number, rect, position)?;
         changed.insert(page_number - 1);
@@ -309,6 +315,7 @@ pub fn apply_xfdf_with(
                 }
             }
             xfdf::Mark::Text(text) => Prepared::Text { text },
+            xfdf::Mark::Ink(ink) => Prepared::Ink { ink },
         };
         prepared.push((page, item));
     }
@@ -352,6 +359,24 @@ pub fn apply_xfdf_with(
                     xobject: image.id,
                     matrix: multiply(contained(shown, image.width, image.height), turn),
                     alt,
+                }
+            }
+            Prepared::Ink { ink } => {
+                applied.inks += 1;
+                // The strokes in a form of their extent, their width around them.
+                let points = || ink.strokes.iter().flatten();
+                let half = ink.width / 2.0 + 1.0;
+                let left = points().map(|p| p[0]).fold(f64::MAX, f64::min) - half;
+                let bottom = points().map(|p| p[1]).fold(f64::MAX, f64::min) - half;
+                let width = points().map(|p| p[0]).fold(f64::MIN, f64::max) + half - left;
+                let height = points().map(|p| p[1]).fold(f64::MIN, f64::max) + half - bottom;
+                let drawing = draw::ink(&ink.strokes, &ink.color, ink.width, [left, bottom]);
+                let form =
+                    doc.add_object(flatten::form_stream(&drawing, width, height, Dict::new()))?;
+                Placed {
+                    xobject: form,
+                    matrix: [1.0, 0.0, 0.0, 1.0, left, bottom],
+                    alt: None,
                 }
             }
             Prepared::Text { text } => {

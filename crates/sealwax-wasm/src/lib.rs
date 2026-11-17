@@ -234,7 +234,21 @@ export interface SignedText {
   customData?: Record<string, string>;
 }
 
-export type SignedMark = SignedStamp | SignedText;
+/** A field signed with a drawing (a signature drawn by hand), to write as XFDF. */
+export interface SignedInk {
+  kind: "ink";
+  pageIndex: number;
+  /** Each stroke's points, [x, y] in PDF user space. */
+  strokes: [number, number][][];
+  /** [r, g, b] from 0 to 1: black unless said otherwise. */
+  color?: [number, number, number];
+  /** In points: 1 unless said otherwise. */
+  width?: number;
+  name: string;
+  customData?: Record<string, string>;
+}
+
+export type SignedMark = SignedStamp | SignedText | SignedInk;
 
 /** How `applyXfdf` treats what the document already has. */
 export interface ApplyXfdfOptions {
@@ -256,6 +270,8 @@ export interface ApplyXfdfOptions {
 export interface Applied {
   pictures: number;
   texts: number;
+  /** Drawings (`<ink>`: signatures drawn by hand) drawn. */
+  inks: number;
   /** Characters of the texts WinAnsiEncoding does not have, drawn as `?`. */
   charactersReplaced: number;
   /** Deletions read and, by design, not applied. */
@@ -1235,7 +1251,7 @@ impl Document {
         Ok(flattened(&report))
     }
 
-    /// Apply the XFDF a signing page exported (its `<add>`: PNG stamps and free texts), drawn
+    /// Apply the XFDF a signing page exported (its `<add>`: PNG stamps, free texts and drawings), drawn
     /// into the pages over what the document has: flattened first (`flatten`, true unless said
     /// otherwise), or taken out (`removeAnnotations`). Several XFDF apply one after the other,
     /// one per signed field. `pages` says which pages to render again.
@@ -1287,6 +1303,7 @@ impl Document {
         let object = Object::new();
         set(&object, "pictures", count(applied.pictures));
         set(&object, "texts", count(applied.texts));
+        set(&object, "inks", count(applied.inks));
         set(
             &object,
             "charactersReplaced",
@@ -1721,7 +1738,7 @@ pub fn xfdf_for(
     #[wasm_bindgen(unchecked_optional_param_type = "{ deleted?: [number, string][] }")]
     options: Option<JsValue>,
 ) -> Result<String, JsValue> {
-    use sealwax_annots::xfdf::{Align, NewMark, NewPicture, NewText, VerticalAlign};
+    use sealwax_annots::xfdf::{Align, NewInk, NewMark, NewPicture, NewText, VerticalAlign};
     if !Array::is_array(&marks) {
         return Err(argument("marks must be an array"));
     }
@@ -1746,11 +1763,13 @@ pub fn xfdf_for(
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let page_index = whole(field("pageIndex"), f64::from(u32::MAX))
             .ok_or_else(|| bad("pageIndex"))? as usize;
-        let [x1, y1, x2, y2] = field("rect")
-            .and_then(|r| numbers_of(&r))
-            .and_then(|n| <[f64; 4]>::try_from(n).ok())
-            .ok_or_else(|| bad("rect"))?;
-        let rect = Rect::from_corners(x1, y1, x2, y2);
+        let rect = || -> Result<Rect, JsValue> {
+            let [x1, y1, x2, y2] = field("rect")
+                .and_then(|r| numbers_of(&r))
+                .and_then(|n| <[f64; 4]>::try_from(n).ok())
+                .ok_or_else(|| bad("rect"))?;
+            Ok(Rect::from_corners(x1, y1, x2, y2))
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let rotation = match field("rotation") {
             None => 0,
@@ -1771,13 +1790,50 @@ pub fn xfdf_for(
             }
         }
         written.push(match kind.as_str() {
+            "ink" => {
+                let list = field("strokes")
+                    .filter(Array::is_array)
+                    .ok_or_else(|| bad("strokes"))?;
+                let mut strokes = Vec::new();
+                for stroke in Array::from(&list).iter() {
+                    if !Array::is_array(&stroke) {
+                        return Err(bad("strokes"));
+                    }
+                    let mut points = Vec::new();
+                    for point in Array::from(&stroke).iter() {
+                        let [x, y] = numbers_of(&point)
+                            .and_then(|n| <[f64; 2]>::try_from(n).ok())
+                            .ok_or_else(|| bad("strokes"))?;
+                        points.push([x, y]);
+                    }
+                    strokes.push(points);
+                }
+                let color = match field("color") {
+                    None => [0.0; 3],
+                    Some(v) => numbers_of(&v)
+                        .and_then(|n| <[f64; 3]>::try_from(n).ok())
+                        .ok_or_else(|| bad("color"))?,
+                };
+                let width = match field("width") {
+                    None => 1.0,
+                    Some(v) => v.as_f64().ok_or_else(|| bad("width"))?,
+                };
+                NewMark::Ink(NewInk {
+                    page_index,
+                    strokes,
+                    color,
+                    width,
+                    name,
+                    custom_data,
+                })
+            }
             "stamp" => {
                 let png = field("png")
                     .filter(|v| v.is_instance_of::<Uint8Array>())
                     .ok_or_else(|| bad("png"))?;
                 NewMark::Picture(NewPicture {
                     page_index,
-                    rect,
+                    rect: rect()?,
                     rotation,
                     png: Uint8Array::from(png).to_vec(),
                     name,
@@ -1810,7 +1866,7 @@ pub fn xfdf_for(
                 };
                 NewMark::Text(NewText {
                     page_index,
-                    rect,
+                    rect: rect()?,
                     rotation,
                     contents,
                     size,

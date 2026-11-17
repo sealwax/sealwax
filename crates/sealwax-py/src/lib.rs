@@ -507,6 +507,7 @@ fn applied_dict<'py>(
     let dict = PyDict::new(py);
     dict.set_item("pictures", applied.pictures)?;
     dict.set_item("texts", applied.texts)?;
+    dict.set_item("inks", applied.inks)?;
     dict.set_item("characters_replaced", applied.characters_replaced)?;
     dict.set_item("deletions_ignored", applied.deletions_ignored)?;
     dict.set_item("annotations_removed", applied.annotations_removed)?;
@@ -1348,7 +1349,7 @@ impl Document {
     }
 
     /// Apply the XFDF a signing page exported: flatten what the document has first when
-    /// `flatten` is set, then draw the XFDF's pictures and texts. `remove_annotations` takes the
+    /// `flatten` is set, then draw the XFDF's pictures, texts and drawings. `remove_annotations` takes the
     /// document's own annotations (links but) and form out first, nothing of them painted.
     /// Several XFDF apply one after the other. `pages` lists the pages that changed (from 0).
     /// `fonts` (`{"Caveat": bytes}`, by the font the XFDF names) and `default_font` (for every
@@ -1612,8 +1613,9 @@ fn has_redaction_marks(
 }
 
 /// The XFDF a signing page sends for the annotations it added, exactly what `apply_xfdf` reads
-/// and draws, read back before it is returned. Each mark is a dict: `kind` ("stamp" or
-/// "freetext"), `page_index` (from 0), `rect` `(x1, y1, x2, y2)` in PDF user space (the page
+/// and draws, read back before it is returned. Each mark is a dict: `kind` ("stamp", "freetext"
+/// or "ink"; a drawing gives `strokes`, lists of `(x, y)`, its `color` and `width` instead of a
+/// `rect`), `page_index` (from 0), `rect` `(x1, y1, x2, y2)` in PDF user space (the page
 /// unrotated, y upward), `rotation` (0, 90, 180 or 270: the page's rotation, for a mark upright
 /// on a turned page; 0 by default), `name` (the annotation's id), `custom_data` (a dict of
 /// strings: `fieldId` names the field); a stamp's `png` (bytes); a free text's `text`, `size`
@@ -1637,7 +1639,7 @@ fn xfdf_for(
 }
 
 fn new_mark(mark: &Bound<'_, PyDict>, position: usize) -> PyResult<pdf::annots::xfdf::NewMark> {
-    use pdf::annots::xfdf::{Align, NewMark, NewPicture, NewText, VerticalAlign};
+    use pdf::annots::xfdf::{Align, NewInk, NewMark, NewPicture, NewText, VerticalAlign};
     let bad =
         |key: &str| PyValueError::new_err(format!("mark {position}: {key} is missing or bad"));
     let required = |key: &str| mark.get_item(key)?.ok_or_else(|| bad(key));
@@ -1648,9 +1650,11 @@ fn new_mark(mark: &Bound<'_, PyDict>, position: usize) -> PyResult<pdf::annots::
     let page_index: usize = required("page_index")?
         .extract()
         .map_err(|_| bad("page_index"))?;
-    let (x1, y1, x2, y2): (f64, f64, f64, f64) =
-        required("rect")?.extract().map_err(|_| bad("rect"))?;
-    let rect = pdf::Rect::from_corners(x1, y1, x2, y2);
+    let rect = || -> PyResult<pdf::Rect> {
+        let (x1, y1, x2, y2): (f64, f64, f64, f64) =
+            required("rect")?.extract().map_err(|_| bad("rect"))?;
+        Ok(pdf::Rect::from_corners(x1, y1, x2, y2))
+    };
     let rotation: u16 = match optional("rotation")? {
         Some(value) => value.extract().map_err(|_| bad("rotation"))?,
         None => 0,
@@ -1667,9 +1671,32 @@ fn new_mark(mark: &Bound<'_, PyDict>, position: usize) -> PyResult<pdf::annots::
         }
     }
     match kind.as_str() {
+        "ink" => {
+            let strokes: Vec<Vec<(f64, f64)>> =
+                required("strokes")?.extract().map_err(|_| bad("strokes"))?;
+            let (r, g, b): (f64, f64, f64) = match optional("color")? {
+                Some(value) => value.extract().map_err(|_| bad("color"))?,
+                None => (0.0, 0.0, 0.0),
+            };
+            let width: f64 = match optional("width")? {
+                Some(value) => value.extract().map_err(|_| bad("width"))?,
+                None => 1.0,
+            };
+            Ok(NewMark::Ink(NewInk {
+                page_index,
+                strokes: strokes
+                    .into_iter()
+                    .map(|stroke| stroke.into_iter().map(|(x, y)| [x, y]).collect())
+                    .collect(),
+                color: [r, g, b],
+                width,
+                name,
+                custom_data,
+            }))
+        }
         "stamp" => Ok(NewMark::Picture(NewPicture {
             page_index,
-            rect,
+            rect: rect()?,
             rotation,
             png: required("png")?.extract().map_err(|_| bad("png"))?,
             name,
@@ -1705,7 +1732,7 @@ fn new_mark(mark: &Bound<'_, PyDict>, position: usize) -> PyResult<pdf::annots::
             };
             Ok(NewMark::Text(NewText {
                 page_index,
-                rect,
+                rect: rect()?,
                 rotation,
                 contents: text,
                 size,

@@ -675,6 +675,37 @@ fn an_xfdf_written_draws_what_the_viewer_export_draws() {
 }
 
 #[test]
+fn a_drawn_signature_is_stroked_where_its_points_are() {
+    let mut doc = doc_with(1, "", "", "", &[]);
+    let ink = "<ink color=\"#000000\" flags=\"print,norotate,locked\" name=\"i-1\" page=\"0\" \
+        rect=\"100,200,180,240\" subject=\"Signature\" title=\"Signer\">\
+        <trn-custom-data bytes=\"{&quot;trn-signature-type&quot;:&quot;ink&quot;}\"/>\
+        <inklist><gesture>100,210;120,230;150,215</gesture><gesture>160,205</gesture></inklist></ink>";
+    let applied = apply_xfdf(&mut doc, &exported(&[ink], "<delete />"), true).unwrap();
+    assert_eq!((applied.inks, applied.pictures, applied.texts), (1, 0, 0));
+    assert_eq!(applied.pages, [0]);
+    let doc = saved(&doc);
+    let painted = painted(&doc, &page(&doc, 0));
+    let [(form, drawing, bbox)] = painted.as_slice() else {
+        panic!("one drawing");
+    };
+    assert_eq!(
+        form.get(b"Subtype").and_then(Object::as_name),
+        Some(&b"Form"[..])
+    );
+    // The strokes' extent, 1.5 around (half the width, and a point).
+    assert!(close(*bbox, [98.5, 203.5, 161.5, 231.5]), "{bbox:?}");
+    let drawing = String::from_utf8_lossy(drawing);
+    assert!(drawing.contains("1 J 1 j 1 w 0 0 0 RG"), "{drawing}");
+    assert!(
+        drawing.contains("1.5 6.5 m 21.5 26.5 l 51.5 11.5 l S"),
+        "{drawing}"
+    );
+    // A single point is a dot.
+    assert!(drawing.contains("61.5 1.5 m 61.5 1.5 l S"), "{drawing}");
+}
+
+#[test]
 fn an_xfdf_without_annotations_still_saves() {
     let mut doc = doc_with(1, "", "", "", &[]);
     apply_xfdf(&mut doc, &exported(&[], "<delete />"), true).unwrap();
