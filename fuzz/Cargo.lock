@@ -962,6 +962,8 @@ dependencies = [
 name = "sealwax-text"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "hayro-font",
  "hayro-interpret",
  "sealwax-core",
  "self_cell",

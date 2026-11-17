@@ -17,6 +17,11 @@ sealwax-core.workspace = true
 # hayro-syntax, which sealwax-core keeps off: this crate is kept apart so that opening and saving
 # documents do not depend on them.
 hayro-interpret = "0.9"
+# The fonts hayro-interpret reads, used directly to split a string into codes and know each code's
+# advance when text is redacted (Apache-2.0 OR MIT, the same project; its features come from
+# hayro-interpret).
+hayro-font = { version = "0.5", default-features = false }
+flate2 = "1"
 # Keeps a parsed document beside the interpreter cache that borrows from it, so that a document's
 # fonts are parsed once rather than on every call (Apache-2.0 OR GPL-2.0-only, used as Apache-2.0;
 # no dependencies, no procedural macro).

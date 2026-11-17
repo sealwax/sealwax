@@ -8,6 +8,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Text redacted (`sealwax_text::redact_text`): the glyphs a page draws under areas are taken out
+  of its content, as text no reader can extract any longer rather than covered. Each string is
+  split into codes and each code placed as hayro reads it (its font's codes and advances, the
+  text state, the forms the page draws); a glyph whose box (its advance, from 0.2 em below its
+  baseline to 0.8 em above it, and its outline) overlaps an area is taken out, and an adjustment
+  that moves as far stands in its place, so that nothing after it moves. Text in a hidden layer
+  is taken out too. A form XObject losing text is copied for the drawing that loses it, the
+  others left whole. Only text, so far: images and paths stay.
 - Annotations made with their appearance (`sealwax_annots::add_annotation`;
   `Document.add_annotation` in Python, `addAnnotation` in WebAssembly): ink, highlight (its
   colours multiplied, the text showing through), underline, strike out, squiggly, square, circle,
@@ -104,6 +112,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
+- A word inside an array of a content stream is read as an operand, as readers read it
+  (`[(a) 0 Tc (b)] TJ` is one `TJ`): such text gets its font named in `glyphs`.
 - Pages taken out (`extract_pages`, `append_page_range`) no longer carry the widgets of the pages
   left out, with their appearances, that a field on a page kept led to.
 
