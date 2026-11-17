@@ -275,3 +275,16 @@ test("fields are created and a name taken is refused with its own error", () => 
     ["agree", "checkbox", [100, 636, 114, 650]],
   ]);
 });
+
+test("photos become pages, those that cannot be read are named", () => {
+  const data = new URL("../../sealwax-annots/tests/data/", import.meta.url);
+  const jpeg = new Uint8Array(readFileSync(new URL("photo-40x20-exif6.jpg", data)));
+  const png = new Uint8Array(readFileSync(new URL("photo-12x10-alpha.png", data)));
+  const { pdf, unreadable, added } = sealwax.photosToPdf([jpeg, new Uint8Array([1, 2]), png]);
+  assert.deepEqual([added, unreadable], [2, [1]]);
+  const doc = Document.fromBytes(pdf);
+  assert.deepEqual(doc.geometry().map((page) => page.rotation), [90, 0]);
+  assert.deepEqual(doc.addPhotoPages([png]), { added: 1, unreadable: [] });
+  assert.throws(() => sealwax.photosToPdf([new Uint8Array([1])]), RangeError);
+  assert.throws(() => sealwax.photosToPdf(["text"]), RangeError);
+});

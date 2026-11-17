@@ -57,15 +57,23 @@ pub(crate) fn pixels(png: &[u8]) -> Result<u64, PictureError> {
 }
 
 pub(crate) fn decode(png: &[u8]) -> Result<Decoded, PictureError> {
+    decode_within(png, MAX_PIXELS)
+}
+
+/// The PNG decoded, refused before its data is inflated when it declares more than
+/// `max_pixels`.
+pub(crate) fn decode_within(png: &[u8], max_pixels: u64) -> Result<Decoded, PictureError> {
     if !png.starts_with(SIGNATURE) {
         return Err(PictureError::NotPng);
     }
     let unreadable = |_| PictureError::Unreadable;
-    let mut decoder = Decoder::new_with_limits(Cursor::new(png), Limits { bytes: MAX_BYTES });
+    // An RGBA picture of `max_pixels` and its rows.
+    let bytes = usize::try_from(max_pixels.saturating_mul(5)).unwrap_or(usize::MAX);
+    let mut decoder = Decoder::new_with_limits(Cursor::new(png), Limits { bytes });
     decoder.set_transformations(Transformations::normalize_to_color8());
     let header = decoder.read_header_info().map_err(unreadable)?;
     let (width, height) = (header.width, header.height);
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+    if u64::from(width) * u64::from(height) > max_pixels {
         return Err(PictureError::TooLarge { width, height });
     }
     let mut reader = decoder.read_info().map_err(unreadable)?;

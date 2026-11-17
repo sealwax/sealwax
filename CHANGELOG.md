@@ -8,6 +8,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Photos made pages (`sealwax_annots::photos_document`, `add_photo_pages`; `photos_to_pdf` and
+  `Document.add_photo_pages` in Python, `photosToPdf` and `addPhotoPages` in WebAssembly): a
+  US Letter sheet for each JPEG or PNG, portrait or landscape as the photo shows, half an inch of
+  margin, the photo fitted without being stretched. A JPEG is embedded byte for byte
+  (`DCTDecode`, its colour space read from its header, Adobe's inverted CMYK decoded); a PNG keeps
+  its transparency; a JPEG's EXIF orientation becomes the page's rotation. The limits'
+  `max_image_pixels` apply before anything is decoded; a photo that cannot be read gets no page
+  and is reported.
 - A WebAssembly build for browsers, web views and workers (`crates/sealwax-wasm`, built by its
   `build.sh` into the npm package `sealwax`): a `Document` class (open, geometry, fields read and
   filled, flattening, PNG rendering, metadata, outline, pages taken out, saving) and functions on
@@ -65,7 +73,8 @@ All notable changes to sealwax are recorded here. The format follows
   reported too.
 - `fill_fields` draws a text field's appearance turned as its widget is (`/MK /R`): on a turned
   page, the value reads upright where it shows.
-
+- `Document::push_page` keeps the `/Rotate` the page it adds holds in its geometry, and
+  `Document::empty_with` starts an empty document held to given limits.
 - Glyphs, drawings and PDF/A tagging keep the fonts they parsed from one call to the next: each
   thread keeps them for the document it read last (`release_cache()` drops them). On a document
   embedding ten whole TrueType fonts, reading a page's glyphs went from 23 ms to 1.3 ms.
