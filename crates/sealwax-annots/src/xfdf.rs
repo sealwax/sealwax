@@ -61,6 +61,10 @@ pub struct Picture {
     pub rect: Rect,
     /// The PNG as the signing page made it.
     pub png: Vec<u8>,
+    /// Degrees (0, 90, 180 or 270) the picture is turned counterclockwise in user space, within
+    /// `rect` (`rotation`): a signing page sets the page's own rotation, so that the picture
+    /// shows upright on the page as shown.
+    pub rotation: u16,
     /// The field it fills, as its custom data names it (`fieldId`), to tell the caller which
     /// field's picture it is.
     pub field_id: Option<String>,
@@ -73,6 +77,7 @@ impl fmt::Debug for Picture {
             .field("page_number", &self.page_number)
             .field("rect", &self.rect)
             .field("png_bytes", &self.png.len())
+            .field("rotation", &self.rotation)
             .field("field_id", &self.field_id)
             .finish()
     }
@@ -121,6 +126,9 @@ pub struct Text {
     pub border_color: Option<Vec<f64>>,
     /// Background (`interior-color`), none when not given.
     pub fill: Option<Vec<f64>>,
+    /// Degrees (0, 90, 180 or 270) the text is turned counterclockwise in user space, within
+    /// `rect`, as [`Picture::rotation`].
+    pub rotation: u16,
 }
 
 impl fmt::Debug for Text {
@@ -289,17 +297,25 @@ fn mark(annotation: &Element, position: usize) -> Result<Mark, Refused> {
     }
 }
 
-/// What every annotation drawn must satisfy: not rotated, not hidden.
-fn drawable(annotation: &Element, position: usize) -> Result<(), Refused> {
+/// What every annotation drawn must satisfy: turned by quarter turns only, not hidden. Returns
+/// its rotation, in degrees counterclockwise from 0 to 270.
+fn drawable(annotation: &Element, position: usize) -> Result<u16, Refused> {
     let rotation = annotation.attribute("rotation").unwrap_or("0");
-    if number(rotation).ok_or_else(|| {
+    let degrees = number(rotation).ok_or_else(|| {
         refused(format!(
             "annotation {position} has a value that is not a number"
         ))
-    })? != 0.0
-    {
-        return Err(refused(format!("annotation {position} is rotated")));
-    }
+    })?;
+    let turned = degrees.rem_euclid(360.0);
+    let rotation = [0_u16, 90, 180, 270, 360]
+        .into_iter()
+        .find(|quarter| (turned - f64::from(*quarter)).abs() < 1e-6)
+        .ok_or_else(|| {
+            refused(format!(
+                "annotation {position} is turned by other than a quarter turn"
+            ))
+        })?
+        % 360;
     let hidden = annotation
         .attribute("flags")
         .unwrap_or_default()
@@ -308,11 +324,11 @@ fn drawable(annotation: &Element, position: usize) -> Result<(), Refused> {
     if hidden {
         return Err(refused(format!("annotation {position} is hidden")));
     }
-    Ok(())
+    Ok(rotation)
 }
 
 fn picture(annotation: &Element, position: usize) -> Result<Picture, Refused> {
-    drawable(annotation, position)?;
+    let rotation = drawable(annotation, position)?;
     let contents: Vec<&Element> = annotation
         .children
         .iter()
@@ -348,6 +364,7 @@ fn picture(annotation: &Element, position: usize) -> Result<Picture, Refused> {
         page_number: page_number(annotation)?,
         rect: rect(annotation)?,
         png,
+        rotation,
         field_id,
     })
 }
@@ -362,7 +379,7 @@ const TEXT_CHILDREN: [&str; 5] = [
 ];
 
 fn text(annotation: &Element, position: usize) -> Result<Text, Refused> {
-    drawable(annotation, position)?;
+    let rotation = drawable(annotation, position)?;
     if let Some(other) = annotation
         .children
         .iter()
@@ -421,6 +438,7 @@ fn text(annotation: &Element, position: usize) -> Result<Text, Refused> {
             .unwrap_or(1.0),
         border_color: annotation.attribute("color").and_then(hex_color),
         fill: annotation.attribute("interior-color").and_then(hex_color),
+        rotation,
     })
 }
 
@@ -786,6 +804,35 @@ mod tests {
     }
 
     #[test]
+    fn a_rotation_by_quarter_turns_is_read_from_0_to_270() {
+        for (attribute, expected) in [
+            ("", 0),
+            (" rotation=\"0\"", 0),
+            (" rotation=\"90\"", 90),
+            (" rotation=\"180.0\"", 180),
+            (" rotation=\"270\"", 270),
+            (" rotation=\"-90\"", 270),
+            (" rotation=\"450\"", 90),
+            (" rotation=\"360\"", 0),
+        ] {
+            let text = FREETEXT.replace("<freetext ", &format!("<freetext{attribute} "));
+            let xfdf = exported(
+                &[&stamp("100,600,160,620", 0, None, "", attribute), &text],
+                "<delete />",
+            );
+            let command = read_command(&xfdf).unwrap();
+            let [Mark::Picture(picture), Mark::Text(text)] = command.marks.as_slice() else {
+                panic!("a picture then a text");
+            };
+            assert_eq!(
+                (picture.rotation, text.rotation),
+                (expected, expected),
+                "{attribute}"
+            );
+        }
+    }
+
+    #[test]
     fn an_xfdf_without_annotations_is_read() {
         let command = read_command(&exported(&[], "<delete />")).unwrap();
         assert!(command.marks.is_empty() && command.deleted.is_empty());
@@ -802,7 +849,7 @@ mod tests {
             exported(&[&stamp("100,600,160,620", 0, Some("data:image/svg+xml;base64,PHN2Zy8+"), "", "")], "<delete />"),
             exported(&[&stamp("100,600,160,620", 0, Some("data:image/png;base64,***"), "", "")], "<delete />"),
             exported(&[&default_stamp().replace("flags=\"print,readonly,locked\"", "flags=\"hidden\"")], "<delete />"),
-            exported(&[&stamp("100,600,160,620", 0, None, "", " rotation=\"90\"")], "<delete />"),
+            exported(&[&stamp("100,600,160,620", 0, None, "", " rotation=\"45\"")], "<delete />"),
             exported(&[&default_stamp().replace("page=\"0\" ", "")], "<delete />"),
             exported(&[&stamp("100,600,160,620", -1, None, "", "")], "<delete />"),
             exported(&[&stamp("1,2,3", 0, None, "", "")], "<delete />"),

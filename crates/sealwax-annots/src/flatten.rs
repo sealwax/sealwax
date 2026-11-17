@@ -166,6 +166,91 @@ pub(crate) fn flatten_scope(doc: &mut Document, scope: Scope) -> Result<Flattene
     Ok(painter.report)
 }
 
+/// The annotations a page lists, resolved: `None` for a page without `/Annots`. Refused past
+/// `max_annotations`, as flattening refuses them.
+fn page_annotations(doc: &Document, page: &Dict) -> Result<Option<Vec<(Object, Dict)>>> {
+    let Some(annots) = page.get(b"Annots") else {
+        return Ok(None);
+    };
+    let items = match pdf::resolved(doc, annots)? {
+        Some(Object::Array(items)) => items,
+        _ => Vec::new(),
+    };
+    if u64::try_from(items.len()).unwrap_or(u64::MAX) > doc.limits().max_annotations {
+        return Err(sealwax_core::Error::LimitExceeded {
+            what: "max_annotations",
+        });
+    }
+    let mut found = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(Object::Dict(annotation)) = pdf::resolved(doc, &item)? {
+            found.push((item, annotation));
+        }
+    }
+    Ok(Some(found))
+}
+
+/// The pages (from 0) with an annotation other than a link: those flattening or
+/// [`remove_annotations`] changes.
+pub(crate) fn annotated_pages(doc: &Document) -> Result<Vec<usize>> {
+    let mut found = Vec::new();
+    for (index, page_id) in doc.page_ids().into_iter().enumerate() {
+        let Some(page_id) = page_id else {
+            continue;
+        };
+        let Some(Object::Dict(page)) = doc.object(page_id)? else {
+            continue;
+        };
+        let annotations = page_annotations(doc, &page)?.unwrap_or_default();
+        if annotations
+            .iter()
+            .any(|(_, a)| a.get(b"Subtype").and_then(Object::as_name) != Some(b"Link"))
+        {
+            found.push(index);
+        }
+    }
+    Ok(found)
+}
+
+/// Take every annotation but links out of the pages, nothing painted, and the form with them:
+/// what the pages show is their content alone. Returns how many were taken out (their popups
+/// not counted).
+pub(crate) fn remove_annotations(doc: &mut Document) -> Result<usize> {
+    let mut removed = 0;
+    for page_id in doc.page_ids().into_iter().flatten() {
+        let Some(Object::Dict(mut page)) = doc.object(page_id)? else {
+            continue;
+        };
+        doc.check_time()?;
+        let Some(annotations) = page_annotations(doc, &page)? else {
+            continue;
+        };
+        let mut kept = Vec::new();
+        for (item, annotation) in annotations {
+            match annotation.get(b"Subtype").and_then(Object::as_name) {
+                Some(b"Link") => kept.push(item),
+                Some(b"Popup") => {}
+                _ => removed += 1,
+            }
+        }
+        if kept.is_empty() {
+            page.remove(b"Annots");
+        } else {
+            page.insert("Annots", Object::Array(kept));
+        }
+        page::store(doc, page_id, page);
+    }
+    let catalog_id = doc.catalog_id();
+    if let Some(Object::Dict(mut catalog)) = doc.object(catalog_id)?
+        && (catalog.contains_key(b"AcroForm") || catalog.contains_key(b"Perms"))
+    {
+        catalog.remove(b"AcroForm");
+        catalog.remove(b"Perms");
+        doc.set_object(catalog_id, Object::Dict(catalog));
+    }
+    Ok(removed)
+}
+
 impl Painter {
     /// The appearance to paint and the matrix that puts it on the annotation's rectangle.
     fn placement(&mut self, doc: &mut Document, annotation: &Dict) -> Result<Option<Placed>> {
@@ -382,6 +467,7 @@ impl Painter {
             vertical: crate::xfdf::VerticalAlign::Top,
             border,
             fill: colour(doc, annotation.get(b"C"))?,
+            rotation: 0,
         })
     }
 

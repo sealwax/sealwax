@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use sealwax_annots::{
-    FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Flattened, TemplateOptions,
-    Written, fields, fill_fields_with, flatten, flatten_fields,
+    ApplyOptions, FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Flattened,
+    TemplateOptions, Written, apply_xfdf_with, fields, fill_fields_with, flatten, flatten_fields,
 };
 use sealwax_core::{
     Document as CoreDocument, Limits, OpenOptions, PageGeometry, PagePick, Rect, SaveOptions,
@@ -198,6 +198,32 @@ export interface Flattened {
   /** Annotations taken out, by subtype. */
   dropped: Record<string, number>;
   charactersReplaced: number;
+}
+
+/** How `applyXfdf` treats what the document already has. */
+export interface ApplyXfdfOptions {
+  /** Flatten the document's annotations (links but) and form into the pages first, as the
+   * final PDF is made: true unless said otherwise. */
+  flatten?: boolean;
+  /** Take the document's annotations (links but) and form out first, nothing of them painted:
+   * the pages show their content and the XFDF alone. */
+  removeAnnotations?: boolean;
+}
+
+/** What `applyXfdf` did. */
+export interface Applied {
+  pictures: number;
+  texts: number;
+  /** Characters of the texts WinAnsiEncoding does not have, drawn as `?`. */
+  charactersReplaced: number;
+  /** Deletions read and, by design, not applied. */
+  deletionsIgnored: number;
+  /** The document's own annotations taken out (`removeAnnotations`). */
+  annotationsRemoved: number;
+  /** The pages that changed, from 0 and in order: render these again, and only these. */
+  pages: number[];
+  /** What flattening did, when it ran. */
+  flattened: Flattened | null;
 }
 
 export interface Metadata {
@@ -1133,6 +1159,67 @@ impl Document {
         }
         .map_err(|error| annots_error(&error))?;
         Ok(flattened(&report))
+    }
+
+    /// Apply the XFDF a signing page exported (its `<add>`: PNG stamps and free texts), drawn
+    /// into the pages over what the document has: flattened first (`flatten`, true unless said
+    /// otherwise), or taken out (`removeAnnotations`). Several XFDF apply one after the other,
+    /// one per signed field. `pages` says which pages to render again.
+    ///
+    /// # Errors
+    /// An `XfdfError` for an XFDF outside a signing page's subset or a mark that cannot be
+    /// placed, a `PdfError` otherwise; nothing is changed then.
+    #[wasm_bindgen(js_name = applyXfdf, unchecked_return_type = "Applied")]
+    pub fn apply_xfdf(
+        &mut self,
+        xfdf: &str,
+        #[wasm_bindgen(unchecked_optional_param_type = "ApplyXfdfOptions")] options: Option<
+            JsValue,
+        >,
+    ) -> Result<Object, JsValue> {
+        let flag = |key: &str| {
+            options
+                .as_ref()
+                .and_then(|o| get(o, key))
+                .map(|v| v.is_truthy())
+        };
+        let apply = ApplyOptions::new()
+            .flatten(flag("flatten").unwrap_or(true))
+            .remove_annotations(flag("removeAnnotations").unwrap_or(false));
+        let applied = apply_xfdf_with(&mut self.inner, xfdf, &apply, |_| None)
+            .map_err(|error| annots_error(&error))?;
+        let object = Object::new();
+        set(&object, "pictures", count(applied.pictures));
+        set(&object, "texts", count(applied.texts));
+        set(
+            &object,
+            "charactersReplaced",
+            count(applied.characters_replaced),
+        );
+        set(
+            &object,
+            "deletionsIgnored",
+            count(applied.deletions_ignored),
+        );
+        set(
+            &object,
+            "annotationsRemoved",
+            count(applied.annotations_removed),
+        );
+        set(
+            &object,
+            "pages",
+            applied
+                .pages
+                .iter()
+                .map(|page| count(*page))
+                .collect::<Array>(),
+        );
+        match &applied.flattened {
+            Some(report) => set(&object, "flattened", flattened(report)),
+            None => set(&object, "flattened", JsValue::NULL),
+        }
+        Ok(object)
     }
 
     /// Page `pageIndex` (from 0) rendered as a reader shows it (annotations and field values

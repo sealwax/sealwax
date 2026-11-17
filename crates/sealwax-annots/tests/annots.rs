@@ -5,7 +5,9 @@
 use std::io::Read as _;
 
 use base64::Engine as _;
-use sealwax_annots::{Error, Stamp, apply_xfdf, flatten, stamp_images};
+use sealwax_annots::{
+    ApplyOptions, Error, Stamp, apply_xfdf, apply_xfdf_with, flatten, stamp_images,
+};
 use sealwax_core::{Dict, Document, Object, OpenOptions, SaveOptions};
 
 // --- building PDFs ------------------------------------------------------------------------------
@@ -401,6 +403,198 @@ fn a_deleted_annotation_is_still_flattened_into_the_page() {
     let page = page(&doc, 0);
     assert!(!page.contains_key(b"Annots"));
     assert_eq!(painted(&doc, &page).len(), 2);
+}
+
+/// A square note (10, 11), a link (12) and a filled text field (13) on the page, the field in
+/// the form.
+fn page_with_a_note_a_link_and_a_field() -> Document {
+    let mut more = square_note();
+    more.push((
+        12,
+        "<< /Type /Annot /Subtype /Link /Rect [10 10 50 50] /NM (link-1) \
+         /A << /S /URI /URI (https://example.com) >> >>"
+            .to_owned(),
+    ));
+    more.push((
+        13,
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (Existing Value) \
+         /Rect [100 100 250 120] /NM (field-1) /F 4 /DA (/Helv 12 Tf 0 g) >>"
+            .to_owned(),
+    ));
+    doc_with(
+        1,
+        "/Annots [10 0 R 12 0 R 13 0 R]",
+        "",
+        "/AcroForm << /Fields [13 0 R] /NeedAppearances true >>",
+        &more,
+    )
+}
+
+#[test]
+fn the_pages_drawn_on_are_listed_from_zero_in_order() {
+    let mut doc = doc_with(3, "", "", "", &[]);
+    let picture = data_url(&black(60, 20));
+    let xfdf = exported(
+        &[
+            &xfdf_stamp("100,600,160,620", 2, &picture),
+            &xfdf_stamp("100,600,160,620", 0, &picture),
+            &xfdf_stamp("300,100,360,120", 2, &picture),
+        ],
+        "<delete />",
+    );
+    let applied = apply_xfdf(&mut doc, &xfdf, true).unwrap();
+    assert_eq!(applied.pages, [0, 2]);
+    assert_eq!(applied.annotations_removed, 0);
+}
+
+#[test]
+fn the_pages_flattened_count_as_changed_and_kept_annotations_do_not() {
+    let picture = data_url(&black(60, 20));
+    let xfdf = exported(&[&xfdf_stamp("100,600,160,620", 0, &picture)], "<delete />");
+    let mut kept = doc_with(2, "/Annots [10 0 R]", "", "", &square_note());
+    assert_eq!(apply_xfdf(&mut kept, &xfdf, false).unwrap().pages, [0]);
+    let mut flattened = doc_with(2, "/Annots [10 0 R]", "", "", &square_note());
+    assert_eq!(
+        apply_xfdf(&mut flattened, &xfdf, true).unwrap().pages,
+        [0, 1]
+    );
+    // A page with links alone does not change: flattening keeps links.
+    let link = vec![(
+        10,
+        "<< /Type /Annot /Subtype /Link /Rect [10 10 50 50] >>".to_owned(),
+    )];
+    let mut linked = doc_with(2, "/Annots [10 0 R]", "", "", &link);
+    assert_eq!(apply_xfdf(&mut linked, &xfdf, true).unwrap().pages, [0]);
+}
+
+#[test]
+fn removing_takes_the_document_annotations_and_form_out_links_but() {
+    let mut doc = page_with_a_note_a_link_and_a_field();
+    let xfdf = exported(
+        &[&xfdf_stamp("300,600,360,620", 0, &data_url(&black(60, 20)))],
+        "<delete />",
+    );
+    let options = ApplyOptions::new().flatten(true).remove_annotations(true);
+    let applied = apply_xfdf_with(&mut doc, &xfdf, &options, |_| None).unwrap();
+    assert_eq!(applied.annotations_removed, 2);
+    assert_eq!(applied.pages, [0]);
+    assert_eq!(applied.pictures, 1);
+    let flattened = applied.flattened.unwrap();
+    assert_eq!((flattened.painted, flattened.drawn), (0, 0));
+    let doc = saved(&doc);
+    let page = page(&doc, 0);
+    assert_eq!(annotation_names(&doc, &page), ["link-1"]);
+    // Only the picture is drawn: neither the square nor the field's value.
+    let painted = painted(&doc, &page);
+    assert_eq!(painted.len(), 1);
+    assert_eq!(
+        painted[0].0.get(b"Subtype").and_then(Object::as_name),
+        Some(&b"Image"[..])
+    );
+    let catalog = resolve(&doc, &Object::Ref(doc.catalog_id()));
+    assert!(!catalog.as_dict().unwrap().contains_key(b"AcroForm"));
+}
+
+#[test]
+fn removing_without_flattening_leaves_no_form_either() {
+    let mut doc = page_with_a_note_a_link_and_a_field();
+    let options = ApplyOptions::new().remove_annotations(true);
+    let applied =
+        apply_xfdf_with(&mut doc, &exported(&[], "<delete />"), &options, |_| None).unwrap();
+    assert_eq!(applied.annotations_removed, 2);
+    assert!(applied.flattened.is_none());
+    assert_eq!(applied.pages, [0]);
+    let doc = saved(&doc);
+    assert_eq!(annotation_names(&doc, &page(&doc, 0)), ["link-1"]);
+    // Nothing painted: the page draws no XObject.
+    assert!(!content(&doc, &page(&doc, 0)).contains("Do"));
+}
+
+#[test]
+fn a_refused_xfdf_removes_nothing() {
+    let mut doc = page_with_a_note_a_link_and_a_field();
+    let xfdf = exported(&["<ink page=\"0\" rect=\"1,1,2,2\" />"], "<delete />");
+    let options = ApplyOptions::new().flatten(true).remove_annotations(true);
+    assert!(apply_xfdf_with(&mut doc, &xfdf, &options, |_| None).is_err());
+    assert!(!doc.is_modified());
+}
+
+#[test]
+fn the_xfdf_of_each_field_applies_one_after_the_other() {
+    let mut doc = doc_with(2, "/Annots [10 0 R]", "", "", &square_note());
+    let picture = data_url(&black(60, 20));
+    let first = exported(&[&xfdf_stamp("100,600,160,620", 0, &picture)], "<delete />");
+    let second = exported(&[&xfdf_stamp("300,100,360,120", 1, &picture)], "<delete />");
+    assert_eq!(apply_xfdf(&mut doc, &first, false).unwrap().pages, [0]);
+    assert_eq!(apply_xfdf(&mut doc, &second, false).unwrap().pages, [1]);
+    let doc = saved(&doc);
+    for index in 0..2 {
+        let page = page(&doc, index);
+        assert_eq!(annotation_names(&doc, &page), ["placeholder-1"]);
+        let images = painted(&doc, &page)
+            .into_iter()
+            .filter(|p| p.0.get(b"Subtype").and_then(Object::as_name) == Some(&b"Image"[..]))
+            .count();
+        assert_eq!(images, 1, "page {index}");
+    }
+}
+
+/// The matrix of the `cm` before each `Do` of the page's content.
+fn placements(doc: &Document, page: &Dict) -> Vec<[f64; 6]> {
+    let content = content(doc, page);
+    let words: Vec<&str> = content.split_whitespace().collect();
+    words
+        .windows(9)
+        .filter(|w| w[6] == "cm" && w[8] == "Do")
+        .map(|w| core::array::from_fn(|i| w[i].parse().unwrap()))
+        .collect()
+}
+
+#[test]
+fn a_turned_mark_is_drawn_turned_counterclockwise_within_its_rectangle() {
+    // Rectangles as a signing page writes them on a page turned a quarter turn: 25 wide and 100
+    // high in user space, a box 100 x 25 as shown.
+    let picture = data_url(&black(40, 10));
+    for (rotation, expected) in [
+        (90, [0.0, 1.0, -1.0, 0.0]),
+        (180, [-1.0, 0.0, 0.0, -1.0]),
+        (270, [0.0, -1.0, 1.0, 0.0]),
+    ] {
+        let mut doc = doc_with(1, &format!("/Rotate {rotation}"), "", "", &[]);
+        let rect = if rotation == 180 {
+            "100,500,200,525"
+        } else {
+            "100,500,125,600"
+        };
+        let stamp = xfdf_stamp(rect, 0, &picture)
+            .replace("<stamp ", &format!("<stamp rotation=\"{rotation}\" "));
+        let free = format!(
+            "<freetext rotation=\"{rotation}\" page=\"0\" rect=\"{rect}\" flags=\"print\" width=\"0\" FontSize=\"10\">\
+             <contents>Jean</contents><defaultappearance>0 0 0 rg /Helvetica 10 Tf</defaultappearance></freetext>"
+        );
+        let applied =
+            apply_xfdf(&mut doc, &exported(&[&stamp, &free], "<delete />"), false).unwrap();
+        assert_eq!((applied.pictures, applied.texts), (1, 1));
+        let doc = saved(&doc);
+        let page = page(&doc, 0);
+        let painted = painted(&doc, &page);
+        let [r1, r2] = [painted[0].2, painted[1].2];
+        let target = if rotation == 180 {
+            [100.0, 500.0, 200.0, 525.0]
+        } else {
+            [100.0, 500.0, 125.0, 600.0]
+        };
+        // The picture (4:1, contained) fills the box as shown; the text's form is the box.
+        assert!(close(r1, target), "{rotation}: {r1:?}");
+        assert!(close(r2, target), "{rotation}: {r2:?}");
+        for matrix in placements(&doc, &page) {
+            let unit: Vec<f64> = matrix[..4]
+                .iter()
+                .map(|v| v.signum() * f64::from(u8::from(v.abs() > 1e-9)))
+                .collect();
+            assert_eq!(unit, expected, "{rotation}: {matrix:?}");
+        }
+    }
 }
 
 #[test]

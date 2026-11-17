@@ -6,6 +6,27 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A signing page's XFDF applied in WebAssembly (`doc.applyXfdf(xfdf, { flatten, removeAnnotations })`),
+  with the code the server runs: the same document and XFDF give the same PDF, byte for byte, in
+  the browser and in Python. Several XFDF apply one after the other, one per signed field.
+- What applying an XFDF does to the document's own annotations, chosen
+  (`sealwax_annots::apply_xfdf_with` and `ApplyOptions`; `remove_annotations` in Python,
+  `removeAnnotations` in WebAssembly): flattened under the XFDF, kept as annotations, or taken out
+  with the form, nothing of them painted: the pages show their content and the XFDF alone.
+  Links stay.
+- `Applied.pages` (`pages` in Python and WebAssembly): the pages an XFDF changed, from 0, those it
+  draws on and those whose annotations were flattened or taken out, for a viewer to render again;
+  `Applied.annotations_removed`.
+
+### Changed
+
+- An XFDF mark turned by quarter turns (`rotation` 90, 180 or 270, as a signing page sets the
+  page's own rotation on a turned page) is drawn turned counterclockwise within its rectangle, so
+  that it shows upright on the page as shown; it was refused. Other angles are still refused.
+- `Applied` is `#[non_exhaustive]`; `xfdf::Picture` and `xfdf::Text` have a `rotation`.
+
 ## [0.2.0] - 2026-11-17
 
 ### Added

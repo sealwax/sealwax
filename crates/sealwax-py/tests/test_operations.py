@@ -37,6 +37,70 @@ def test_xfdf_is_applied_and_refused_when_it_is_not_the_signer_pages():
     assert issubclass(sealwax.XfdfError, sealwax.PdfError)
 
 
+def test_xfdf_says_which_pages_changed_and_can_take_the_annotations_out():
+    doc = sealwax.Document.from_bytes(text_page(annots="[6 0 R]"))
+    applied = doc.apply_xfdf(xfdf(), flatten=False)
+    assert applied["pages"] == [0] and applied["annotations_removed"] == 0
+    applied = doc.apply_xfdf(xfdf(), remove_annotations=True)
+    assert applied["annotations_removed"] == 1 and applied["pages"] == [0]
+    assert b"/Annots" not in sealwax.Document.from_bytes(doc.save()).save(xref="table")
+    out = sealwax.apply_xfdf_bytes(text_page(annots="[6 0 R]"), xfdf(), remove_annotations=True)
+    assert b"/Annots" not in sealwax.Document.from_bytes(out).save(xref="table")
+
+
+def quadrants_png(width: int = 40, height: int = 20) -> bytes:
+    """Red at the top left, green at the top right, blue at the bottom left, yellow at the
+    bottom right: a picture whose turn shows."""
+    import struct
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    colours = {(0, 0): b"\xff\x00\x00", (0, 1): b"\x00\xff\x00", (1, 0): b"\x00\x00\xff", (1, 1): b"\xff\xff\x00"}
+    rows = b"".join(
+        b"\x00" + b"".join(colours[(2 * y // height, 2 * x // width)] for x in range(width)) for y in range(height)
+    )
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_a_picture_turned_as_its_page_shows_upright(rotation):
+    import base64
+
+    page = build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Rotate {rotation} >>",
+    ])
+    # A box 100 x 50 as shown: its sides swapped in user space on a page turned a quarter turn.
+    rect = "200,300,300,350" if rotation in (0, 180) else "200,300,250,400"
+    url = "data:image/png;base64," + base64.b64encode(quadrants_png()).decode()
+    xfdf = (
+        '<?xml version="1.0" encoding="UTF-8" ?><xfdf xmlns="http://ns.adobe.com/xfdf/" xml:space="preserve">'
+        f'<fields /><add><stamp page="0" rect="{rect}" rotation="{rotation}" flags="print,readonly,locked" '
+        f'name="a1"><imagedata>{url}</imagedata></stamp></add><modify /></xfdf>'
+    )
+    doc = sealwax.Document.from_bytes(page)
+    doc.apply_xfdf(xfdf)
+    width, height, pixels = doc.render_rgba(0, 1.0)
+
+    def at(x: int, y: int) -> tuple[int, int, int]:
+        i = 4 * (y * width + x)
+        return pixels[i], pixels[i + 1], pixels[i + 2]
+
+    drawn = [(x, y) for y in range(height) for x in range(width) if at(x, y) != (255, 255, 255)]
+    left, right = min(x for x, _ in drawn), max(x for x, _ in drawn)
+    top, bottom = min(y for _, y in drawn), max(y for _, y in drawn)
+    # Shown wider than high, as the box, and each colour in its corner.
+    assert (right - left + 1, bottom - top + 1) == (100, 50)
+    quarter_x, quarter_y = (right - left) // 4, (bottom - top) // 4
+    assert at(left + quarter_x, top + quarter_y) == (255, 0, 0)
+    assert at(right - quarter_x, top + quarter_y) == (0, 255, 0)
+    assert at(left + quarter_x, bottom - quarter_y) == (0, 0, 255)
+    assert at(right - quarter_x, bottom - quarter_y) == (255, 255, 0)
+
+
 def test_merge_names_the_source_that_failed():
     merged = sealwax.merge_bytes([text_page(), text_page(annots="[6 0 R]")])
     assert sealwax.Document.from_bytes(merged).page_count == 2

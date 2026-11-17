@@ -18,5 +18,13 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(command) = command {
         assert!(plain.is_ok());
         assert_eq!(count.ok(), Some(command.marks.len()));
+        // A mark is turned by quarter turns only, from 0 to 270 degrees.
+        for mark in &command.marks {
+            let rotation = match mark {
+                xfdf::Mark::Picture(picture) => picture.rotation,
+                xfdf::Mark::Text(text) => text.rotation,
+            };
+            assert!(matches!(rotation, 0 | 90 | 180 | 270));
+        }
     }
 });
