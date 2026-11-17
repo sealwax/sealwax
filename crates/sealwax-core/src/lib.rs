@@ -19,6 +19,7 @@ mod census;
 mod decode;
 mod document;
 mod error;
+mod flattened;
 mod geometry;
 mod limits;
 mod merge;

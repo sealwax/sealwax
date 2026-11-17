@@ -832,6 +832,45 @@ impl Document {
         Ok(PyBytes::new(py, &data))
     }
 
+    /// Write onto each page the media box, crop box and rotation it inherits from its page tree
+    /// and does not hold itself, for an engine that does not look for them there (PDFium's
+    /// flattening writes US Letter where a page holds no box). A document whose pages inherit
+    /// none is left as it is. Returns the pages changed.
+    fn own_page_boxes(&mut self, py: Python<'_>) -> PyResult<usize> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.own_page_boxes()?))
+    }
+
+    /// After another engine flattened the form: take out the widgets it left because they are
+    /// hidden (`Hidden` or `NoView`), then the form itself, which still holds the values (a full
+    /// save leaves out what nothing reaches any more). Returns the widgets taken out. `PdfError`
+    /// when a page still holds a visible widget (the flattening did not happen): nothing is
+    /// changed then.
+    fn clear_flattened_form(&mut self, py: Python<'_>) -> PyResult<usize> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.clear_flattened_form()?))
+    }
+
+    /// Whether a page holds a redaction mark (a `/Redact` annotation).
+    fn has_redaction_marks(&self, py: Python<'_>) -> PyResult<bool> {
+        let inner = &self.inner;
+        run(py, || Ok(inner.has_redaction_marks()?))
+    }
+
+    /// A new PDF, saved compressed, of this document's pages alone, for a copy whose redactions
+    /// another engine applied: each page keeps only `/Type`, its boxes, `/Rotate`, `/UserUnit`,
+    /// `/Resources`, `/Contents`, `/Annots` and `/Group` (not `/PieceInfo`, `/Thumb`,
+    /// `/Metadata`, `/AA`...); the widgets and hidden annotations are taken out; the optional
+    /// content is kept, so that a layer turned off stays off; the form, the document
+    /// information, the XMP metadata, the outline and the embedded files stay behind.
+    fn rebuilt_for_redaction<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = &self.inner;
+        let data = run(py, || {
+            compact(&inner.rebuilt_for_redaction()?, inner.limits())
+        })?;
+        Ok(PyBytes::new(py, &data))
+    }
+
     /// The glyphs page `page_index` (from 0) draws, in the order of its content (forms and
     /// Type 3 glyphs included), then with `annotations` those its annotations' appearances draw
     /// (as MuPDF's text includes them), each a dict in the page's default user space
@@ -1116,6 +1155,26 @@ fn apply_xfdf_bytes<'py>(
     Ok(PyBytes::new(py, &saved))
 }
 
+/// Whether the PDF `pdf_content` holds a redaction mark (a `/Redact` annotation). A PDF that
+/// cannot be read counts as marked: a copy of it must not skip what redacting asks for.
+#[pyfunction]
+#[pyo3(signature = (pdf_content, *, limits=None))]
+fn has_redaction_marks(
+    py: Python<'_>,
+    pdf_content: Vec<u8>,
+    limits: Option<PyRef<'_, Limits>>,
+) -> bool {
+    let options = options(None, None, limits.as_deref());
+    py.detach(|| {
+        catch_unwind(AssertUnwindSafe(|| {
+            pdf::Document::open(pdf_content, &options)
+                .and_then(|doc| doc.has_redaction_marks())
+                .unwrap_or(true)
+        }))
+        .unwrap_or(true)
+    })
+}
+
 /// The documents merged into one, in order, each flattened first. With `flatten=False`, their
 /// forms are kept instead, each document's fields renamed `name (2)`, `name (3)`... when an
 /// earlier document has a field of that name. An error names the source (1-based) it came from.
@@ -1238,6 +1297,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(optimize, m)?)?;
     m.add_function(wrap_pyfunction!(pdfa_convert, m)?)?;
     m.add_function(wrap_pyfunction!(release_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(has_redaction_marks, m)?)?;
     signing::register(m)?;
     Ok(())
 }

@@ -188,3 +188,26 @@ test("pages are arranged, inserted and merged with their forms", () => {
   assert.equal(merged.fields().length, 6);
   assert.equal(Document.fromBytes(mergeBytes([threePages(), threePages()])).fields().length, 0);
 });
+
+test("what goes with a flattening another engine makes", () => {
+  const legal = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 1008] >>",
+    "<< /Type /Page /Parent 2 0 R >>",
+  ]);
+  const doc = Document.fromBytes(legal);
+  assert.equal(doc.ownPageBoxes(), 1);
+  const marked = build([
+    "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R 5 0 R] >>",
+    "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (FIELDVALUE) /Rect [10 10 100 30] /F 2 >>",
+    "<< /Type /Annot /Subtype /Redact /Rect [0 0 10 10] >>",
+  ]);
+  assert.equal(sealwax.hasRedactionMarks(marked), true);
+  assert.equal(sealwax.hasRedactionMarks(new Uint8Array([1, 2])), true);
+  const rebuilt = Document.fromBytes(Document.fromBytes(marked).rebuiltForRedaction());
+  assert.equal(new TextDecoder().decode(rebuilt.save({ xref: "table" })).includes("FIELDVALUE"), false);
+  const flattened = Document.fromBytes(marked);
+  assert.equal(flattened.clearFlattenedForm(), 1);
+});

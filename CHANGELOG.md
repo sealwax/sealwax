@@ -20,6 +20,14 @@ All notable changes to sealwax are recorded here. The format follows
   `arrange`, `insertPages` and `mergeBytes({ flatten: false })`. Each field keeps its widgets on
   the pages copied, and only those; a top field an earlier document already names becomes
   `name (2)`.
+- What goes with a flattening another engine makes: `own_page_boxes` writes on each page the
+  boxes and rotation it inherits (an engine that does not look for them there flattens a Legal
+  page to Letter), `clear_flattened_form` takes out the hidden widgets and the form left behind
+  (and refuses when a visible widget remains), `has_redaction_marks` finds `/Redact`
+  annotations (an unreadable PDF counting as marked, given as bytes), and
+  `rebuilt_for_redaction` makes a document of the pages alone, which keep only what draws them,
+  without widgets or hidden annotations, their optional content kept. In Python and in
+  WebAssembly too.
 - `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.

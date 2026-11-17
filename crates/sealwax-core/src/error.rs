@@ -56,6 +56,14 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// A page still holds a visible widget after another engine was to flatten the form: it did
+    /// not.
+    #[error("page {page} still holds a visible widget: the form was not flattened")]
+    NotFlattened {
+        /// The page, from 1.
+        page: usize,
+    },
+
     /// A save did not read back as it should; nothing is returned rather than a broken file.
     #[error("saved document failed its check: {what}")]
     SaveCheck {
