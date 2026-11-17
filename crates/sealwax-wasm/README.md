@@ -23,6 +23,10 @@ const pdf = doc.save(); // Uint8Array
 is fetched from elsewhere. It works the same in a Web Worker, where long operations keep the page
 responsive.
 
+The module uses WebAssembly SIMD: Chrome and Edge 91, Firefox 89, Safari 16.4 (iOS 16.4) and
+Node 16.4 or later. An older engine refuses to compile it (`WebAssembly.CompileError` from
+`init`).
+
 ## Node
 
 Under Node, the package's `node` export reads `sealwax_bg.wasm` from the package itself and is

@@ -104,8 +104,9 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Changed
 
-- The WebAssembly module is optimized by Binaryen (`wasm-opt -Oz`): 7.7 MB to 5.7 MB, 2.32 MB to
-  2.20 MB gzipped. Its optional parameters are declared optional (`options?:`), and its
+- The WebAssembly module is built with WebAssembly SIMD and optimized by Binaryen
+  (`wasm-opt -Oz`): 7.7 MB to 4.4 MB, 2.32 MB to 1.98 MB gzipped. It needs an engine with SIMD
+  (Chrome and Edge 91, Firefox 89, Safari 16.4, Node 16.4). Its optional parameters are declared optional (`options?:`), and its
   declarations are compiled by the package's tests.
 - `fill_fields` gives a check box or radio button the state the value means: its name (bytes
   or text, `Français` finding `/Fran#E7ais`), the export value of a widget (`/Opt`), a word that

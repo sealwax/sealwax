@@ -20,21 +20,24 @@ if [ "$installed" != "$pinned" ]; then
     exit 1
 fi
 
-cargo build --manifest-path "$root/Cargo.toml" -p sealwax-wasm \
+# WebAssembly SIMD (Chrome and Edge 91, Firefox 89, Safari 16.4, Node 16.4): the renderer's
+# SIMD layer is a quarter of the module without it, in portable code.
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+simd128" \
+    cargo build --manifest-path "$root/Cargo.toml" -p sealwax-wasm \
     --target wasm32-unknown-unknown --profile wasm
 rm -rf "${out:?}"
 wasm-bindgen --target web --out-dir "$out" --out-name sealwax \
     "$root/target/wasm32-unknown-unknown/wasm/sealwax_wasm.wasm"
 
-# Binaryen's optimizer, size first: a quarter of the module less to compile (7.7 MB to 5.7 MB;
-# 2.32 MB to 2.20 MB gzipped). The one on PATH, else Binaryen's npm package at a pinned version.
+# Binaryen's optimizer, size first: with SIMD, the module goes from 7.7 MB to 4.4 MB (2.32 MB to
+# 1.98 MB gzipped). The one on PATH, else Binaryen's npm package at a pinned version.
 if command -v wasm-opt >/dev/null 2>&1; then
     optimize=(wasm-opt)
 else
     optimize=(npx --yes -p binaryen@132.0.0 wasm-opt)
 fi
 "${optimize[@]}" -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
-    --enable-mutable-globals --enable-reference-types --enable-multivalue \
+    --enable-mutable-globals --enable-reference-types --enable-multivalue --enable-simd \
     "$out/sealwax_bg.wasm" -o "$out/sealwax_bg.wasm"
 
 # The error classes the module builds: re-exported from the module's own copy, so that
