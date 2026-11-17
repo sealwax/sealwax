@@ -8,8 +8,8 @@ use sealwax_annots::{
     AnnotationKind, FillValue, NewAnnotation, NewField, NewFieldKind, add_annotation, add_field,
     fill_fields, flatten, photos_document,
 };
-use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
-use sealwax_raster::{Clip, Error, RenderOptions, render, render_png};
+use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions, SaveOptions};
+use sealwax_raster::{Clip, Error, RenderOptions, release_cache, render, render_png};
 
 const SCAN: &[u8] = include_bytes!("data/scan-16x16.jpg");
 
@@ -451,9 +451,9 @@ fn a_cancelled_rendering_stops_without_error_and_draws_nothing() {
     );
 }
 
-#[test]
-fn a_modified_document_is_read_again_once_until_it_changes() {
-    let form = document(
+/// A page of 300 by 200 points with a text field, `name`.
+fn form() -> Vec<u8> {
+    document(
         b"",
         "/MediaBox [0 0 300 200] /Annots [5 0 R]",
         "/AcroForm << /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>",
@@ -461,8 +461,12 @@ fn a_modified_document_is_read_again_once_until_it_changes() {
             b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [20 80 280 120] /F 4 >>"
                 .to_vec(),
         ],
-    );
-    let mut doc = open(form);
+    )
+}
+
+#[test]
+fn a_modified_document_is_read_again_once_until_it_changes() {
+    let mut doc = open(form());
     assert!(doc.reopened_if_modified().unwrap().is_none());
     let values = HashMap::from([("name".to_owned(), FillValue::Text("Alice".to_owned()))]);
     fill_fields(&mut doc, &values).unwrap();
@@ -477,6 +481,48 @@ fn a_modified_document_is_read_again_once_until_it_changes() {
         !std::sync::Arc::ptr_eq(&first, &changed),
         "read again after a change"
     );
+}
+
+#[test]
+fn a_page_rendered_with_the_cache_kept_is_drawn_as_with_a_new_one() {
+    let pixels = |doc: &Document, options: &RenderOptions| {
+        render(doc, 0, options, &|| false).unwrap().unwrap().pixels
+    };
+    let anew = |doc: &Document, options: &RenderOptions| {
+        release_cache();
+        pixels(doc, options)
+    };
+    let fill = |doc: &mut Document, name: &str| {
+        let values = HashMap::from([("name".to_owned(), FillValue::Text(name.to_owned()))]);
+        fill_fields(doc, &values).unwrap();
+    };
+    let mut doc = open(form());
+    fill(&mut doc, "Alice");
+    let clip = Clip {
+        x: 40,
+        y: 120,
+        width: 300,
+        height: 200,
+    };
+    // Each render after the first finds the cache another scale or part left.
+    for options in [
+        RenderOptions::new(1.0),
+        RenderOptions::new(2.0),
+        RenderOptions::new(2.0).clip(clip),
+        RenderOptions::new(1.0),
+    ] {
+        let kept = pixels(&doc, &options);
+        assert_eq!(kept, anew(&doc, &options));
+    }
+    // Filled again, the field shows its new value, as the document saved and read again does.
+    let options = RenderOptions::new(1.0);
+    let alice = pixels(&doc, &options);
+    fill(&mut doc, "Bob");
+    let bob = pixels(&doc, &options);
+    assert_ne!(bob, alice);
+    let saved = open(doc.save(&SaveOptions::default()).unwrap());
+    assert_eq!(bob, anew(&saved, &options));
+    release_cache();
 }
 
 #[test]

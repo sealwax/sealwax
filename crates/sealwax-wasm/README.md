@@ -93,7 +93,9 @@ A page shown larger than the screen renders by the part that shows: `clip` takes
 pixels of the whole page's image at that scale (turned as asked), from its top-left corner, and
 `maxRenderPixels` counts its pixels alone. Each call interprets the page whole and decodes the
 images the part shows: render what the screen shows in one call (with a margin to scroll into)
-rather than many small tiles, and cancel a part that leaves the screen with `cancel`.
+rather than many small tiles, and cancel a part that leaves the screen with `cancel`. The fonts
+parsed and the glyphs drawn are kept for the next call on the document rendered last, until it
+is freed or another document is rendered: a page rendered again is faster.
 
 ```js
 const view = doc.renderRgba(page, 3 * devicePixelRatio, {

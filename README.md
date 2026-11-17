@@ -116,9 +116,10 @@ nothing, so distinct `Document`s are processed in parallel from several threads.
 may be read from several threads at once (rendering, glyphs, fields); a call that modifies it
 (`fill_fields`, `flatten`) needs it to itself, and raises `RuntimeError` when another call holds
 it. Functions given bytes are independent of one another. Each thread keeps the fonts it parsed
-for the document it read last (glyphs, drawings), so that the next page does not parse them
-again; reading another document replaces them, and `sealwax.release_cache()` drops them, with the
-document they hold.
+for the document it read last (glyphs, drawings), and what it drew for the document it rendered
+last, so that the next page, or the same page at another scale, does not parse or draw them
+again; reading or rendering another document replaces them, and `sealwax.release_cache()` drops
+them, with the documents they hold.
 
 ### Command line
 

@@ -768,6 +768,15 @@ pub struct Document {
     inner: CoreDocument,
 }
 
+impl Drop for Document {
+    fn drop(&mut self) {
+        // What the thread keeps of the document it read and rendered last holds that document's
+        // bytes: it goes with any document freed, which may be that one.
+        sealwax_raster::release_cache();
+        sealwax_text::release_cache();
+    }
+}
+
 #[wasm_bindgen]
 impl Document {
     /// Open the PDF in `data` (copied).
