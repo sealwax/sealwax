@@ -60,8 +60,8 @@ the pages, their form kept; `arrange` refuses a page listed twice.
 
 ## Signed fields (XFDF)
 
-`applyXfdf` draws into the pages the XFDF a signing page exports (its `<add>`: PNG stamps and
-free texts, turned by quarter turns when a page is), with the code a server running sealwax uses
+`applyXfdf` draws into the pages the XFDF a signing page exports (its `<add>`: PNG stamps, free
+texts and signatures drawn by hand, turned by quarter turns when a page is), with the code a server running sealwax uses
 for the final PDF: what shows on screen is what the final PDF holds. The document's own
 annotations are flattened first (`flatten`, true unless said otherwise), or taken out
 (`removeAnnotations`); apply one XFDF per signed field, one after the other. The result's `pages`
@@ -74,7 +74,7 @@ for (const xfdf of storedXfdfs) {
 }
 ```
 
-`xfdfFor` writes the XFDF of the fields a signer just signed (PNG stamps and free texts, in PDF
+`xfdfFor` writes the XFDF of the fields a signer just signed (PNG stamps, free texts and drawings, in PDF
 user space, `rotation` the page's own on a turned page), exactly what `applyXfdf` reads: send it
 to the server, apply it here to show it.
 

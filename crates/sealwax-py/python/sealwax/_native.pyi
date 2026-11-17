@@ -30,6 +30,7 @@ class Flattened(TypedDict):
 class Applied(TypedDict):
     pictures: int
     texts: int
+    inks: int
     characters_replaced: int
     deletions_ignored: int
     annotations_removed: int
@@ -374,7 +375,18 @@ class FreeTextMark(TypedDict):
     font: NotRequired[str]
     custom_data: NotRequired[dict[str, str]]
 
-def xfdf_for(marks: list[StampMark | FreeTextMark], *, deleted: list[tuple[int, str]] | None = None) -> str: ...
+class InkMark(TypedDict):
+    kind: Literal["ink"]
+    page_index: int
+    name: str
+    strokes: list[list[tuple[float, float]]]
+    color: NotRequired[tuple[float, float, float]]
+    width: NotRequired[float]
+    custom_data: NotRequired[dict[str, str]]
+
+def xfdf_for(
+    marks: list[StampMark | FreeTextMark | InkMark], *, deleted: list[tuple[int, str]] | None = None
+) -> str: ...
 def photos_to_pdf(photos: list[bytes], *, limits: Limits | None = None) -> tuple[bytes, list[int]]: ...
 def pdfa_convert(
     pdf_content: bytes, *, level: str = "3a", language: str | None = None, limits: Limits | None = None

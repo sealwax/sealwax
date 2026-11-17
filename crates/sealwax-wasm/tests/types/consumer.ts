@@ -27,7 +27,10 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const page: RenderedPage | null = doc.renderRgba(0, 1);
   const applied: Applied = doc.applyXfdf("<xfdf/>", { flatten: false, removeAnnotations: true });
   const changed: number[] = applied.pages;
-  const marks: SignedMark[] = [{ kind: "freetext", pageIndex: 0, rect: [0, 0, 10, 10], name: "t", text: "x", rotation: 90 }];
+  const marks: SignedMark[] = [
+    { kind: "freetext", pageIndex: 0, rect: [0, 0, 10, 10], name: "t", text: "x", rotation: 90 },
+    { kind: "ink", pageIndex: 0, name: "i", strokes: [[[1, 2], [3, 4]]], width: 2 },
+  ];
   const xfdf: string = xfdfFor(marks, { deleted: [[0, "p"]] });
   doc.applyXfdf(xfdf, { fonts: { Caveat: bytes }, defaultFont: bytes });
   try {

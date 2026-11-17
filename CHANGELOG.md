@@ -39,6 +39,11 @@ All notable changes to sealwax are recorded here. The format follows
   `ToUnicode` map): each character the font has drawn as it is, and read back. A character it
   lacks is drawn as its `?` and counted; `.notdef` is never shown. The documents convert to PDF/A
   as before. Without fonts, Helvetica as before.
+- Drawings (`<ink>`: signatures drawn by hand) in a signing page's XFDF drawn, where they were
+  refused: each stroke a line through its points (round caps and joins, a single point a dot),
+  in its colour and width, at most 500,000 points an XFDF; one turned, translucent or holding
+  more than its strokes is refused. `Applied.inks` counts them; `NewInk` (`"ink"` marks in
+  Python and WebAssembly) writes them.
 - Free texts in Helvetica-Bold drawn in Helvetica-Bold, a standard font (its WinAnsiEncoding
   widths, Adobe's metrics), rather than in Helvetica; a program given for `Helvetica-Bold` takes
   its place.

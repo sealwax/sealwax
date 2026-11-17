@@ -1,5 +1,6 @@
-//! What a signing page's XFDF holds: the pictures and texts a signer added, the placeholder of a
-//! field placed by XFDF only, and the frame of `position_metadata` against PDF user space.
+//! What a signing page's XFDF holds: the pictures, texts and drawings a signer added, the
+//! placeholder of a field placed by XFDF only, and the frame of `position_metadata` against PDF
+//! user space.
 //!
 //! The XFDF comes from a browser: only the subset a signing page writes is accepted, the XFDF a
 //! web PDF viewer exports for the one annotation it just created (`trn-*` attributes), its
@@ -8,8 +9,9 @@
 //! - `<fields />` and `<modify />`, empty; `<delete>`, whose `<id page="0">name</id>` entries are
 //!   read but never applied; the viewer's own `<pdf-info>` and `<pages>`, ignored;
 //! - in `<add>`, `<stamp page="0-based" rect="x1,y1,x2,y2">` whose `<imagedata>` is a PNG data URL
-//!   (signature, initials, date and check box all draw a canvas exported as PNG), and `<freetext>`,
-//!   the vector text of a text field. Anything else refuses the whole XFDF.
+//!   (signature, initials, date and check box all draw a canvas exported as PNG), `<freetext>`,
+//!   the vector text of a text field, and `<ink>`, a signature drawn by hand (its `<inklist>` of
+//!   `<gesture>`s). Anything else refuses the whole XFDF.
 //!
 //! The XML must be plain: no DTD, entity, comment, CDATA section or processing instruction but the
 //! leading declaration. The XFDF of several fields may be merged as text, so markup that hides
@@ -41,6 +43,8 @@ const MAX_ELEMENTS: usize = 100_000;
 const SHOWN: usize = 40;
 /// A text's size when nothing gives one.
 const DEFAULT_SIZE: f64 = 12.0;
+/// The points the drawings of one XFDF may have, all strokes counted.
+const MAX_INK_POINTS: usize = 500_000;
 
 /// Why an XFDF is refused. The message never holds a value of the XFDF but element names, cut
 /// short.
@@ -147,11 +151,40 @@ impl fmt::Debug for Text {
     }
 }
 
+/// A drawing the XFDF holds (`<ink>`): a signature drawn by hand, its strokes in PDF user space.
+#[derive(Clone, PartialEq)]
+pub struct Ink {
+    /// 1-based.
+    pub page_number: usize,
+    /// Normalized, in PDF user space.
+    pub rect: Rect,
+    /// Each stroke's points, in PDF user space.
+    pub strokes: Vec<Vec<[f64; 2]>>,
+    /// RGB, black when not given.
+    pub color: Vec<f64>,
+    /// The strokes' width (`width`), 1 when not given.
+    pub width: f64,
+}
+
+impl fmt::Debug for Ink {
+    // The strokes are a signature: kept out of debug output and logs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Ink")
+            .field("page_number", &self.page_number)
+            .field("rect", &self.rect)
+            .field("strokes", &self.strokes.len())
+            .field("points", &self.strokes.iter().map(Vec::len).sum::<usize>())
+            .field("width", &self.width)
+            .finish_non_exhaustive()
+    }
+}
+
 /// An annotation of `<add>`, in the order of the XFDF.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mark {
     Picture(Picture),
     Text(Text),
+    Ink(Ink),
 }
 
 /// What an XFDF adds, and the annotations it deletes, as (page number, name).
@@ -194,6 +227,18 @@ pub fn read_command(xfdf: &str) -> Result<Command, Refused> {
             "add" => {
                 for annotation in &section.children {
                     marks.push(mark(annotation, marks.len() + 1)?);
+                }
+                let points: usize = marks
+                    .iter()
+                    .map(|mark| match mark {
+                        Mark::Ink(ink) => ink.strokes.iter().map(Vec::len).sum(),
+                        _ => 0,
+                    })
+                    .sum();
+                if points > MAX_INK_POINTS {
+                    return Err(refused(format!(
+                        "its drawings have more than {MAX_INK_POINTS} points"
+                    )));
                 }
             }
             "delete" => {
@@ -359,11 +404,40 @@ impl fmt::Debug for NewText {
     }
 }
 
+/// A drawing to write ([`write_command`]): a signature drawn by hand.
+#[derive(Clone, PartialEq)]
+pub struct NewInk {
+    /// From 0.
+    pub page_index: usize,
+    /// Each stroke's points, in PDF user space (the page unrotated, y upward).
+    pub strokes: Vec<Vec<[f64; 2]>>,
+    /// RGB, each from 0 to 1.
+    pub color: [f64; 3],
+    /// The strokes' width, in points.
+    pub width: f64,
+    /// As [`NewPicture::name`].
+    pub name: String,
+    /// As [`NewPicture::custom_data`].
+    pub custom_data: Vec<(String, String)>,
+}
+
+impl fmt::Debug for NewInk {
+    // The strokes are a signature: kept out of debug output and logs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewInk")
+            .field("page_index", &self.page_index)
+            .field("strokes", &self.strokes.len())
+            .field("width", &self.width)
+            .finish_non_exhaustive()
+    }
+}
+
 /// An annotation to write, in the order of `<add>`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NewMark {
     Picture(NewPicture),
     Text(NewText),
+    Ink(NewInk),
 }
 
 /// The XFDF a signing page sends for the annotations it added: the viewer's export in command
@@ -389,6 +463,7 @@ pub fn write_command(marks: &[NewMark], deleted: &[(usize, String)]) -> Result<S
         match mark {
             NewMark::Picture(picture) => write_picture(&mut out, picture, position)?,
             NewMark::Text(text) => write_text(&mut out, text, position)?,
+            NewMark::Ink(ink) => write_ink(&mut out, ink, position)?,
         }
     }
     out.push_str("</add>\n<modify />\n");
@@ -486,6 +561,60 @@ fn write_text(out: &mut String, text: &NewText, position: usize) -> Result<(), R
     Ok(())
 }
 
+fn write_ink(out: &mut String, ink: &NewInk, position: usize) -> Result<(), Refused> {
+    let points: Vec<[f64; 2]> = ink.strokes.iter().flatten().copied().collect();
+    if points.is_empty() || !points.iter().flatten().all(|v| v.is_finite()) {
+        return Err(refused(format!("annotation {position} draws nothing")));
+    }
+    if !(ink.width.is_finite() && ink.width >= 0.0) {
+        return Err(refused(format!(
+            "annotation {position} has a width refused"
+        )));
+    }
+    if !ink.color.iter().all(|c| (0.0..=1.0).contains(c)) {
+        return Err(refused(format!(
+            "annotation {position} has a colour out of 0 to 1"
+        )));
+    }
+    // The rectangle holds the strokes and their width.
+    let half = (ink.width / 2.0).max(0.5);
+    let fold = |pick: fn(&[f64; 2]) -> f64, f: fn(f64, f64) -> f64, start: f64| {
+        points.iter().map(pick).fold(start, f)
+    };
+    let rect = Rect::from_corners(
+        fold(|p| p[0], f64::min, f64::MAX) - half,
+        fold(|p| p[1], f64::min, f64::MAX) - half,
+        fold(|p| p[0], f64::max, f64::MIN) + half,
+        fold(|p| p[1], f64::max, f64::MIN) + half,
+    );
+    let mut gestures = String::new();
+    for stroke in ink.strokes.iter().filter(|s| !s.is_empty()) {
+        let points: Vec<String> = stroke
+            .iter()
+            .map(|p| format!("{},{}", p[0], p[1]))
+            .collect();
+        gestures.push_str(&format!("<gesture>{}</gesture>", points.join(";")));
+    }
+    out.push_str(&format!(
+        "<ink {} color=\"{}\" width=\"{}\"><trn-custom-data bytes=\"{}\"/><inklist>{gestures}</inklist></ink>",
+        common_attributes(ink.page_index, rect, 0, &ink.name, position)?,
+        hex(ink.color),
+        ink.width,
+        custom_json(&ink.custom_data, position)?,
+    ));
+    Ok(())
+}
+
+/// `#RRGGBB`, each component rounded to a byte.
+fn hex(color: [f64; 3]) -> String {
+    let byte = |c: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let byte = (c * 255.0).round() as u8;
+        format!("{byte:02X}")
+    };
+    format!("#{}{}{}", byte(color[0]), byte(color[1]), byte(color[2]))
+}
+
 /// `page`, `rect`, `flags`, `name` and, when turned, `rotation`.
 fn common_attributes(
     page_index: usize,
@@ -578,6 +707,15 @@ fn written_as_read(marks: &[NewMark], deleted: &[(usize, String)], read: &Comman
                     && read.rotation == given.rotation
                     && read.png == given.png
             }
+            (Mark::Ink(read), NewMark::Ink(given)) => {
+                let strokes: Vec<&Vec<[f64; 2]>> =
+                    given.strokes.iter().filter(|s| !s.is_empty()).collect();
+                read.page_number == given.page_index + 1
+                    && read.strokes.len() == strokes.len()
+                    && read.strokes.iter().zip(&strokes).all(|(a, b)| a == *b)
+                    && read.width == given.width
+                    && hex([read.color[0], read.color[1], read.color[2]]) == hex(given.color)
+            }
             (Mark::Text(read), NewMark::Text(given)) => {
                 read.page_number == given.page_index + 1
                     && read.rect == normalized(given.rect)
@@ -604,8 +742,9 @@ fn mark(annotation: &Element, position: usize) -> Result<Mark, Refused> {
     match annotation.name.as_str() {
         "stamp" => picture(annotation, position).map(Mark::Picture),
         "freetext" => text(annotation, position).map(Mark::Text),
+        "ink" => ink(annotation, position).map(Mark::Ink),
         other => Err(refused(format!(
-            "annotation {position} is a <{}>, only PNG stamps and free texts are drawn",
+            "annotation {position} is a <{}>, only PNG stamps, free texts and drawings are drawn",
             shown(other)
         ))),
     }
@@ -680,6 +819,90 @@ fn picture(annotation: &Element, position: usize) -> Result<Picture, Refused> {
         png,
         rotation,
         field_id,
+    })
+}
+
+/// A drawing: `<inklist>` and its `<gesture>`s, `x,y;x,y;...` in PDF user space; its colour and
+/// width. Its points are where they go: it is not turned.
+fn ink(annotation: &Element, position: usize) -> Result<Ink, Refused> {
+    if drawable(annotation, position)? != 0 {
+        return Err(refused(format!("annotation {position} is rotated")));
+    }
+    if let Some(other) = annotation
+        .children
+        .iter()
+        .find(|child| !matches!(child.name.as_str(), "inklist" | "trn-custom-data"))
+    {
+        return Err(refused(format!(
+            "annotation {position} holds a <{}>",
+            shown(&other.name)
+        )));
+    }
+    if annotation
+        .attribute("opacity")
+        .is_some_and(|opacity| number(opacity) != Some(1.0))
+    {
+        return Err(refused(format!("annotation {position} is translucent")));
+    }
+    let lists: Vec<&Element> = annotation
+        .children
+        .iter()
+        .filter(|child| child.name == "inklist")
+        .collect();
+    let [list] = lists.as_slice() else {
+        return Err(refused(format!(
+            "annotation {position} carries no single <inklist>"
+        )));
+    };
+    let mut strokes = Vec::new();
+    for gesture in &list.children {
+        if gesture.name != "gesture" {
+            return Err(refused(format!(
+                "annotation {position} holds a <{}> in its <inklist>",
+                shown(&gesture.name)
+            )));
+        }
+        let mut stroke = Vec::new();
+        for point in gesture
+            .text
+            .split(';')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let coordinates: Vec<Option<f64>> =
+                point.split(',').map(|v| number(v.trim())).collect();
+            let [Some(x), Some(y)] = coordinates.as_slice() else {
+                return Err(refused(format!(
+                    "annotation {position} has a point that is not two numbers"
+                )));
+            };
+            stroke.push([*x, *y]);
+            if stroke.len() > MAX_INK_POINTS {
+                return Err(refused(format!(
+                    "its drawings have more than {MAX_INK_POINTS} points"
+                )));
+            }
+        }
+        if !stroke.is_empty() {
+            strokes.push(stroke);
+        }
+    }
+    if strokes.is_empty() {
+        return Err(refused(format!("annotation {position} draws nothing")));
+    }
+    Ok(Ink {
+        page_number: page_number(annotation)?,
+        rect: rect(annotation)?,
+        strokes,
+        color: annotation
+            .attribute("color")
+            .and_then(hex_color)
+            .unwrap_or_else(|| vec![0.0, 0.0, 0.0]),
+        width: annotation
+            .attribute("width")
+            .and_then(number)
+            .filter(|w| *w >= 0.0)
+            .unwrap_or(1.0),
     })
 }
 
@@ -1188,6 +1411,92 @@ mod tests {
         assert!(read_command(&empty).unwrap().marks.is_empty());
     }
 
+    /// A drawn signature as the signing pages stored them: its attributes, custom data and strokes.
+    const INK: &str = "<ink color=\"#000000\" creationdate=\"D:20250101120000Z\" date=\"D:20250101120000Z\" \
+        flags=\"print,norotate,locked\" name=\"i-1\" page=\"1\" rect=\"100,200,180,240\" subject=\"Signature\" \
+        title=\"Signer\"><trn-custom-data bytes=\"{&quot;trn-signature-type&quot;:&quot;ink&quot;}\"/>\
+        <inklist><gesture>100.5,210;120,230.25;150,215</gesture><gesture> 170,220 ; 175,235 </gesture>\
+        <gesture>160,205</gesture></inklist></ink>";
+
+    #[test]
+    fn a_drawing_is_read_with_its_strokes_colour_and_width() {
+        let command = read_command(&exported(&[INK], "<delete />")).unwrap();
+        let [Mark::Ink(ink)] = command.marks.as_slice() else {
+            panic!("a drawing");
+        };
+        assert_eq!(ink.page_number, 2);
+        assert_eq!(ink.rect, Rect::from_corners(100.0, 200.0, 180.0, 240.0));
+        assert_eq!(
+            ink.strokes,
+            [
+                vec![[100.5, 210.0], [120.0, 230.25], [150.0, 215.0]],
+                vec![[170.0, 220.0], [175.0, 235.0]],
+                vec![[160.0, 205.0]],
+            ]
+        );
+        assert_eq!(
+            (ink.color.as_slice(), ink.width),
+            (&[0.0, 0.0, 0.0][..], 1.0)
+        );
+        assert!(!format!("{ink:?}").contains("100.5"));
+        let wide = INK.replace("color=\"#000000\"", "color=\"#0000FF\" width=\"2.5\"");
+        let command = read_command(&exported(&[&wide], "<delete />")).unwrap();
+        let [Mark::Ink(ink)] = command.marks.as_slice() else {
+            panic!("a drawing");
+        };
+        assert_eq!(
+            (ink.color.as_slice(), ink.width),
+            (&[0.0, 0.0, 1.0][..], 2.5)
+        );
+    }
+
+    #[test]
+    fn drawings_past_their_points_are_refused() {
+        let points = vec!["1,1"; MAX_INK_POINTS / 2 + 1].join(";");
+        let one = format!(
+            "<ink page=\"0\" rect=\"0,0,9,9\"><inklist><gesture>{points}</gesture></inklist></ink>"
+        );
+        assert!(read_command(&exported(&[&one], "<delete />")).is_ok());
+        assert!(read_command(&exported(&[&one, &one], "<delete />")).is_err());
+    }
+
+    #[test]
+    fn a_drawing_written_reads_back_as_given() {
+        let ink = NewInk {
+            page_index: 1,
+            strokes: vec![
+                vec![[100.5, 210.0], [120.0, 230.25]],
+                vec![],
+                vec![[160.0, 205.0]],
+            ],
+            color: [0.0, 0.0, 1.0],
+            width: 2.0,
+            name: "i-1".to_owned(),
+            custom_data: vec![("trn-signature-type".to_owned(), "ink".to_owned())],
+        };
+        let xfdf = write_command(&[NewMark::Ink(ink.clone())], &[]).unwrap();
+        let command = read_command(&xfdf).unwrap();
+        let [Mark::Ink(read)] = command.marks.as_slice() else {
+            panic!("a drawing");
+        };
+        assert_eq!(
+            read.strokes,
+            [vec![[100.5, 210.0], [120.0, 230.25]], vec![[160.0, 205.0]]]
+        );
+        assert_eq!((read.width, read.page_number), (2.0, 2));
+        // The rectangle holds the strokes and their width.
+        assert_eq!(read.rect, Rect::from_corners(99.5, 204.0, 161.0, 231.25));
+        let refused = |change: &dyn Fn(&mut NewInk)| {
+            let mut ink = ink.clone();
+            change(&mut ink);
+            write_command(&[NewMark::Ink(ink)], &[]).is_err()
+        };
+        assert!(refused(&|i| i.strokes = vec![vec![]]));
+        assert!(refused(&|i| i.strokes = vec![vec![[f64::NAN, 1.0]]]));
+        assert!(refused(&|i| i.width = -1.0));
+        assert!(refused(&|i| i.color = [0.0, 0.0, 2.0]));
+    }
+
     #[test]
     fn what_cannot_be_written_is_refused() {
         let picture = |change: &dyn Fn(&mut NewPicture)| {
@@ -1278,7 +1587,14 @@ mod tests {
     #[test]
     fn what_the_signer_page_does_not_write_is_refused() {
         let refused_cases = [
-            exported(&["<ink page=\"0\" rect=\"10,10,90,30\"><inklist><gesture>10,10;20,20</gesture></inklist></ink>"], "<delete />"),
+            exported(&["<square page=\"0\" rect=\"10,10,90,30\" />"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\" rotation=\"90\"><inklist><gesture>10,10;20,20</gesture></inklist></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\" opacity=\"0.5\"><inklist><gesture>10,10;20,20</gesture></inklist></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\"><inklist><gesture>10,10;20,20</gesture></inklist><popup /></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\"><inklist><gesture>10,10,3;20,20</gesture></inklist></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\"><inklist><gesture>10,nan</gesture></inklist></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\"><inklist /></ink>"], "<delete />"),
+            exported(&["<ink page=\"0\" rect=\"10,10,90,30\" />"], "<delete />"),
             exported(&["<stamp page=\"0\" rect=\"10,10,90,30\" />"], "<delete />"),
             exported(&[&stamp("100,600,160,620", 0, None, &format!("<imagedata>{}</imagedata>", data_url(PNG, "png")), "")], "<delete />"),
             exported(&[&stamp("100,600,160,620", 0, None, "<appearance>AAAA</appearance>", "")], "<delete />"),
