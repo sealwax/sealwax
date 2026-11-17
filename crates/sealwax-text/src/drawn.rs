@@ -16,9 +16,11 @@ use hayro_interpret::hayro_syntax::object::{Dict, String as HayroString};
 use hayro_interpret::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-    InterpreterCache, InterpreterSettings, SoftMask, interpret,
+    InterpreterSettings, SoftMask, interpret,
 };
 use sealwax_core::Document;
+
+use crate::cache::with_cache;
 
 /// The units per em of glyph space in hayro's glyph transforms (`hayro_font::UNITS_PER_EM`,
 /// which hayro-interpret does not export).
@@ -71,39 +73,37 @@ pub fn drawn(
     tag: &[u8],
     units: usize,
 ) -> sealwax_core::Result<Option<Vec<Drawn>>> {
-    let pdf = doc.hayro();
-    let pages = pdf.pages();
-    if page_index >= pages.len() {
+    if page_index >= doc.hayro().pages().len() {
         return Ok(None);
     }
     doc.check_content(page_index, content)?;
-    let Some(page) = pages.get(page_index) else {
-        return Ok(None);
-    };
-    let cache = InterpreterCache::new();
-    let mut collector = Collector {
-        tag,
-        open: Vec::new(),
-        drawn: vec![Drawn::default(); units],
-        outlines: HashMap::new(),
-    };
-    let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
-    let interpreted = catch_unwind(AssertUnwindSafe(|| {
-        let mut context = Context::new(
-            Affine::IDENTITY,
-            everywhere,
-            &cache,
-            pdf.xref(),
-            InterpreterSettings::default(),
-        );
-        interpret(
-            TypedIter::new(content),
-            page.resources(),
-            &mut context,
-            &mut collector,
-        );
-    }));
-    Ok(interpreted.ok().map(|()| collector.drawn))
+    Ok(with_cache(doc, |pdf, cache| {
+        let pages = pdf.pages();
+        let page = pages.get(page_index)?;
+        let mut collector = Collector {
+            tag,
+            open: Vec::new(),
+            drawn: vec![Drawn::default(); units],
+            outlines: HashMap::new(),
+        };
+        let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
+        let interpreted = catch_unwind(AssertUnwindSafe(|| {
+            let mut context = Context::new(
+                Affine::IDENTITY,
+                everywhere,
+                cache,
+                pdf.xref(),
+                InterpreterSettings::default(),
+            );
+            interpret(
+                TypedIter::new(content),
+                page.resources(),
+                &mut context,
+                &mut collector,
+            );
+        }));
+        interpreted.ok().map(|()| collector.drawn)
+    }))
 }
 
 struct Collector<'t> {

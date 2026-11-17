@@ -22,11 +22,12 @@ use hayro_interpret::hayro_syntax::page::Resources;
 use hayro_interpret::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-    InterpreterCache, InterpreterSettings, RenderContent, SoftMask, interpret, interpret_page,
+    InterpreterSettings, RenderContent, SoftMask, interpret, interpret_page,
 };
 use sealwax_core::Document;
 
 use crate::actual::{Key, Replacement, Structure};
+use crate::cache::with_cache;
 use crate::drawn::Bounds;
 
 /// The units per em of glyph space in hayro's glyph transforms.
@@ -94,62 +95,65 @@ pub fn glyphs(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Vec<TextGlyph>> {
-    let pdf = doc.hayro();
-    let pages = pdf.pages();
-    let page = pages
-        .get(page_index)
-        .ok_or(sealwax_core::Error::InvalidArgument { what: "page index" })?;
+    if page_index >= doc.hayro().pages().len() {
+        return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
+    }
     doc.check_page(page_index)?;
-    let content = page.page_stream().unwrap_or_default();
-    let resources = page.resources();
-    let (instrumented, fonts) = instrument(content, resources);
-    let cache = InterpreterCache::new();
-    let mut collector = Collector {
-        fonts: &fonts,
-        open: Vec::new(),
-        glyphs: Vec::new(),
-        last_run: None,
-        shown: None,
-        structure: Structure::new(pdf.xref()),
-        page_parents: page.raw().get::<i64>(b"StructParents"),
-        replaced: HashSet::new(),
-        annotation: false,
-    };
-    let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
-    let interpreted = catch_unwind(AssertUnwindSafe(|| {
-        let mut context = Context::new(
-            Affine::IDENTITY,
-            everywhere,
-            &cache,
-            pdf.xref(),
-            InterpreterSettings::default(),
-        );
-        interpret(
-            TypedIter::new(&instrumented),
-            resources,
-            &mut context,
-            &mut collector,
-        );
-        if annotations {
-            collector.annotation = true;
-            collector.open.clear();
+    let glyphs = with_cache(doc, |pdf, cache| {
+        let pages = pdf.pages();
+        let Some(page) = pages.get(page_index) else {
+            return Vec::new();
+        };
+        let content = page.page_stream().unwrap_or_default();
+        let resources = page.resources();
+        let (instrumented, fonts) = instrument(content, resources);
+        let mut collector = Collector {
+            fonts: &fonts,
+            open: Vec::new(),
+            glyphs: Vec::new(),
+            last_run: None,
+            shown: None,
+            structure: Structure::new(pdf.xref()),
+            page_parents: page.raw().get::<i64>(b"StructParents"),
+            replaced: HashSet::new(),
+            annotation: false,
+        };
+        let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
+        // What was read before the interpreter failed, if it did, is kept, as a reader keeps it.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
             let mut context = Context::new(
                 Affine::IDENTITY,
                 everywhere,
-                &cache,
+                cache,
                 pdf.xref(),
-                InterpreterSettings {
-                    render_content: RenderContent::ANNOTATIONS,
-                    ..InterpreterSettings::default()
-                },
+                InterpreterSettings::default(),
             );
-            interpret_page(page, &mut context, &mut collector);
-        }
-    }));
-    // What was read before the interpreter failed, if it did, is kept, as a reader keeps it.
-    let _ = interpreted;
+            interpret(
+                TypedIter::new(&instrumented),
+                resources,
+                &mut context,
+                &mut collector,
+            );
+            if annotations {
+                collector.annotation = true;
+                collector.open.clear();
+                let mut context = Context::new(
+                    Affine::IDENTITY,
+                    everywhere,
+                    cache,
+                    pdf.xref(),
+                    InterpreterSettings {
+                        render_content: RenderContent::ANNOTATIONS,
+                        ..InterpreterSettings::default()
+                    },
+                );
+                interpret_page(page, &mut context, &mut collector);
+            }
+        }));
+        collector.glyphs
+    });
     doc.check_time()?;
-    Ok(collector.glyphs)
+    Ok(glyphs)
 }
 
 /// An operator of a content stream: from its first operand to its end.

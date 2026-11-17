@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use hayro_syntax::object::{
     Dict, MaybeRef, Object as HayroObject, ObjectIdentifier, Rect as HayroRect,
@@ -90,7 +90,8 @@ impl OpenOptions {
 /// Reading pages ([`Document::page_count`], [`Document::geometry`], [`Document::census`]) sees
 /// the input only. Objects read with [`Document::object`] see the modifications.
 pub struct Document {
-    pub(crate) pdf: Pdf,
+    /// Shared, so that a reader can keep it alive with what it parsed from it.
+    pub(crate) pdf: Arc<Pdf>,
     trailer: BaseTrailer,
     overlay: BTreeMap<ObjId, Object>,
     /// Each page object, and its index in hayro's page tree.
@@ -108,6 +109,9 @@ pub struct Document {
     /// The pages [`Document::check_page`] found within the limits: neither the input nor the
     /// limits change, so a page is walked once.
     checked: Mutex<HashSet<usize>>,
+    /// The bytes each stream counted by [`Document::check_page`] decodes to: the font programs
+    /// pages share are decoded once.
+    streams: Mutex<HashMap<ObjectIdentifier, u64>>,
 }
 
 impl fmt::Debug for Document {
@@ -153,8 +157,9 @@ impl Document {
             highest_defined: OnceLock::new(),
             geometry: OnceLock::new(),
             checked: Mutex::new(HashSet::new()),
+            streams: Mutex::new(HashMap::new()),
             limits: options.limits,
-            pdf,
+            pdf: Arc::new(pdf),
         };
         // The first page to claim an object number keeps it.
         let mut page_index = HashMap::new();
@@ -283,7 +288,14 @@ impl Document {
         let page = pages
             .get(page_index)
             .ok_or(Error::InvalidArgument { what: "page index" })?;
-        Walker::new(self.limits).page(page)?;
+        let mut walker = Walker::new(self.limits);
+        if let Ok(streams) = self.streams.lock() {
+            walker.streams.clone_from(&streams);
+        }
+        walker.page(page)?;
+        if let Ok(mut streams) = self.streams.lock() {
+            streams.extend(walker.streams);
+        }
         if let Ok(mut checked) = self.checked.lock() {
             checked.insert(page_index);
         }
@@ -492,6 +504,13 @@ impl Document {
     #[doc(hidden)]
     pub fn hayro(&self) -> &Pdf {
         &self.pdf
+    }
+
+    /// The hayro-syntax document underneath, shared: for a reader that keeps what it parsed
+    /// from it (fonts) from one call to the next. Not a stable interface.
+    #[doc(hidden)]
+    pub fn hayro_shared(&self) -> Arc<Pdf> {
+        Arc::clone(&self.pdf)
     }
 
     pub(crate) fn data(&self) -> &[u8] {

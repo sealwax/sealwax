@@ -217,6 +217,10 @@ pub(crate) struct Walker<'a> {
     /// What drawing one glyph of each font checked costs: its glyph procedures' for a Type 3
     /// font, none for another.
     fonts: HashMap<ObjectIdentifier, u64>,
+    /// The bytes each stream decoded to, once counted: what a stream decodes to depends on it
+    /// alone, so a document keeps these from one page to the next (a font program used on
+    /// every page is decoded once).
+    pub(crate) streams: HashMap<ObjectIdentifier, u64>,
     ticks: u32,
     pub(crate) peaks: Peaks,
     _pages: std::marker::PhantomData<Page<'a>>,
@@ -229,6 +233,7 @@ impl<'a> Walker<'a> {
             costs: HashMap::new(),
             open: HashSet::new(),
             fonts: HashMap::new(),
+            streams: HashMap::new(),
             ticks: 0,
             peaks: Peaks::default(),
             _pages: std::marker::PhantomData,
@@ -276,8 +281,14 @@ impl<'a> Walker<'a> {
 
     /// Check that `stream` decodes to at most `at_most` bytes before anything decodes it.
     fn stream(&mut self, stream: &Stream<'_>, at_most: u64) -> Result<()> {
-        if let Some(counted) = self.limits.check_stream_within(stream, at_most)? {
+        let id = stream.obj_id();
+        let counted = match self.streams.get(&id) {
+            Some(&counted) if counted <= at_most => Some(counted),
+            _ => self.limits.check_stream_within(stream, at_most)?,
+        };
+        if let Some(counted) = counted {
             self.peaks.stream_bytes = self.peaks.stream_bytes.max(counted);
+            self.streams.insert(id, counted);
         }
         Ok(())
     }
@@ -682,9 +693,8 @@ fn early_change(stream: &Stream<'_>, index: usize) -> bool {
 pub(crate) fn check_structure_streams(data: &[u8], limits: &Limits) -> Result<()> {
     let mut total: u64 = 0;
     for kind in [&b"/ObjStm"[..], b"/XRef"] {
-        let mut from = 0;
-        while let Some(found) = find(data, kind, from) {
-            from = found + kind.len();
+        for found in memchr::memmem::find_iter(data, kind) {
+            let from = found + kind.len();
             // `/XRefStm` and other longer names are not this one.
             if data.get(from).is_some_and(|b| b.is_ascii_alphanumeric()) {
                 continue;

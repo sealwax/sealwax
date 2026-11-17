@@ -35,6 +35,7 @@ from ._native import (
     optimize,
     pdfa_convert,
     read_geometry,
+    release_cache,
     sign,
     verify_signatures,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "optimize",
     "pdfa_convert",
     "read_geometry",
+    "release_cache",
     "sign",
     "verify_signatures",
 ]

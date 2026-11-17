@@ -11,10 +11,12 @@
 //! No text from the document is kept: only counts, and font names.
 
 mod actual;
+mod cache;
 mod drawings;
 mod drawn;
 mod glyphs;
 
+pub use cache::release_cache;
 pub use drawings::{Drawings, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};

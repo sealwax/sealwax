@@ -1122,6 +1122,14 @@ fn pdfa_convert<'py>(
     Ok((PyBytes::new(py, &saved), pdfa_dict(py, &report)?))
 }
 
+/// Drop what this thread keeps of the document it read last: the fonts its glyphs, drawings and
+/// tagging parsed, and the document with them. Reading another document replaces it anyway; call
+/// this when a thread is done with a large document it will not read again.
+#[pyfunction]
+fn release_cache() {
+    pdf::text::release_cache();
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1145,6 +1153,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(grayscale, m)?)?;
     m.add_function(wrap_pyfunction!(optimize, m)?)?;
     m.add_function(wrap_pyfunction!(pdfa_convert, m)?)?;
+    m.add_function(wrap_pyfunction!(release_cache, m)?)?;
     signing::register(m)?;
     Ok(())
 }
