@@ -75,9 +75,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Changed
 
-- `fill_fields` leaves a check box or radio button given a state none of its widgets has as it
-  was, and reports it, where it turned it `Off`; signature fields and push buttons named are
-  reported too.
+- `fill_fields` gives a check box or radio button the state the value means: its name (bytes
+  or text, `Français` finding `/Fran#E7ais`), the export value of a widget (`/Opt`), a word that
+  unchecks (`off`, `no`, `false`, `0`, `non`…) or, for a button with one state besides `Off`, a
+  word that checks (`yes`, `on`, `true`, `1`, `x`, `oui`…) whatever that state is named;
+  `True` and `False` in Python and WebAssembly. A value that means no state, or could mean
+  several, leaves the button as it was and is reported, where it turned it `Off`; signature
+  fields and push buttons named are reported too.
 - `fill_fields` draws a text field's appearance turned as its widget is (`/MK /R`): on a turned
   page, the value reads upright where it shows.
 - `Document::push_page` keeps the `/Rotate` the page it adds holds in its geometry, and

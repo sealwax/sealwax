@@ -16,7 +16,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString};
 
 create_exception!(
     sealwax,
@@ -635,9 +635,11 @@ impl Document {
     }
 
     /// Fill the fields `values` names, by full name, every occurrence of each: a text or choice
-    /// field gets the text, and an appearance drawn for it (an empty text clears it); a button
-    /// shows the state named, given as bytes exactly as `button_states` spells it or as text
-    /// (its UTF-8 bytes); an empty value turns it `Off`.
+    /// field gets the text, and an appearance drawn for it (an empty text clears it). A button
+    /// gets the state named, given as bytes exactly as `button_states` spells it or as text; or
+    /// the state of its widget whose export value (`/Opt`) it is; `False`, an empty value, "off",
+    /// "no", "false", "0" and the like turn it `Off`; `True`, "yes", "on", "true", "1", "x" and
+    /// the like check a button that has one state besides `Off` (a check box).
     ///
     /// Returns `occurrences` (written), `characters_replaced` (characters the appearance's font
     /// does not have, drawn as `?`; the value keeps them), `refused` (the names not written, each
@@ -661,10 +663,15 @@ impl Document {
             let name: String = key.extract()?;
             let value = if let Ok(bytes) = value.cast::<PyBytes>() {
                 pdf::annots::FillValue::Bytes(bytes.as_bytes().to_vec())
+            } else if let Ok(flag) = value.cast::<PyBool>() {
+                // A check box checked or not; a text field gets the word.
+                pdf::annots::FillValue::Text(if flag.is_true() { "true" } else { "false" }.into())
             } else if let Ok(text) = value.extract::<String>() {
                 pdf::annots::FillValue::Text(text)
             } else {
-                return Err(PyValueError::new_err("each value must be str or bytes"));
+                return Err(PyValueError::new_err(
+                    "each value must be str, bytes or bool",
+                ));
             };
             wanted.insert(name, value);
         }

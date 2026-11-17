@@ -95,11 +95,16 @@ def test_values_written_read_back_with_button_names_kept_to_the_byte():
     assert sealwax.Document.from_bytes(reopened.save()).field_values()["name"] == ["", ""]
 
 
-def test_a_state_given_as_text_the_document_spells_otherwise_is_refused():
+def test_a_button_takes_the_state_a_value_means():
     document = sealwax.Document.from_bytes(form())
-    # The document spells the state in Latin-1 (b"Fran\xe7ais"); its UTF-8 text names none.
-    assert document.fill_fields({"lang": "Français"})["refused"] == ["lang"]
+    # The document spells the state in Latin-1 (b"Fran\xe7ais"): its text finds it too.
+    assert document.fill_fields({"lang": "Français"})["written"]["lang"]["value"] == "Français"
     assert document.fill_fields({"lang": b"Fran\xe7ais"})["refused"] == []
+    # A bool or a usual word checks a box with one state, whatever that state is named.
+    for checked, expected in [(True, "Yes"), ("oui", "Yes"), (False, "Off"), ("no", "Off")]:
+        assert document.fill_fields({"agree": checked})["written"]["agree"]["value"] == expected
+    # Radio buttons of two states: a word that checks names neither.
+    assert document.fill_fields({"lang": "yes", "agree": "maybe"})["refused"] == ["agree", "lang"]
 
 
 def test_characters_the_font_lacks_are_counted_never_lost():
@@ -183,7 +188,7 @@ def test_a_value_of_another_type_is_refused():
     try:
         document.fill_fields({"name": 12})  # type: ignore[dict-item]
     except ValueError as error:
-        assert "str or bytes" in str(error)
+        assert "str, bytes or bool" in str(error)
     else:
         raise AssertionError("not refused")
 

@@ -292,25 +292,65 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
 }
 
 #[test]
-fn buttons_given_a_state_none_of_their_widgets_has_are_refused() {
+fn a_button_takes_the_state_a_value_means_and_refuses_one_meaning_none() {
+    let text = |pairs: &[(&str, &str)]| -> HashMap<String, FillValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), FillValue::Text((*v).to_owned())))
+            .collect()
+    };
+    let read = |doc: &Document| -> HashMap<String, Vec<String>> {
+        field_values(&reopened(doc)).unwrap().into_iter().collect()
+    };
     let mut doc = form();
-    // A state given as its UTF-8 text while the document spells it in Latin-1, a state the box
-    // does not have, and an empty value (Off, asked for: written).
-    let values: HashMap<String, FillValue> = [
-        ("lang", FillValue::Text("Français".into())),
-        ("agree", FillValue::Text("No".into())),
-        ("bare", FillValue::Text(String::new())),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_owned(), v))
-    .collect();
-    let filled = fill_fields(&mut doc, &values).unwrap();
-    assert_eq!(filled.refused, ["agree", "lang"]);
-    assert_eq!(filled.written.keys().collect::<Vec<_>>(), ["bare"]);
-    let values: HashMap<String, Vec<String>> =
-        field_values(&reopened(&doc)).unwrap().into_iter().collect();
-    assert_eq!(values["lang"], ["Off", "Off"]);
-    assert_eq!(values["agree"], ["Off"]);
+    // A word that checks, for radio buttons of two states: which one? A word that means
+    // nothing. A word that checks, for a box without any state.
+    let filled = fill_fields(
+        &mut doc,
+        &text(&[("lang", "yes"), ("agree", "maybe"), ("bare", "true")]),
+    )
+    .unwrap();
+    assert_eq!(filled.refused, ["agree", "bare", "lang"]);
+    assert!(filled.written.is_empty());
+    assert_eq!(read(&doc)["agree"], ["Off"]);
+    // A state's name given as its text while the document spells it in Latin-1; a word that
+    // checks the only state a box has, whatever its case and spaces.
+    let filled = fill_fields(
+        &mut doc,
+        &text(&[("lang", "Français"), ("agree", " TRUE ")]),
+    )
+    .unwrap();
+    assert!(filled.refused.is_empty());
+    assert_eq!(filled.written["lang"], Written::new("Français", "Off"));
+    assert_eq!(filled.written["agree"], Written::new("Yes", "Off"));
+    let values = read(&doc);
+    assert_eq!(values["lang"], ["Off", "Français"]);
+    assert_eq!(values["agree"], ["Yes"]);
+    let plain = doc
+        .save(&SaveOptions::default().xref(sealwax_core::XrefFormat::Table))
+        .unwrap();
+    assert!(
+        plain
+            .windows(b"/Fran#E7ais".len())
+            .any(|w| w == b"/Fran#E7ais"),
+        "the state is written as the document spells it"
+    );
+    // Words that uncheck, for a box and for radio buttons.
+    for word in ["non", "No", "0", "false", ""] {
+        let filled = fill_fields(&mut doc, &text(&[("agree", "x"), ("lang", "en")])).unwrap();
+        assert!(filled.refused.is_empty());
+        let filled = fill_fields(&mut doc, &text(&[("agree", word), ("lang", word)])).unwrap();
+        assert!(filled.refused.is_empty(), "{word:?}");
+        let values = read(&doc);
+        assert_eq!(
+            (values["agree"].as_slice(), values["lang"].as_slice()),
+            (
+                &["Off".to_owned()][..],
+                &["Off".to_owned(), "Off".to_owned()][..]
+            ),
+            "{word:?}"
+        );
+    }
 }
 
 #[test]
