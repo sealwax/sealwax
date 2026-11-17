@@ -424,6 +424,27 @@ test("applying an XFDF can take the document's own annotations out, and a refuse
   assert.equal(untouched.fields().length, 2);
 });
 
+test("a part of a page renders alone, within the page", () => {
+  const doc = Document.fromBytes(form());
+  const whole = doc.renderRgba(0, 2, { quarterTurns: 1 });
+  const part = doc.renderRgba(0, 2, { quarterTurns: 1, clip: { x: 300, y: 100, width: 50, height: 40 } });
+  assert.equal(part.width, 50);
+  assert.equal(part.height, 40);
+  let largest = 0;
+  for (let row = 0; row < 40; row++) {
+    for (let i = 0; i < 50 * 4; i++) {
+      const a = whole.pixels[((100 + row) * whole.width + 300) * 4 + i];
+      largest = Math.max(largest, Math.abs(a - part.pixels[row * 50 * 4 + i]));
+    }
+  }
+  assert.ok(largest <= 2, `${largest}`);
+  assert.throws(
+    () => doc.renderRgba(0, 2, { clip: { x: whole.height, y: 0, width: 1, height: 1 } }),
+    RangeError,
+  );
+  assert.throws(() => doc.renderPng(0, 2, { clip: { x: 0, y: 0, width: 1.5, height: 1 } }), RangeError);
+});
+
 // Last: a panic stops the module, and reset() makes another.
 test("after a panic every call throws until reset(), and older documents stay refused", async () => {
   const bytes = build([

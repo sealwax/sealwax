@@ -101,6 +101,20 @@ def test_a_picture_turned_as_its_page_shows_upright(rotation):
     assert at(right - quarter_x, bottom - quarter_y) == (255, 255, 0)
 
 
+def test_a_clipped_render_is_that_part_of_the_page():
+    doc = sealwax.Document.from_bytes(text_page())
+    width, height, whole = doc.render_rgba(0, 2.0)
+    w, h, part = doc.render_rgba(0, 2.0, clip=(100, 150, 64, 32))
+    assert (w, h) == (64, 32)
+    for row in range(32):
+        start = ((150 + row) * width + 100) * 4
+        expected, got = whole[start : start + 64 * 4], part[row * 64 * 4 : (row + 1) * 64 * 4]
+        assert max(abs(a - b) for a, b in zip(expected, got)) <= 2
+    assert doc.render_png(0, 2.0, clip=(0, 0, width, height)) == doc.render_png(0, 2.0)
+    with pytest.raises(ValueError):
+        doc.render_rgba(0, 2.0, clip=(width - 1, 0, 2, 2))
+
+
 def test_merge_names_the_source_that_failed():
     merged = sealwax.merge_bytes([text_page(), text_page(annots="[6 0 R]")])
     assert sealwax.Document.from_bytes(merged).page_count == 2

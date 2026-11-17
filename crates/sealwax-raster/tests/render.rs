@@ -9,7 +9,7 @@ use sealwax_annots::{
     fill_fields, flatten, photos_document,
 };
 use sealwax_core::{Document, Error as PdfError, Limits, OpenOptions};
-use sealwax_raster::{Error, RenderOptions, render, render_png};
+use sealwax_raster::{Clip, Error, RenderOptions, render, render_png};
 
 const SCAN: &[u8] = include_bytes!("data/scan-16x16.jpg");
 
@@ -262,6 +262,174 @@ fn quarter_turns_show_the_page_as_its_rotation_would() {
         );
         assert!(turned.pixels == rotated.pixels, "{rotate} + {turns}");
     }
+}
+
+/// A page of shapes, curves, a stroke and text over its crop box, turned `rotate`.
+fn drawing(rotate: u16) -> Document {
+    open(document(
+        b"1 0 0 rg 50 70 250 100 re f 0 0 1 rg 400 600 100 150 re f \
+          0 0.5 0 RG 3 w 60 80 m 300 700 400 100 540 760 c S \
+          0 g BT /F1 31 Tf 1 0 0 1 90.3 401.7 Tm (Tiles agree) Tj ET",
+        &format!(
+            "/MediaBox [0 0 600 800] /CropBox [50 70 550 770] /Rotate {rotate} \
+             /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>"
+        ),
+        "",
+        &[],
+    ))
+}
+
+#[test]
+fn a_clipped_part_is_that_part_of_the_whole_page_to_rounding() {
+    for rotate in [0, 90, 180, 270] {
+        let doc = drawing(rotate);
+        let options = RenderOptions::new(1.37);
+        let whole = render(&doc, 0, &options, &|| false).unwrap().unwrap();
+        let (w, h) = (whole.width, whole.height);
+        for (x, y, width, height) in [
+            (0, 0, 128, 128),
+            (w - 128, h - 128, 128, 128),
+            (101, 233, 200, 97),
+            (0, 0, w, h),
+            (w / 2, 0, 1, h),
+        ] {
+            let clip = Clip {
+                x,
+                y,
+                width,
+                height,
+            };
+            let part = render(&doc, 0, &options.clip(clip), &|| false)
+                .unwrap()
+                .unwrap();
+            assert_eq!((part.width, part.height), (width, height));
+            let mut largest = 0;
+            for row in 0..height {
+                let start = (((y + row) * w + x) * 4) as usize;
+                let expected = &whole.pixels[start..start + (width * 4) as usize];
+                let got =
+                    &part.pixels[(row * width * 4) as usize..((row + 1) * width * 4) as usize];
+                for (a, b) in expected.iter().zip(got) {
+                    largest = largest.max(a.abs_diff(*b));
+                }
+            }
+            // Coverage is computed from the coordinates moved by whole pixels: at most a level
+            // of rounding apart.
+            assert!(largest <= 2, "rotate {rotate}, clip {clip:?}: {largest}");
+            if (x, y, width, height) == (0, 0, w, h) {
+                assert!(
+                    part.pixels == whole.pixels,
+                    "the whole page as a clip is the page"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_clip_is_within_the_page_and_its_own_pixels_are_bounded() {
+    let doc = drawing(90);
+    let whole = render(&doc, 0, &RenderOptions::new(1.0), &|| false)
+        .unwrap()
+        .unwrap();
+    let (w, h) = (whole.width, whole.height);
+    for clip in [
+        Clip {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 10,
+        },
+        Clip {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 0,
+        },
+        Clip {
+            x: w - 9,
+            y: 0,
+            width: 10,
+            height: 10,
+        },
+        Clip {
+            x: 0,
+            y: h,
+            width: 10,
+            height: 1,
+        },
+        Clip {
+            x: u32::MAX,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+    ] {
+        assert!(
+            matches!(
+                render(&doc, 0, &RenderOptions::new(1.0).clip(clip), &|| false),
+                Err(Error::Pdf(PdfError::InvalidArgument { what: "clip" }))
+            ),
+            "{clip:?}"
+        );
+    }
+    // At 40 pixels per point the page has 560 million pixels, far past the bound; a tile of it
+    // is rendered, and the bound counts the tile's.
+    let tile = Clip {
+        x: 9_000,
+        y: 15_000,
+        width: 512,
+        height: 512,
+    };
+    let part = render(&doc, 0, &RenderOptions::new(40.0).clip(tile), &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!((part.width, part.height), (512, 512));
+    assert!(matches!(
+        render(&doc, 0, &RenderOptions::new(40.0), &|| false),
+        Err(Error::Pdf(PdfError::LimitExceeded {
+            what: "max_render_pixels"
+        }))
+    ));
+    let mut limits = Limits::default();
+    limits.max_render_pixels = 512 * 511;
+    let bounded = Document::open(
+        document(b"", "/MediaBox [0 0 600 800]", "", &[]),
+        &OpenOptions::default().limits(limits),
+    )
+    .unwrap();
+    assert!(matches!(
+        render(
+            &bounded,
+            0,
+            &RenderOptions::new(1.0).clip(Clip {
+                x: 0,
+                y: 0,
+                width: 512,
+                height: 512
+            }),
+            &|| false
+        ),
+        Err(Error::Pdf(PdfError::LimitExceeded {
+            what: "max_render_pixels"
+        }))
+    ));
+    // A clipped rendering is cancelled as a whole one is.
+    assert!(
+        render(
+            &doc,
+            0,
+            &RenderOptions::new(1.0).clip(Clip {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64
+            }),
+            &|| true
+        )
+        .unwrap()
+        .is_none()
+    );
 }
 
 #[test]

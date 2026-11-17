@@ -55,16 +55,38 @@ pub struct RenderOptions {
     /// Quarter turns clockwise (counterclockwise when negative) added to the page's rotation:
     /// the image is the page as it would show turned so.
     pub quarter_turns: i32,
+    /// The part of the page's image to render, when not all of it: a tile of a page shown larger
+    /// than the screen.
+    pub clip: Option<Clip>,
+}
+
+/// A part of a page's image ([`RenderOptions::clip`]), in pixels of the image of the whole page
+/// at the scale, turned as asked: origin at its top-left corner, x to the right, y down. Its
+/// pixels are those of the same part of the whole page's image, exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clip {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl RenderOptions {
-    /// At `scale` pixels per point, not turned.
+    /// At `scale` pixels per point, not turned, the whole page.
     #[must_use]
     pub fn new(scale: f64) -> Self {
         Self {
             scale,
             quarter_turns: 0,
+            clip: None,
         }
+    }
+
+    /// Only `clip` of the page's image.
+    #[must_use]
+    pub fn clip(mut self, clip: Clip) -> Self {
+        self.clip = Some(clip);
+        self
     }
 
     /// Turned `quarter_turns` more quarter turns clockwise.
@@ -117,11 +139,16 @@ impl Raster {
 /// A modified document (a field filled) is rendered as it stands: saved and read again once,
 /// until it changes again ([`Document::reopened_if_modified`]).
 ///
+/// With [`RenderOptions::clip`], the image is that part of the page's image alone, its pixels
+/// those of the whole page's image there; the page is interpreted whole all the same, the
+/// drawing outside the part skipped.
+///
 /// # Errors
-/// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or a scale
-/// that is not a positive number; [`sealwax_core::Error::LimitExceeded`] naming
-/// `max_render_pixels` for an image larger than [`sealwax_core::Limits::max_render_pixels`] (or
-/// with a side past 65,535 pixels), or the bound of [`Document::check_page`] the page passes;
+/// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have, a scale
+/// that is not a positive number, or a clip that is empty or not within the page's image;
+/// [`sealwax_core::Error::LimitExceeded`] naming `max_render_pixels` for an image (the clip's,
+/// when there is one) larger than [`sealwax_core::Limits::max_render_pixels`] (or with a side past
+/// 65,535 pixels), or the bound of [`Document::check_page`] the page passes;
 /// [`sealwax_core::Error::Timeout`] past the deadline; [`Error::Unrenderable`] when the renderer
 /// fails.
 pub fn render(
@@ -155,14 +182,35 @@ pub fn render(
     let too_large = sealwax_core::Error::LimitExceeded {
         what: "max_render_pixels",
     };
-    let pixels = |points: f32| -> Option<u16> {
-        let pixels = (f64::from(points) * scale - PIXEL_TOLERANCE)
+    let pixels = |points: f32| -> f64 {
+        (f64::from(points) * scale - PIXEL_TOLERANCE)
             .ceil()
-            .max(1.0);
+            .max(1.0)
+    };
+    let (page_columns, page_rows) = (pixels(width), pixels(height));
+    let (left, top, columns, rows) = match options.clip {
+        Some(clip) => {
+            let within = clip.width > 0
+                && clip.height > 0
+                && f64::from(clip.x) + f64::from(clip.width) <= page_columns
+                && f64::from(clip.y) + f64::from(clip.height) <= page_rows;
+            if !within {
+                return Err(sealwax_core::Error::InvalidArgument { what: "clip" }.into());
+            }
+            (
+                f64::from(clip.x),
+                f64::from(clip.y),
+                f64::from(clip.width),
+                f64::from(clip.height),
+            )
+        }
+        None => (0.0, 0.0, page_columns, page_rows),
+    };
+    let side = |pixels: f64| -> Option<u16> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         (pixels <= f64::from(u16::MAX)).then_some(pixels as u16)
     };
-    let (Some(columns), Some(rows)) = (pixels(width), pixels(height)) else {
+    let (Some(columns), Some(rows)) = (side(columns), side(rows)) else {
         return Err(too_large.into());
     };
     if u64::from(columns) * u64::from(rows) > doc.limits().max_render_pixels {
@@ -183,7 +231,12 @@ pub fn render(
     // A panic of the renderer is an error of this page, not of the process.
     let drawn = catch_unwind(AssertUnwindSafe(|| {
         let mut context = RenderContext::new(columns, rows);
-        let transform = Affine::scale(scale) * turned * page.initial_transform(true).to_kurbo();
+        // A clip moves the page by whole pixels: each pixel's coverage stays what it is in the
+        // whole page's image.
+        let transform = Affine::translate((-left, -top))
+            * Affine::scale(scale)
+            * turned
+            * page.initial_transform(true).to_kurbo();
         render_into(
             page,
             &cache,

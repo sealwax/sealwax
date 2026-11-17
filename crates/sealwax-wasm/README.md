@@ -74,6 +74,20 @@ for (const xfdf of storedXfdfs) {
 }
 ```
 
+## Zoom
+
+A page shown larger than the screen renders by the part that shows: `clip` takes a rectangle in
+pixels of the whole page's image at that scale (turned as asked), from its top-left corner, and
+`maxRenderPixels` counts its pixels alone. Each call interprets the page whole and decodes the
+images the part shows: render what the screen shows in one call (with a margin to scroll into)
+rather than many small tiles, and cancel a part that leaves the screen with `cancel`.
+
+```js
+const view = doc.renderRgba(page, 3 * devicePixelRatio, {
+  clip: { x: scrollLeft, y: scrollTop, width: canvas.width, height: canvas.height },
+});
+```
+
 ## Limits and panics
 
 Every operation runs within bounds (operators, image pixels, decoded bytes, annotations, rendered
