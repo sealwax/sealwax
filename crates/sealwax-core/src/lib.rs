@@ -36,6 +36,7 @@ pub use document::{Document, MAX_OBJECT_NUMBER, OpenOptions};
 pub use error::{Error, Result};
 pub use geometry::{PageGeometry, Rect, Rotation};
 pub use limits::{Limits, Peaks};
+pub use merge::PagePick;
 pub use metadata::Metadata;
 pub use object::{Dict, Name, ObjId, Object, Stream};
 pub use optimize::{Kept, Optimized, optimize};

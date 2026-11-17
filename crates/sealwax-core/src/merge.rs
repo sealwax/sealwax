@@ -7,7 +7,9 @@ use std::ops::Range;
 
 use crate::document::{Document, OpenOptions};
 use crate::error::{Error, Result};
+use crate::geometry::PageGeometry;
 use crate::object::{Dict, Name, ObjId, Object};
+use crate::text::{decode_text_string, encode_text_string};
 
 /// How deep a copied object may nest.
 const MAX_NESTING: usize = 64;
@@ -52,49 +54,193 @@ impl Document {
 
     /// Append pages `pages` of `other` (from 0, the end excluded), as [`Document::append_pages`]
     /// appends them all. A reference to one of `other`'s pages left out (a link to it) leads to
-    /// `null` instead.
+    /// `null` instead, and nothing of those pages is copied, their annotations included (a field's
+    /// widgets on them, reached through the field, among them).
     ///
     /// # Errors
     /// [`Error::InvalidArgument`] for pages `other` does not have; as
     /// [`Document::append_pages`].
     pub fn append_page_range(&mut self, other: &Document, pages: Range<usize>) -> Result<usize> {
-        let ids = other.page_ids();
-        if pages.start > pages.end || pages.end > ids.len() {
+        if pages.start > pages.end || pages.end > other.page_count() {
             return Err(Error::InvalidArgument { what: "page range" });
         }
+        let wanted: Vec<(usize, i32)> = pages.map(|page| (page, 0)).collect();
+        let copied = self.copy_pages(other, &wanted, false)?;
+        let count = copied.pages.len();
+        self.appended.extend(copied.pages);
+        Ok(count)
+    }
+
+    /// A new document of the pages `picks` names, in that order, each copied from its source with
+    /// everything it reaches (as [`Document::append_pages`] copies them) and turned as the pick
+    /// says. Nothing of a source's pages left out is copied, their annotations included.
+    ///
+    /// With `keep_form`, the sources' forms come along: each field keeps its widgets on the pages
+    /// copied, and only those (a field left without one is left out); the fields join the new
+    /// document's form, with the defaults (`/DA`, `/DR`, `/Q`, `/NeedAppearances`) of the first
+    /// source that has them; and a top field whose name an earlier source already gave is
+    /// renamed `name (2)`, `name (3)`..., two fields of one name being one field to a reader.
+    /// Without it, the forms are left behind, as [`Document::append_pages`] leaves them. The
+    /// sources' outlines, structure trees and catalogs are left behind either way.
+    ///
+    /// # Errors
+    /// [`Error::InvalidArgument`] when `picks` is empty, or names a source or a page that does
+    /// not exist, or a page twice; as [`Document::append_pages`].
+    pub fn compose(sources: &[&Document], picks: &[PagePick], keep_form: bool) -> Result<Document> {
+        let invalid = Error::InvalidArgument { what: "page list" };
+        let mut named = std::collections::HashSet::new();
+        for pick in picks {
+            let Some(source) = sources.get(pick.source) else {
+                return Err(invalid);
+            };
+            if pick.page >= source.page_count() || !named.insert((pick.source, pick.page)) {
+                return Err(invalid);
+            }
+        }
+        let first = picks.first().ok_or(invalid)?;
+        let mut out = Document::empty()?;
+        out.limits = sources[first.source].limits;
+        let mut placed: Vec<Option<(ObjId, PageGeometry)>> = vec![None; picks.len()];
+        let mut fields: Vec<ObjId> = Vec::new();
+        let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut defaults = Dict::new();
+        for (index, source) in sources.iter().enumerate() {
+            let positions: Vec<usize> = (0..picks.len())
+                .filter(|at| picks[*at].source == index)
+                .collect();
+            if positions.is_empty() {
+                continue;
+            }
+            let wanted: Vec<(usize, i32)> = positions
+                .iter()
+                .map(|at| (picks[*at].page, picks[*at].quarter_turns))
+                .collect();
+            let copied = out.copy_pages(source, &wanted, keep_form)?;
+            for (at, page) in positions.iter().zip(copied.pages) {
+                placed[*at] = Some(page);
+            }
+            if keep_form {
+                for (key, value) in copied.defaults.iter() {
+                    if !defaults.contains_key(key.as_bytes()) {
+                        defaults.insert(key.clone(), value.clone());
+                    }
+                }
+                out.adopt_fields(&copied.widgets, &mut fields, &mut names)?;
+            }
+        }
+        out.appended.extend(placed.into_iter().flatten());
+        if keep_form && !fields.is_empty() {
+            let mut form = defaults;
+            form.insert(
+                "Fields",
+                Object::Array(fields.into_iter().map(Object::Ref).collect()),
+            );
+            let catalog_id = out.catalog_id();
+            if let Some(Object::Dict(mut catalog)) = out.object(catalog_id)? {
+                catalog.insert("AcroForm", Object::Dict(form));
+                out.set_object(catalog_id, Object::Dict(catalog));
+            }
+        }
+        Ok(out)
+    }
+
+    /// A new document of this one's pages `pages`, in that order, each turned the quarter turns
+    /// given (clockwise; counterclockwise when negative), its form kept for those pages
+    /// ([`Document::compose`]): turning, deleting, moving, reordering and taking out pages are
+    /// each one arrangement. Pages left out are not copied, nor anything only they reach.
+    ///
+    /// # Errors
+    /// As [`Document::compose`]: [`Error::InvalidArgument`] when `pages` is empty, or names a
+    /// page the document does not have, or a page twice.
+    pub fn arrange(&self, pages: &[(usize, i32)]) -> Result<Document> {
+        let picks: Vec<PagePick> = pages
+            .iter()
+            .map(|(page, turns)| PagePick::new(0, *page, *turns))
+            .collect();
+        Self::compose(&[self], &picks, true)
+    }
+
+    /// A new document of this one's pages with every page of `others`, one document after the
+    /// other, inserted before page `at` (from 0; the page count to insert at the end), the forms
+    /// kept ([`Document::compose`]; a field an inserted document names as an earlier one does is
+    /// renamed).
+    ///
+    /// # Errors
+    /// [`Error::InvalidArgument`] when `at` is past the last page; as [`Document::compose`].
+    pub fn insert(&self, at: usize, others: &[&Document]) -> Result<Document> {
+        if at > self.page_count() {
+            return Err(Error::InvalidArgument {
+                what: "insert position",
+            });
+        }
+        let mut sources: Vec<&Document> = vec![self];
+        sources.extend_from_slice(others);
+        let mut picks: Vec<PagePick> = (0..at).map(|page| PagePick::new(0, page, 0)).collect();
+        for (index, other) in others.iter().enumerate() {
+            picks.extend((0..other.page_count()).map(|page| PagePick::new(index + 1, page, 0)));
+        }
+        picks.extend((at..self.page_count()).map(|page| PagePick::new(0, page, 0)));
+        Self::compose(&sources, &picks, true)
+    }
+
+    /// Copy pages `wanted` of `other` (each with the quarter turns added to its rotation), in that
+    /// order, without adding them to this document's pages; with `keep_form`, the defaults of
+    /// `other`'s form too. What only `other`'s other pages reach is never copied: those pages
+    /// lead to `null`, and so do their annotations.
+    fn copy_pages(
+        &mut self,
+        other: &Document,
+        wanted: &[(usize, i32)],
+        keep_form: bool,
+    ) -> Result<Copied> {
+        let ids = other.page_ids();
         let geometry = other.geometry();
         let inherited = other.inherited_resources()?;
+        let kept: std::collections::HashSet<usize> = wanted.iter().map(|(page, _)| *page).collect();
         let mut copies: HashMap<ObjId, ObjId> = HashMap::new();
         let mut pending: Vec<ObjId> = Vec::new();
         let mut left_out = None;
+        let mut null = |doc: &mut Document| -> Result<ObjId> {
+            if let Some(null) = left_out {
+                return Ok(null);
+            }
+            let id = doc.add_object(Object::Null)?;
+            left_out = Some(id);
+            Ok(id)
+        };
+        let mut kept_annotations = std::collections::HashSet::new();
+        let mut other_annotations = Vec::new();
         for (index, id) in ids.iter().enumerate() {
             let id = id.ok_or(Error::Unsupported {
                 what: "a page that is not an indirect object",
             })?;
+            let annotations = annotation_ids(other, id)?;
+            if kept.contains(&index) {
+                kept_annotations.extend(annotations);
+            } else {
+                other_annotations.extend(annotations);
+            }
             if let Entry::Vacant(slot) = copies.entry(id) {
-                let copy = if pages.contains(&index) {
+                let copy = if kept.contains(&index) {
                     self.add_object(Object::Null)?
-                } else if let Some(null) = left_out {
-                    null
                 } else {
-                    let null = self.add_object(Object::Null)?;
-                    left_out = Some(null);
-                    null
+                    null(self)?
                 };
                 slot.insert(copy);
             }
         }
-        let mut appended = Vec::with_capacity(pages.len());
-        for (((index, id), page_geometry), resources) in ids
-            .iter()
-            .flatten()
-            .enumerate()
-            .zip(&geometry)
-            .zip(inherited)
-        {
-            if !pages.contains(&index) {
-                continue;
+        for annotation in other_annotations {
+            if !kept_annotations.contains(&annotation) && !copies.contains_key(&annotation) {
+                let null = null(self)?;
+                copies.insert(annotation, null);
             }
+        }
+        let mut pages = Vec::with_capacity(wanted.len());
+        for (index, quarter_turns) in wanted {
+            let (Some(Some(id)), Some(page_geometry)) = (ids.get(*index), geometry.get(*index))
+            else {
+                return Err(Error::InvalidArgument { what: "page range" });
+            };
             other.check_time()?;
             self.check_time()?;
             let Some(Object::Dict(mut page)) = other.object(*id)? else {
@@ -108,18 +254,34 @@ impl Document {
             for key in PAGE_LEFT_BEHIND {
                 page.remove(key);
             }
+            let rotation = page_geometry.rotation.turned(*quarter_turns);
             page.insert("Type", Name::from("Page"));
             page.insert("MediaBox", rect(page_geometry.media_box));
             page.insert("CropBox", rect(page_geometry.crop_box));
-            page.insert("Rotate", i64::from(page_geometry.rotation.degrees()));
-            if let Some(resources) = resources
+            page.insert("Rotate", i64::from(rotation.degrees()));
+            if let Some(Some(resources)) = inherited.get(*index)
                 && !page.contains_key(b"Resources")
             {
-                page.insert("Resources", resources);
+                page.insert("Resources", resources.clone());
             }
             let copied = copy(self, Object::Dict(page), &mut copies, &mut pending, 0)?;
             self.set_object(copies[id], copied);
-            appended.push((copies[id], *page_geometry));
+            pages.push((
+                copies[id],
+                PageGeometry {
+                    rotation,
+                    ..*page_geometry
+                },
+            ));
+        }
+        let mut defaults = Dict::new();
+        if keep_form && let Some(form) = acro_form(other)? {
+            for key in FORM_DEFAULTS {
+                if let Some(value) = form.get(key) {
+                    let value = copy(self, value.clone(), &mut copies, &mut pending, 0)?;
+                    defaults.insert(Name::from(key), value);
+                }
+            }
         }
         let mut copied: usize = 0;
         while let Some(id) = pending.pop() {
@@ -132,10 +294,195 @@ impl Document {
             let copied = copy(self, object, &mut copies, &mut pending, 0)?;
             self.set_object(copies[&id], copied);
         }
-        let count = appended.len();
-        self.appended.extend(appended);
-        Ok(count)
+        let mut widgets = Vec::new();
+        if keep_form {
+            for (page, _) in &pages {
+                for annotation in annotation_ids(self, *page)? {
+                    if let Some(Object::Dict(dict)) = self.object(annotation)?
+                        && dict.get(b"Subtype").and_then(Object::as_name) == Some(&b"Widget"[..])
+                    {
+                        widgets.push(annotation);
+                    }
+                }
+            }
+        }
+        Ok(Copied {
+            pages,
+            widgets,
+            defaults,
+        })
     }
+
+    /// Make the fields of `widgets` (copied) part of this document's form: each top field, its
+    /// `/Kids` pruned to what leads to one of `widgets`, is added to `fields`, renamed when one
+    /// of `names` (those of earlier sources) is its name.
+    fn adopt_fields(
+        &mut self,
+        widgets: &[ObjId],
+        fields: &mut Vec<ObjId>,
+        names: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let kept: std::collections::HashSet<ObjId> = widgets.iter().copied().collect();
+        let mut tops = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for widget in widgets {
+            let mut node = *widget;
+            for _ in 0..MAX_NESTING {
+                let parent = match self.object(node)? {
+                    Some(Object::Dict(dict)) => dict.get(b"Parent").and_then(Object::as_ref_id),
+                    _ => None,
+                };
+                match parent {
+                    Some(parent) if matches!(self.object(parent)?, Some(Object::Dict(_))) => {
+                        node = parent;
+                    }
+                    _ => break,
+                }
+            }
+            if seen.insert(node) {
+                tops.push(node);
+            }
+        }
+        let earlier = names.clone();
+        let mut visited = std::collections::HashSet::new();
+        for top in tops {
+            if !self.prune(top, &kept, &mut visited, 0)? {
+                continue;
+            }
+            if let Some(Object::Dict(mut field)) = self.object(top)?
+                && let Some(Object::String(partial)) = field.get(b"T").cloned()
+            {
+                let name = decode_text_string(&partial);
+                let mut unique = name.clone();
+                let mut number = 2;
+                while earlier.contains(&unique) {
+                    unique = format!("{name} ({number})");
+                    number += 1;
+                }
+                if unique != name {
+                    field.insert("T", Object::String(encode_text_string(&unique)));
+                    self.set_object(top, Object::Dict(field));
+                }
+                names.insert(unique);
+            }
+            fields.push(top);
+        }
+        Ok(())
+    }
+
+    /// Whether field `id` leads to one of `kept` (or is one); its `/Kids` pruned to those that do.
+    fn prune(
+        &mut self,
+        id: ObjId,
+        kept: &std::collections::HashSet<ObjId>,
+        visited: &mut std::collections::HashSet<ObjId>,
+        depth: usize,
+    ) -> Result<bool> {
+        if depth > MAX_NESTING || !visited.insert(id) {
+            return Ok(false);
+        }
+        let Some(Object::Dict(mut field)) = self.object(id)? else {
+            return Ok(false);
+        };
+        let widget = kept.contains(&id);
+        let kids = match field.get(b"Kids").cloned() {
+            Some(Object::Array(kids)) => kids,
+            Some(Object::Ref(kids)) => match self.object(kids)? {
+                Some(Object::Array(kids)) => kids,
+                _ => return Ok(widget),
+            },
+            _ => return Ok(widget),
+        };
+        let mut leading = Vec::with_capacity(kids.len());
+        for kid in &kids {
+            if let Some(kid) = kid.as_ref_id()
+                && self.prune(kid, kept, visited, depth + 1)?
+            {
+                leading.push(Object::Ref(kid));
+            }
+        }
+        if leading.is_empty() && !widget {
+            return Ok(false);
+        }
+        if leading.len() != kids.len() {
+            if leading.is_empty() {
+                field.remove(b"Kids");
+            } else {
+                field.insert("Kids", Object::Array(leading));
+            }
+            self.set_object(id, Object::Dict(field));
+        }
+        Ok(true)
+    }
+}
+
+/// A page to copy into a new document ([`Document::compose`]): page `page` (from 0) of source
+/// `source`, turned `quarter_turns` quarter turns clockwise more than it is (counterclockwise
+/// when negative).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PagePick {
+    /// The source, by its position among the sources.
+    pub source: usize,
+    /// The page, from 0.
+    pub page: usize,
+    /// Quarter turns clockwise added to its rotation.
+    pub quarter_turns: i32,
+}
+
+impl PagePick {
+    /// Page `page` of source `source`, turned `quarter_turns` quarter turns more.
+    #[must_use]
+    pub fn new(source: usize, page: usize, quarter_turns: i32) -> Self {
+        Self {
+            source,
+            page,
+            quarter_turns,
+        }
+    }
+}
+
+/// The keys of a form that say how its fields look, carried along with them.
+const FORM_DEFAULTS: [&[u8]; 4] = [b"DA", b"DR", b"Q", b"NeedAppearances"];
+
+/// What [`Document::copy_pages`] copied.
+struct Copied {
+    /// Each page copied, in the order asked, with its geometry.
+    pages: Vec<(ObjId, PageGeometry)>,
+    /// The widgets on those pages, copied.
+    widgets: Vec<ObjId>,
+    /// The defaults of the source's form, copied.
+    defaults: Dict,
+}
+
+/// The annotations of page `page` of `doc`, by object.
+fn annotation_ids(doc: &Document, page: ObjId) -> Result<Vec<ObjId>> {
+    let Some(Object::Dict(page)) = doc.object(page)? else {
+        return Ok(Vec::new());
+    };
+    let annotations = match page.get(b"Annots") {
+        Some(Object::Array(annotations)) => annotations.clone(),
+        Some(Object::Ref(id)) => match doc.object(*id)? {
+            Some(Object::Array(annotations)) => annotations,
+            _ => return Ok(Vec::new()),
+        },
+        _ => return Ok(Vec::new()),
+    };
+    Ok(annotations.iter().filter_map(Object::as_ref_id).collect())
+}
+
+/// The form of `doc`'s catalog, if it has one.
+fn acro_form(doc: &Document) -> Result<Option<Dict>> {
+    let Some(Object::Dict(catalog)) = doc.object(doc.catalog_id())? else {
+        return Ok(None);
+    };
+    Ok(match catalog.get(b"AcroForm") {
+        Some(Object::Dict(form)) => Some(form.clone()),
+        Some(Object::Ref(id)) => match doc.object(*id)? {
+            Some(Object::Dict(form)) => Some(form),
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 impl Document {

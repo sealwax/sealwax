@@ -105,7 +105,7 @@ pub struct Document {
     /// The highest object number the file defines, read from its bytes when first needed.
     highest_defined: OnceLock<u32>,
     geometry: OnceLock<Vec<PageGeometry>>,
-    limits: Limits,
+    pub(crate) limits: Limits,
     /// The pages [`Document::check_page`] found within the limits: neither the input nor the
     /// limits change, so a page is walked once.
     checked: Mutex<HashSet<usize>>,
