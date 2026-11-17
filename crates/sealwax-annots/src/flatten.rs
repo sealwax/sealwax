@@ -56,6 +56,7 @@ pub(crate) enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Font {
     Helvetica,
+    HelveticaBold,
     ZapfDingbats,
 }
 
@@ -402,6 +403,7 @@ impl Painter {
             let mut fonts = Dict::new();
             let name = match font {
                 Font::Helvetica => "Helv",
+                Font::HelveticaBold => "HeBo",
                 Font::ZapfDingbats => "ZaDb",
             };
             fonts.insert(name, Object::Ref(id));
@@ -567,6 +569,10 @@ pub(crate) fn font_dict(font: Font) -> Object {
     match font {
         Font::Helvetica => {
             dict.insert("BaseFont", Name::from("Helvetica"));
+            dict.insert("Encoding", Name::from("WinAnsiEncoding"));
+        }
+        Font::HelveticaBold => {
+            dict.insert("BaseFont", Name::from("Helvetica-Bold"));
             dict.insert("Encoding", Name::from("WinAnsiEncoding"));
         }
         Font::ZapfDingbats => {

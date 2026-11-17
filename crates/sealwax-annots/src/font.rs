@@ -260,6 +260,40 @@ impl TextFont for Helvetica {
     }
 }
 
+/// Helvetica-Bold, WinAnsiEncoding.
+pub(crate) struct HelveticaBold;
+
+impl HelveticaBold {
+    /// Whether a text's font, as an XFDF names it, is Helvetica-Bold.
+    pub(crate) fn named(name: Option<&str>) -> bool {
+        name.is_some_and(|name| {
+            let name: String = name
+                .chars()
+                .filter(|c| !matches!(c, '-' | ' ' | ',' | '_'))
+                .collect();
+            name.eq_ignore_ascii_case("HelveticaBold")
+        })
+    }
+}
+
+impl TextFont for HelveticaBold {
+    fn encode(&self, text: &str, replaced: &mut usize) -> Vec<u8> {
+        crate::text::encode(text, replaced)
+    }
+
+    fn width(&self, encoded: &[u8], size: f64) -> f64 {
+        crate::text::width_bold(encoded, size)
+    }
+
+    fn operand(&self, encoded: &[u8]) -> Vec<u8> {
+        crate::text::literal(encoded)
+    }
+
+    fn resource(&self) -> &str {
+        "HeBo"
+    }
+}
+
 /// A program a document embeds, as the drawings use it: the glyphs they show and the
 /// characters each stands for.
 pub(crate) struct Embedded {
