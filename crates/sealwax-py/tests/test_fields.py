@@ -202,6 +202,15 @@ def test_fields_are_created_on_a_flat_page_and_a_name_taken_is_refused():
     document.add_field("name", "text", 0, (100, 50, 280, 70), required=True)
     document.add_field("when", "date", 0, (100, 100, 190, 120))
     document.add_field("agree", "checkbox", 0, (100, 150, 114, 164))
+    document.add_field("sized", "text", 0, (300, 50, 480, 70), font_size=12)
+    assert b"/DA (/Helv 12 Tf 0 g)" in document.save(xref="table")
+    for font_size in (0, 1001, float("nan")):
+        try:
+            document.add_field("bad", "text", 0, (10, 200, 50, 220), font_size=font_size)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"font size {font_size} accepted")
     try:
         document.add_field("name", "text", 0, (10, 10, 50, 30))
     except sealwax.FieldNameTakenError:

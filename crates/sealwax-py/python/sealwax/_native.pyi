@@ -265,7 +265,14 @@ class Document:
         contents: str | None = None,
     ) -> None: ...
     def add_field(
-        self, name: str, kind: str, page_index: int, rect: tuple[float, float, float, float], *, required: bool = False
+        self,
+        name: str,
+        kind: str,
+        page_index: int,
+        rect: tuple[float, float, float, float],
+        *,
+        required: bool = False,
+        font_size: float | None = None,
     ) -> None: ...
     def add_photo_pages(self, photos: list[bytes]) -> PhotoPages: ...
     def field_values(self) -> dict[str, list[str]]: ...

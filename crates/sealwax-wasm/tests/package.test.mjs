@@ -271,10 +271,19 @@ test("fields are created and a name taken is refused with its own error", () => 
     (error) => error instanceof sealwax.FieldNameTakenError && error instanceof PdfError,
   );
   assert.throws(() => doc.addField({ name: "x", kind: "radio", pageIndex: 0, rect: [0, 0, 1, 1] }), RangeError);
+  doc.addField({ name: "sized", kind: "text", pageIndex: 0, rect: [100, 200, 280, 220], fontSize: 12 });
+  assert.ok(new TextDecoder().decode(doc.save({ xref: "table" })).includes("/DA (/Helv 12 Tf 0 g)"));
+  for (const fontSize of [0, 1001, Number.NaN, "12"]) {
+    assert.throws(
+      () => doc.addField({ name: "bad", kind: "text", pageIndex: 0, rect: [10, 10, 100, 30], fontSize }),
+      RangeError,
+    );
+  }
   const reopened = Document.fromBytes(doc.save());
   assert.deepEqual(reopened.fields().map((f) => [f.name, f.kind, f.rect]), [
     ["name", "text", [100, 680, 280, 700]],
     ["agree", "checkbox", [100, 636, 114, 650]],
+    ["sized", "text", [100, 580, 280, 600]],
   ]);
 });
 

@@ -194,3 +194,124 @@ fn on_a_turned_page_the_rectangle_is_where_the_page_shows_it() {
         );
     }
 }
+
+fn decoded(object: &Object) -> Vec<u8> {
+    use std::io::Read as _;
+    let Object::Stream(stream) = object else {
+        panic!("not a stream");
+    };
+    if stream.dict.get(b"Filter").and_then(Object::as_name) == Some(b"FlateDecode") {
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(stream.data.as_slice())
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    } else {
+        stream.data.clone()
+    }
+}
+
+/// The widget's `/DA` and its normal appearance's drawing.
+fn appearance(doc: &Document, widget: sealwax_core::ObjId) -> (Vec<u8>, String) {
+    let Some(Object::Dict(dict)) = doc.object(widget).unwrap() else {
+        panic!("no widget");
+    };
+    let Some(Object::String(da)) = dict.get(b"DA") else {
+        panic!("no /DA");
+    };
+    let normal = dict
+        .get(b"AP")
+        .and_then(Object::as_dict)
+        .and_then(|ap| ap.get(b"N"))
+        .and_then(Object::as_ref_id)
+        .unwrap();
+    let drawing = decoded(&doc.object(normal).unwrap().unwrap());
+    (da.clone(), String::from_utf8_lossy(&drawing).into_owned())
+}
+
+#[test]
+fn a_font_size_given_is_the_fields_and_its_values_drawing() {
+    let mut doc = flat(0, "", &[]);
+    let fixed = add_field(
+        &mut doc,
+        &NewField::new("name", NewFieldKind::Text, 0, [10.0, 10.0, 200.0, 30.0])
+            .font_size(Some(12.0)),
+    )
+    .unwrap();
+    let date = add_field(
+        &mut doc,
+        &NewField::new("when", NewFieldKind::Date, 0, [10.0, 40.0, 200.0, 60.0])
+            .font_size(Some(10.5)),
+    )
+    .unwrap();
+    let fitted = add_field(
+        &mut doc,
+        &NewField::new("notes", NewFieldKind::Text, 0, [10.0, 70.0, 200.0, 90.0]),
+    )
+    .unwrap();
+    let filled = HashMap::from([
+        ("name".to_owned(), FillValue::Text("Zoé".into())),
+        ("when".to_owned(), FillValue::Text("2026-11-17".into())),
+        ("notes".to_owned(), FillValue::Text("Rien".into())),
+    ]);
+    assert_eq!(fill_fields(&mut doc, &filled).unwrap().occurrences, 3);
+    let (da, drawing) = appearance(&doc, fixed);
+    assert_eq!(da, b"/Helv 12 Tf 0 g");
+    assert!(drawing.contains("/Helv 12 Tf"), "{drawing}");
+    let (da, drawing) = appearance(&doc, date);
+    assert_eq!(da, b"/Helv 10.5 Tf 0 g");
+    assert!(drawing.contains("/Helv 10.5 Tf"), "{drawing}");
+    // Without a size, it is fitted: 0.85 of the field's 20 points.
+    let (da, drawing) = appearance(&doc, fitted);
+    assert_eq!(da, b"/Helv 0 Tf 0 g");
+    assert!(drawing.contains("/Helv 17 Tf"), "{drawing}");
+    // A check box's mark stays fitted to its box.
+    let mut doc = flat(0, "", &[]);
+    let check = add_field(
+        &mut doc,
+        &NewField::new("agree", NewFieldKind::CheckBox, 0, [10.0, 50.0, 24.0, 64.0])
+            .font_size(Some(12.0)),
+    )
+    .unwrap();
+    let Some(Object::Dict(dict)) = doc.object(check).unwrap() else {
+        panic!("no widget");
+    };
+    assert_eq!(
+        dict.get(b"DA"),
+        Some(&Object::String(b"/ZaDb 0 Tf 0 g".to_vec()))
+    );
+}
+
+#[test]
+fn a_font_size_out_of_range_is_refused_and_nothing_added() {
+    for size in [0.0, -12.0, 0.5, 1000.5, f64::NAN, f64::INFINITY] {
+        let mut doc = flat(0, "", &[]);
+        let before = doc.save(&SaveOptions::default()).unwrap();
+        assert!(
+            matches!(
+                add_field(
+                    &mut doc,
+                    &NewField::new("x", NewFieldKind::Text, 0, [10.0, 10.0, 100.0, 30.0])
+                        .font_size(Some(size)),
+                ),
+                Err(Error::Pdf(sealwax_core::Error::InvalidArgument {
+                    what: "font size"
+                }))
+            ),
+            "{size}"
+        );
+        assert_eq!(doc.save(&SaveOptions::default()).unwrap(), before, "{size}");
+    }
+    for size in [
+        *sealwax_annots::FIELD_FONT_SIZES.start(),
+        *sealwax_annots::FIELD_FONT_SIZES.end(),
+    ] {
+        let mut doc = flat(0, "", &[]);
+        add_field(
+            &mut doc,
+            &NewField::new("x", NewFieldKind::Text, 0, [10.0, 10.0, 100.0, 30.0])
+                .font_size(Some(size)),
+        )
+        .unwrap();
+    }
+}

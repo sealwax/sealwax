@@ -1145,16 +1145,18 @@ impl Document {
     /// page `pageIndex` (from 0) at `rect` ([x1, y1, x2, y2]) on the page as it shows: turned by
     /// its rotation, from the top-left corner of its crop box, y down, in points. It gets a gray
     /// border one point wide and no background, and turns with the page so that its text reads
-    /// upright. The form is created if the document has none.
+    /// upright. `fontSize` (1 to 1000 points) fixes the size of a text or date field's text;
+    /// without it the size is fitted to the field (`0 Tf`), and some viewers (PDFium among
+    /// them) do not keep a value typed into such a field. A check box's mark is always fitted. The form is created if the document has none.
     ///
     /// # Errors
     /// A `FieldNameTakenError` when the form already has a field of that name; a `RangeError`
-    /// for a bad kind, name, page or rectangle.
+    /// for a bad kind, name, page, rectangle or font size.
     #[wasm_bindgen(js_name = addField)]
     pub fn add_field(
         &mut self,
         #[wasm_bindgen(
-            unchecked_param_type = "{ name: string; kind: \"text\" | \"date\" | \"checkbox\"; pageIndex: number; rect: Box; required?: boolean }"
+            unchecked_param_type = "{ name: string; kind: \"text\" | \"date\" | \"checkbox\"; pageIndex: number; rect: Box; required?: boolean; fontSize?: number }"
         )]
         field: JsValue,
     ) -> Result<(), JsValue> {
@@ -1178,9 +1180,17 @@ impl Document {
             return Err(argument("rect must be [x1, y1, x2, y2]"));
         };
         let required = get(&field, "required").is_some_and(|v| v.is_truthy());
+        let font_size = match get(&field, "fontSize") {
+            None => None,
+            Some(size) => Some(
+                size.as_f64()
+                    .ok_or_else(|| argument("fontSize must be a number"))?,
+            ),
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let new = sealwax_annots::NewField::new(&name, kind, page as usize, [x1, y1, x2, y2])
-            .required(required);
+            .required(required)
+            .font_size(font_size);
         sealwax_annots::add_field(&mut self.inner, &new)
             .map(|_| ())
             .map_err(|error| annots_error(&error))

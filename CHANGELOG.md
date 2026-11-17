@@ -47,6 +47,10 @@ All notable changes to sealwax are recorded here. The format follows
 - Free texts in Helvetica-Bold drawn in Helvetica-Bold, a standard font (its WinAnsiEncoding
   widths, Adobe's metrics), rather than in Helvetica; a program given for `Helvetica-Bold` takes
   its place.
+- A font size for the text of a field created (`NewField::font_size` and `FIELD_FONT_SIZES`;
+  `font_size` in Python, `fontSize` in WebAssembly), 1 to 1000 points: its `/DA` says it and its
+  value is drawn at it. Without it the size is fitted to the field (`0 Tf`) as before, which some
+  viewers (PDFium) do not keep a typed value in. A check box's mark stays fitted.
 
 ### Changed
 
@@ -54,6 +58,8 @@ All notable changes to sealwax are recorded here. The format follows
   page's own rotation on a turned page) is drawn turned counterclockwise within its rectangle, so
   that it shows upright on the page as shown; it was refused. Other angles are still refused.
 - `Applied` is `#[non_exhaustive]`; `xfdf::Picture` and `xfdf::Text` have a `rotation`.
+- A JPEG with two EXIF segments is turned as its first one says, as Chrome and Apple's ImageIO
+  turn it, even when that one has no orientation; the last one decided. A phone writes one.
 
 ## [0.2.0] - 2026-11-17
 
