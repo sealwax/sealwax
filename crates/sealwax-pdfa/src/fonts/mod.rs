@@ -8,8 +8,12 @@
 //! - the widths of the dictionary are kept, so that no glyph moves, and the program is changed
 //!   to match them; a standard font without widths gets Adobe's;
 //! - a `ToUnicode` CMap says what each code means, from its glyph name.
+//!
+//! A composite font that is not embedded gets that standard font's glyphs in the order of its
+//! CIDs, read from its `ToUnicode` CMap (see `composite`).
 
 mod cff;
+mod composite;
 mod dingbats;
 mod encodings;
 pub(crate) mod standard;
@@ -288,8 +292,15 @@ pub(crate) fn apply(doc: &mut Document, scan: &Scan, report: &mut Report) -> Res
     // Which fonts lack a program is decided before any is embedded: fonts can share a
     // descriptor, which the first one embedded would make look embedded for the others.
     let mut pending = Vec::new();
+    let mut composites = Vec::new();
     for (location, used) in &scan.fonts {
-        if !used.rendered || used.composite {
+        if !used.rendered {
+            continue;
+        }
+        if used.composite {
+            if composite::lacks_program(doc, location)? {
+                composites.push((location, used));
+            }
             continue;
         }
         let Some(font) = edit::read_dict(doc, location)? else {
@@ -335,6 +346,9 @@ pub(crate) fn apply(doc: &mut Document, scan: &Scan, report: &mut Report) -> Res
             &mut descriptors,
             report,
         )?;
+    }
+    for (location, used) in composites {
+        composite::embed(doc, location, used, &mut programs, &mut descriptors, report)?;
     }
     Ok(())
 }

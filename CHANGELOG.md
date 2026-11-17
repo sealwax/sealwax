@@ -8,6 +8,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- PDF/A: a composite font without a program gets one when it is encoded `Identity-H` or
+  `Identity-V` and its `ToUnicode` CMap says what its CIDs mean: the standard font that stands in
+  for it (Arial's is Helvetica's), its glyphs put in the order of the CIDs (a CFF program read
+  CID for glyph), each with the width `/W` gives it, so that no glyph moves. A font stays
+  `font_not_embedded` when it has no `ToUnicode` (`composite_font_without_to_unicode`) or shows a
+  CID the standard font has no glyph for (`composite_font_glyph_missing`): drawn blank, that text
+  would be lost.
 - Photos made pages (`sealwax_annots::photos_document`, `add_photo_pages`; `photos_to_pdf` and
   `Document.add_photo_pages` in Python, `photosToPdf` and `addPhotoPages` in WebAssembly): a
   US Letter sheet for each JPEG or PNG, portrait or landscape as the photo shows, half an inch of
