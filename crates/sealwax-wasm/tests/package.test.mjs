@@ -445,6 +445,35 @@ test("a part of a page renders alone, within the page", () => {
   assert.throws(() => doc.renderPng(0, 2, { clip: { x: 0, y: 0, width: 1.5, height: 1 } }), RangeError);
 });
 
+test("the XFDF of a signed field is written as applyXfdf reads it", () => {
+  const png = Document.fromBytes(
+    build([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 60 20] /Contents 4 0 R >>",
+      stream("0 0 0 rg 0 0 60 20 re f"),
+    ]),
+  ).renderPng(0, 1);
+  const marks = [
+    { kind: "stamp", pageIndex: 0, rect: [100, 560, 120, 620], rotation: 90, name: "a1", png, customData: { fieldId: "f-1" } },
+    { kind: "freetext", pageIndex: 0, rect: [300, 400, 325, 520], rotation: 90, name: "t1", text: "Łukasz", align: "center" },
+  ];
+  const xfdf = sealwax.xfdfFor(marks, { deleted: [[0, "placeholder-1"]] });
+  assert.equal(xfdf.split("<add>").length, 2);
+  const doc = Document.fromBytes(
+    build([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 >>",
+    ]),
+  );
+  const applied = doc.applyXfdf(xfdf);
+  assert.deepEqual([applied.pictures, applied.texts, applied.deletionsIgnored], [1, 1, 1]);
+  assert.throws(() => sealwax.xfdfFor([{ ...marks[0], rotation: 45 }]), sealwax.XfdfError);
+  assert.throws(() => sealwax.xfdfFor([{ ...marks[0], png: new Uint8Array([1, 2, 3]) }]), sealwax.XfdfError);
+  assert.throws(() => sealwax.xfdfFor([{ kind: "stamp", pageIndex: 0 }]), RangeError);
+});
+
 // Last: a panic stops the module, and reset() makes another.
 test("after a panic every call throws until reset(), and older documents stay refused", async () => {
   const bytes = build([

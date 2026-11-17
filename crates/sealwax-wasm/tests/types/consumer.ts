@@ -9,8 +9,10 @@ import init, {
   isCrashed,
   mergeBytes,
   reset,
+  xfdfFor,
   type Applied,
   type Field,
+  type SignedMark,
   type RenderedPage,
 } from "sealwax";
 
@@ -25,6 +27,8 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const page: RenderedPage | null = doc.renderRgba(0, 1);
   const applied: Applied = doc.applyXfdf("<xfdf/>", { flatten: false, removeAnnotations: true });
   const changed: number[] = applied.pages;
+  const marks: SignedMark[] = [{ kind: "freetext", pageIndex: 0, rect: [0, 0, 10, 10], name: "t", text: "x", rotation: 90 }];
+  const xfdf: string = xfdfFor(marks, { deleted: [[0, "p"]] });
   try {
     doc.flatten();
   } catch (error) {
@@ -34,5 +38,5 @@ export async function use(bytes: Uint8Array): Promise<number> {
       return -1;
     }
   }
-  return merged.length + fields.length + (page?.width ?? 0) + changed.length;
+  return merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length;
 }

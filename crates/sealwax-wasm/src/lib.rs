@@ -200,6 +200,42 @@ export interface Flattened {
   charactersReplaced: number;
 }
 
+/** A field signed with a picture (signature, initials, date, check box), to write as XFDF. */
+export interface SignedStamp {
+  kind: "stamp";
+  pageIndex: number;
+  /** In PDF user space, the page unrotated, y upward. */
+  rect: Box;
+  /** The page's rotation, for a picture upright on a turned page: 0 unless said otherwise. */
+  rotation?: 0 | 90 | 180 | 270;
+  /** The annotation's id. */
+  name: string;
+  png: Uint8Array;
+  /** `fieldId` names the field it fills. */
+  customData?: Record<string, string>;
+}
+
+/** A text field signed, to write as XFDF. */
+export interface SignedText {
+  kind: "freetext";
+  pageIndex: number;
+  rect: Box;
+  rotation?: 0 | 90 | 180 | 270;
+  name: string;
+  text: string;
+  /** In points: 12 unless said otherwise. */
+  size?: number;
+  /** [r, g, b] from 0 to 1: black unless said otherwise. */
+  color?: [number, number, number];
+  align?: "left" | "center" | "right";
+  verticalAlign?: "top" | "center" | "bottom";
+  /** "Helvetica" unless said otherwise. */
+  font?: string;
+  customData?: Record<string, string>;
+}
+
+export type SignedMark = SignedStamp | SignedText;
+
 /** How `applyXfdf` treats what the document already has. */
 export interface ApplyXfdfOptions {
   /** Flatten the document's annotations (links but) and form into the pages first, as the
@@ -1641,6 +1677,147 @@ pub fn has_redaction_marks(
     CoreDocument::open(data.to_vec(), &OpenOptions::default().limits(limits))
         .and_then(|doc| doc.has_redaction_marks())
         .unwrap_or(true)
+}
+
+/// The XFDF a signing page sends for the fields it signed (`marks`, in order), exactly what
+/// `applyXfdf` reads and draws, here and on a server running sealwax: read back before it is
+/// returned. `deleted` lists the annotations it deletes, as `[pageIndex, name]`.
+///
+/// # Errors
+/// An `XfdfError` for a mark that cannot be written (a rotation other than a quarter turn, an
+/// empty rectangle, a picture that is not a PNG, a name refused); a `RangeError` for a missing or
+/// bad entry.
+#[wasm_bindgen(js_name = xfdfFor)]
+pub fn xfdf_for(
+    #[wasm_bindgen(unchecked_param_type = "SignedMark[]")] marks: JsValue,
+    #[wasm_bindgen(unchecked_optional_param_type = "{ deleted?: [number, string][] }")]
+    options: Option<JsValue>,
+) -> Result<String, JsValue> {
+    use sealwax_annots::xfdf::{Align, NewMark, NewPicture, NewText, VerticalAlign};
+    if !Array::is_array(&marks) {
+        return Err(argument("marks must be an array"));
+    }
+    let numbers_of = |value: &JsValue| -> Option<Vec<f64>> {
+        if !Array::is_array(value) {
+            return None;
+        }
+        Array::from(value).iter().map(|v| v.as_f64()).collect()
+    };
+    let whole = |value: Option<JsValue>, max: f64| -> Option<f64> {
+        value
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite() && n.fract() == 0.0 && (0.0..=max).contains(n))
+    };
+    let mut written = Vec::new();
+    for (index, mark) in Array::from(&marks).iter().enumerate() {
+        let position = index + 1;
+        let bad = |key: &str| argument(&format!("mark {position}: {key} is missing or bad"));
+        let field = |key: &str| get(&mark, key);
+        let text_of = |key: &str| field(key).and_then(|v| v.as_string());
+        let kind = text_of("kind").ok_or_else(|| bad("kind"))?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let page_index = whole(field("pageIndex"), f64::from(u32::MAX))
+            .ok_or_else(|| bad("pageIndex"))? as usize;
+        let [x1, y1, x2, y2] = field("rect")
+            .and_then(|r| numbers_of(&r))
+            .and_then(|n| <[f64; 4]>::try_from(n).ok())
+            .ok_or_else(|| bad("rect"))?;
+        let rect = Rect::from_corners(x1, y1, x2, y2);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let rotation = match field("rotation") {
+            None => 0,
+            some => whole(some, 359.0).ok_or_else(|| bad("rotation"))? as u16,
+        };
+        let name = text_of("name").ok_or_else(|| bad("name"))?;
+        let mut custom_data = Vec::new();
+        if let Some(data) = field("customData") {
+            if !data.is_object() {
+                return Err(bad("customData"));
+            }
+            for entry in Object::entries(&Object::from(data)).iter() {
+                let pair = Array::from(&entry);
+                match (pair.get(0).as_string(), pair.get(1).as_string()) {
+                    (Some(key), Some(value)) => custom_data.push((key, value)),
+                    _ => return Err(bad("customData")),
+                }
+            }
+        }
+        written.push(match kind.as_str() {
+            "stamp" => {
+                let png = field("png")
+                    .filter(|v| v.is_instance_of::<Uint8Array>())
+                    .ok_or_else(|| bad("png"))?;
+                NewMark::Picture(NewPicture {
+                    page_index,
+                    rect,
+                    rotation,
+                    png: Uint8Array::from(png).to_vec(),
+                    name,
+                    custom_data,
+                })
+            }
+            "freetext" => {
+                let contents = text_of("text").ok_or_else(|| bad("text"))?;
+                let size = match field("size") {
+                    None => 12.0,
+                    Some(v) => v.as_f64().ok_or_else(|| bad("size"))?,
+                };
+                let color = match field("color") {
+                    None => [0.0; 3],
+                    Some(v) => numbers_of(&v)
+                        .and_then(|n| <[f64; 3]>::try_from(n).ok())
+                        .ok_or_else(|| bad("color"))?,
+                };
+                let align = match text_of("align").as_deref() {
+                    None | Some("left") => Align::Left,
+                    Some("center") => Align::Center,
+                    Some("right") => Align::Right,
+                    Some(_) => return Err(bad("align")),
+                };
+                let vertical = match text_of("verticalAlign").as_deref() {
+                    None | Some("top") => VerticalAlign::Top,
+                    Some("center") => VerticalAlign::Center,
+                    Some("bottom") => VerticalAlign::Bottom,
+                    Some(_) => return Err(bad("verticalAlign")),
+                };
+                NewMark::Text(NewText {
+                    page_index,
+                    rect,
+                    rotation,
+                    contents,
+                    size,
+                    color,
+                    align,
+                    vertical,
+                    font: text_of("font").unwrap_or_else(|| "Helvetica".to_owned()),
+                    name,
+                    custom_data,
+                })
+            }
+            _ => return Err(bad("kind")),
+        });
+    }
+    let mut deleted = Vec::new();
+    if let Some(list) = options.as_ref().and_then(|o| get(o, "deleted")) {
+        if !Array::is_array(&list) {
+            return Err(argument("deleted must be [pageIndex, name][]"));
+        }
+        for entry in Array::from(&list).iter() {
+            let pair = Array::from(&entry);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            match (
+                whole(Some(pair.get(0)), f64::from(u32::MAX)),
+                pair.get(1).as_string(),
+            ) {
+                (Some(page), Some(name)) if Array::is_array(&entry) => {
+                    deleted.push((page as usize, name))
+                }
+                _ => return Err(argument("deleted must be [pageIndex, name][]")),
+            }
+        }
+    }
+    sealwax_annots::xfdf::write_command(&written, &deleted)
+        .map_err(|error| make_error("xfdf", &error.to_string(), None))
 }
 
 /// A new PDF of a page for each photo of `photos` (JPEG or PNG), as `addPhotoPages` adds

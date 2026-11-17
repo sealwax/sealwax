@@ -42,6 +42,7 @@ from ._native import (
     release_cache,
     sign,
     verify_signatures,
+    xfdf_for,
 )
 from .isolation import isolated
 
@@ -83,6 +84,7 @@ __all__ = [
     "release_cache",
     "sign",
     "verify_signatures",
+    "xfdf_for",
 ]
 
 

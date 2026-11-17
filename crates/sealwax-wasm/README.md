@@ -74,6 +74,15 @@ for (const xfdf of storedXfdfs) {
 }
 ```
 
+`xfdfFor` writes the XFDF of the fields a signer just signed (PNG stamps and free texts, in PDF
+user space, `rotation` the page's own on a turned page), exactly what `applyXfdf` reads: send it
+to the server, apply it here to show it.
+
+```js
+const xfdf = xfdfFor([{ kind: "stamp", pageIndex, rect, rotation, name: id, png, customData: { fieldId } }]);
+doc.applyXfdf(xfdf);
+```
+
 ## Zoom
 
 A page shown larger than the screen renders by the part that shows: `clip` takes a rectangle in
