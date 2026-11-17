@@ -79,3 +79,18 @@ def test_past_the_pixel_bound_the_limit_is_named():
             pass
         else:
             raise AssertionError(f"scale {scale} accepted")
+
+
+def test_pixels_for_a_canvas_and_quarter_turns():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R >>",
+        stream("", b"1 0 0 rg 0 0 100 100 re f"),
+    ]))
+    width, height, pixels = document.render_rgba(0, 1.0)
+    assert (width, height, len(pixels)) == (200, 100, 200 * 100 * 4)
+    assert pixels[:4] == bytes([255, 0, 0, 255])
+    width, height, _ = document.render_rgba(0, 1.0, quarter_turns=1)
+    assert (width, height) == (100, 200)
+    assert document.render_png(0, 1.0, quarter_turns=2)[1:4] == b"PNG"

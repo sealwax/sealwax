@@ -126,6 +126,14 @@ export interface Metadata {
   info: Record<string, string>;
 }
 
+/** A page rendered for a canvas: `new ImageData(pixels, width, height)`. */
+export interface RenderedPage {
+  width: number;
+  height: number;
+  /** RGBA, 4 bytes per pixel, row by row from the top, opaque over white. */
+  pixels: Uint8ClampedArray;
+}
+
 export interface OutlineEntry {
   /** From 1. */
   level: number;
@@ -189,6 +197,26 @@ fn raster_error(error: &sealwax_raster::Error) -> JsValue {
         sealwax_raster::Error::Annots(inner) => annots_error(inner),
         other => make_error("pdf", &other.to_string(), None),
     }
+}
+
+/// The rendering options `{ quarterTurns }` describes, at `scale`.
+fn render_options(
+    scale: f64,
+    options: Option<&JsValue>,
+) -> Result<sealwax_raster::RenderOptions, JsValue> {
+    let mut render = sealwax_raster::RenderOptions::new(scale);
+    if let Some(turns) = options.and_then(|o| get(o, "quarterTurns")) {
+        match turns.as_f64() {
+            Some(n) if n.is_finite() && n.fract() == 0.0 && n.abs() < 1_000_000.0 => {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    render = render.quarter_turns(n as i32);
+                }
+            }
+            _ => return Err(argument("quarterTurns must be a whole number")),
+        }
+    }
+    Ok(render)
 }
 
 fn argument(message: &str) -> JsValue {
@@ -689,16 +717,74 @@ impl Document {
     }
 
     /// Page `pageIndex` (from 0) rendered as a reader shows it (annotations and field values
-    /// included), as PNG bytes: 8-bit RGB over white, the crop box as shown (rotated), at
-    /// `scale` pixels per point, sides rounded up.
+    /// included), as PNG bytes: 8-bit RGB over white, the crop box as shown (rotated, then turned
+    /// `quarterTurns` more quarter turns clockwise), at `scale` pixels per point, sides rounded
+    /// up. A modified document is saved and read again once, until it changes again.
     ///
     /// # Errors
     /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError`.
     #[wasm_bindgen(js_name = renderPng)]
-    pub fn render_png(&self, page_index: usize, scale: f64) -> Result<Uint8Array, JsValue> {
-        sealwax_raster::render_png(&self.inner, page_index, scale)
-            .map(|png| bytes(&png))
-            .map_err(|error| raster_error(&error))
+    pub fn render_png(
+        &self,
+        page_index: usize,
+        scale: f64,
+        #[wasm_bindgen(unchecked_param_type = "{ quarterTurns?: number }")] options: Option<
+            JsValue,
+        >,
+    ) -> Result<Uint8Array, JsValue> {
+        let options = render_options(scale, options.as_ref())?;
+        match sealwax_raster::render(&self.inner, page_index, &options, &|| false)
+            .map_err(|error| raster_error(&error))?
+        {
+            Some(raster) => raster
+                .png()
+                .map(|png| bytes(&png))
+                .map_err(|error| raster_error(&error)),
+            None => Err(make_error("pdf", "rendering cancelled", None)),
+        }
+    }
+
+    /// Page `pageIndex` rendered as `renderPng` renders it, as pixels a canvas takes:
+    /// `{ width, height, pixels }`, `pixels` a `Uint8ClampedArray` of 4 bytes per pixel (RGBA,
+    /// opaque over white) for `new ImageData(pixels, width, height)`. `cancel`, an `Int32Array`
+    /// over a `SharedArrayBuffer`, stops the rendering between its steps once its first element
+    /// is not 0 (set from another thread with `Atomics.store`): the result is then `null`, and
+    /// nothing is drawn.
+    ///
+    /// # Errors
+    /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError`.
+    #[wasm_bindgen(js_name = renderRgba, unchecked_return_type = "RenderedPage | null")]
+    pub fn render_rgba(
+        &self,
+        page_index: usize,
+        scale: f64,
+        #[wasm_bindgen(unchecked_param_type = "{ quarterTurns?: number; cancel?: Int32Array }")]
+        options: Option<JsValue>,
+    ) -> Result<JsValue, JsValue> {
+        let render = render_options(scale, options.as_ref())?;
+        let token = options
+            .as_ref()
+            .and_then(|o| get(o, "cancel"))
+            .and_then(|token| token.dyn_into::<js_sys::Int32Array>().ok());
+        let cancelled = || {
+            token
+                .as_ref()
+                .is_some_and(|token| js_sys::Atomics::load(token, 0).is_ok_and(|value| value != 0))
+        };
+        let Some(raster) = sealwax_raster::render(&self.inner, page_index, &render, &cancelled)
+            .map_err(|error| raster_error(&error))?
+        else {
+            return Ok(JsValue::NULL);
+        };
+        let object = Object::new();
+        set(&object, "width", raster.width);
+        set(&object, "height", raster.height);
+        set(
+            &object,
+            "pixels",
+            js_sys::Uint8ClampedArray::from(raster.pixels.as_slice()),
+        );
+        Ok(object.into())
     }
 
     /// What the document says about itself, never failing.

@@ -663,24 +663,55 @@ impl Document {
 
     /// Page `page_index` (from 0) rendered as a reader shows it (annotations and field values
     /// included), as PNG bytes: 8-bit RGB without alpha, over white. The image covers the crop
-    /// box as shown (rotated), at `scale` pixels per point (150 / 72 for 150 dpi): its sides are
-    /// the rotated crop box's times `scale`, rounded up as PyMuPDF and PDFium size their images.
-    /// A document modified since it was opened (a
-    /// field filled) is rendered as it stands, after a full save. Past `Limits.max_render_pixels`
-    /// (or a side of 65,535 pixels), `PdfLimitError` with `limit` "max_render_pixels"; past the
-    /// deadline, `PdfTimeoutError`; `ValueError` for a scale that is not a positive number or a
-    /// page the document does not have.
+    /// box as shown (rotated, then turned `quarter_turns` more quarter turns clockwise), at
+    /// `scale` pixels per point (150 / 72 for 150 dpi): its sides are the shown crop box's times
+    /// `scale`, rounded up as PyMuPDF and PDFium size their images. A document modified since it
+    /// was opened (a field filled) is rendered as it stands, saved and read again once until it
+    /// changes again. Past `Limits.max_render_pixels` (or a side of 65,535 pixels),
+    /// `PdfLimitError` with `limit` "max_render_pixels"; past the deadline, `PdfTimeoutError`;
+    /// `ValueError` for a scale that is not a positive number or a page the document does not
+    /// have.
+    #[pyo3(signature = (page_index, scale, quarter_turns = 0))]
     fn render_png<'py>(
         &self,
         py: Python<'py>,
         page_index: usize,
         scale: f64,
+        quarter_turns: i32,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let inner = &self.inner;
         let png = run(py, || {
-            Ok(pdf::raster::render_png(inner, page_index, scale)?)
+            let options = pdf::raster::RenderOptions::new(scale).quarter_turns(quarter_turns);
+            match pdf::raster::render(inner, page_index, &options, &|| false)? {
+                Some(raster) => Ok(raster.png()?),
+                None => Err(Failure::Value("rendering cancelled".to_owned())),
+            }
         })?;
         Ok(PyBytes::new(py, &png))
+    }
+
+    /// Page `page_index` rendered as `render_png` renders it, as raw pixels: `(width, height,
+    /// pixels)`, `pixels` holding 4 bytes per pixel (red, green, blue, alpha), row by row from
+    /// the top, opaque over white.
+    #[pyo3(signature = (page_index, scale, quarter_turns = 0))]
+    fn render_rgba<'py>(
+        &self,
+        py: Python<'py>,
+        page_index: usize,
+        scale: f64,
+        quarter_turns: i32,
+    ) -> PyResult<(u32, u32, Bound<'py, PyBytes>)> {
+        let inner = &self.inner;
+        let raster = run(py, || {
+            let options = pdf::raster::RenderOptions::new(scale).quarter_turns(quarter_turns);
+            pdf::raster::render(inner, page_index, &options, &|| false)?
+                .ok_or_else(|| Failure::Value("rendering cancelled".to_owned()))
+        })?;
+        Ok((
+            raster.width,
+            raster.height,
+            PyBytes::new(py, &raster.pixels),
+        ))
     }
 
     /// The straight lines and rectangles page `page_index` (from 0) paints (filled or stroked;

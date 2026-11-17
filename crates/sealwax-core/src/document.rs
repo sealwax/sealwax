@@ -112,6 +112,9 @@ pub struct Document {
     /// The bytes each stream counted by [`Document::check_page`] decodes to: the font programs
     /// pages share are decoded once.
     streams: Mutex<HashMap<ObjectIdentifier, u64>>,
+    /// The document as it stands, saved and read again, while nothing changes it
+    /// ([`Document::reopened_if_modified`]).
+    view: Mutex<Option<Arc<Document>>>,
 }
 
 impl fmt::Debug for Document {
@@ -158,6 +161,7 @@ impl Document {
             geometry: OnceLock::new(),
             checked: Mutex::new(HashSet::new()),
             streams: Mutex::new(HashMap::new()),
+            view: Mutex::new(None),
             limits: options.limits,
             pdf: Arc::new(pdf),
         };
@@ -445,26 +449,40 @@ impl Document {
     }
 
     /// The document as it stands, for what reads pages: `None` when nothing was modified (read
-    /// this one), else its full save opened again, with the same limits.
+    /// this one), else its full save opened again, with the same limits. The copy is kept until
+    /// the document changes again: reading many pages of a modified document costs one save.
     ///
     /// # Errors
     /// As [`Document::save`] and [`Document::open`].
-    pub fn reopened_if_modified(&self) -> Result<Option<Document>> {
+    pub fn reopened_if_modified(&self) -> Result<Option<Arc<Document>>> {
         if !self.is_modified() {
             return Ok(None);
+        }
+        let mut view = self
+            .view
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(view) = view.as_ref() {
+            return Ok(Some(Arc::clone(view)));
         }
         let saved = self.save(&SaveOptions::default())?;
         // Already in memory: the bound on the input's size is not this one's.
         let options = OpenOptions::default()
             .limits(self.limits)
             .max_file_bytes(usize::MAX);
-        Ok(Some(Document::open(saved, &options)?))
+        let reopened = Arc::new(Document::open(saved, &options)?);
+        *view = Some(Arc::clone(&reopened));
+        Ok(Some(reopened))
     }
 
     /// Replace an indirect object, or create it under that identifier.
     pub fn set_object(&mut self, id: ObjId, object: Object) {
         self.next_number = self.next_number.max(id.number.saturating_add(1));
         self.overlay.insert(id, object);
+        // What was read again no longer stands.
+        if let Ok(view) = self.view.get_mut() {
+            *view = None;
+        }
     }
 
     /// Add an indirect object under a new number, and return its identifier.
