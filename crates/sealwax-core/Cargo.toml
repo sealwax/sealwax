@@ -16,6 +16,9 @@ flate2 = "1"
 hayro-syntax.workspace = true
 # Finds the structure streams in a whole file when it opens, vectorised (MIT OR Unlicense).
 memchr = "2.7"
+# The deadline's clock: `std::time::Instant` itself on every target but the browser, where it
+# reads `performance.now()` (std's panics there). MIT OR Apache-2.0.
+web-time = "1.1"
 sha2 = "0.11"
 serde = { workspace = true, optional = true }
 thiserror.workspace = true

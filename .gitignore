@@ -38,3 +38,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# The npm package built by crates/sealwax-wasm/build.sh.
+/crates/sealwax-wasm/pkg/

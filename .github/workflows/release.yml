@@ -1,8 +1,9 @@
 name: Release
 
 # On a `release/**` branch: build and test what a release would publish, publish nothing.
-# On a `v*` tag: the same, then publish the crates on crates.io and the wheels on PyPI, and make
-# the GitHub release. The tag must name the workspace's version.
+# On a `v*` tag: the same, then publish the crates on crates.io, the wheels on PyPI and the
+# WebAssembly package on npm, and make the GitHub release. The tag must name the workspace's
+# version.
 
 on:
   push:
@@ -109,6 +110,39 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
+  npm-package:
+    name: npm package (WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # The wasm-bindgen CLI must be the version the crate pins.
+      - name: wasm-bindgen version
+        id: bindgen
+        run: echo "version=$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' crates/sealwax-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }},cargo-about
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build
+        run: crates/sealwax-wasm/build.sh
+      - name: Test
+        run: node --test crates/sealwax-wasm/tests/package.test.mjs
+      - name: Pack
+        run: |
+          test -s crates/sealwax-wasm/pkg/licenses/DEPENDENCIES.md
+          mkdir -p dist
+          npm pack ./crates/sealwax-wasm/pkg --pack-destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm
+          path: dist/*.tgz
+
   pypi:
     name: Publish on PyPI
     if: startsWith(github.ref, 'refs/tags/v')
@@ -119,8 +153,10 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # The wheels and the source distribution only: nothing else goes to PyPI.
       - uses: actions/download-artifact@v4
         with:
+          pattern: "{wheel-*,sdist}"
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
@@ -147,10 +183,37 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+  npm:
+    name: Publish on npm
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, crates, npm-package]
+    runs-on: ubuntu-latest
+    # npm trusted publishing: the `npm` environment is the one the package trusts, and npm makes
+    # the provenance attestation. NPM_TOKEN, in that environment, serves only the very first
+    # publish, before the package exists to trust anything; it is deleted afterwards.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install --global npm@^11.5.1
+      - run: npm publish dist/*.tgz --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   github-release:
     name: GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [pypi, crates-io]
+    needs: [pypi, crates-io, npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

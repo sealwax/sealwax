@@ -9,12 +9,13 @@
 //! What the interpreter would build from a font, an image or a shading is bounded too.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hayro_syntax::Filter;
 use hayro_syntax::content::{Instruction, UntypedIter};
 use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
 use hayro_syntax::page::{Page, Resources};
+use web_time::Instant;
 
 use crate::decode::{Step, decoded_size};
 use crate::error::{Error, Result};
