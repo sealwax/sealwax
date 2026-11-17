@@ -75,7 +75,9 @@ def test_values_written_read_back_with_button_names_kept_to_the_byte():
         "bare": "Yes",
         "sign": "never written",
     })
-    assert filled == {"occurrences": 7, "characters_replaced": 0, "unmatched": ["bare"]}
+    assert (filled["occurrences"], filled["refused"], filled["kept"]) == (6, ["bare", "sign"], [])
+    assert filled["written"]["name"] == {"value": "Élodie", "previous": ""}
+    assert filled["written"]["lang"] == {"value": "Français", "previous": "Off"}
     plain = document.save(xref="table")
     assert b"/Fran#E7ais" in plain, "the state is written with its own bytes"
     reopened = sealwax.Document.from_bytes(document.save())
@@ -93,16 +95,19 @@ def test_values_written_read_back_with_button_names_kept_to_the_byte():
     assert sealwax.Document.from_bytes(reopened.save()).field_values()["name"] == ["", ""]
 
 
-def test_a_state_given_as_text_the_document_spells_otherwise_is_reported():
+def test_a_state_given_as_text_the_document_spells_otherwise_is_refused():
     document = sealwax.Document.from_bytes(form())
     # The document spells the state in Latin-1 (b"Fran\xe7ais"); its UTF-8 text names none.
-    assert document.fill_fields({"lang": "Français"})["unmatched"] == ["lang"]
-    assert document.fill_fields({"lang": b"Fran\xe7ais"})["unmatched"] == []
+    assert document.fill_fields({"lang": "Français"})["refused"] == ["lang"]
+    assert document.fill_fields({"lang": b"Fran\xe7ais"})["refused"] == []
 
 
 def test_characters_the_font_lacks_are_counted_never_lost():
     document = sealwax.Document.from_bytes(form())
-    assert document.fill_fields({"name": "Ωmega"}) == {"occurrences": 2, "characters_replaced": 2, "unmatched": []}
+    filled = document.fill_fields({"name": "Ωmega"})
+    assert (filled["occurrences"], filled["characters_replaced"], filled["refused"]) == (2, 2, [])
+    # Strictly, a value the font cannot draw is refused, the field left as it was.
+    assert document.fill_fields({"name": "Ωmicron"}, strict=True)["refused"] == ["name"]
     assert sealwax.Document.from_bytes(document.save()).field_values()["name"] == ["Ωmega", "Ωmega"]
 
 
@@ -204,4 +209,31 @@ def test_fields_are_created_on_a_flat_page_and_a_name_taken_is_refused():
     # A quarter turn: (u, v) from the shown top-left corner is (v, u) in user space.
     assert found["name"]["rect"] == (50, 100, 70, 280)
     assert found["agree"]["button_states"] == [b"Off", b"Yes"]
-    assert reopened.fill_fields({"name": "Zoé", "agree": "Yes"})["unmatched"] == []
+    assert reopened.fill_fields({"name": "Zoé", "agree": "Yes"})["refused"] == []
+
+
+def test_a_filling_says_what_each_field_held_keeps_those_filled_and_is_undone():
+    document = sealwax.Document.from_bytes(form())
+    document.fill_fields({"name": "Ancien"})
+    filled = document.fill_fields({"name": "Lise", "agree": "Yes", "absent": "x"}, keep_filled=True)
+    assert (filled["kept"], filled["refused"]) == (["name"], ["absent"])
+    assert filled["written"] == {"agree": {"value": "Yes", "previous": "Off"}}
+    filled = document.fill_fields({"name": "Lise"})
+    assert filled["written"]["name"] == {"value": "Lise", "previous": "Ancien"}
+    assert document.unfill_fields(filled["written"]) == []
+    assert document.field_values()["name"] == ["Ancien", "Ancien"]
+
+
+def test_a_filled_form_made_a_template_keeps_nothing_of_its_values():
+    document = sealwax.Document.from_bytes(form())
+    document.fill_fields({"name": "Lise Exemple", "agree": "Yes"})
+    document = sealwax.Document.from_bytes(document.save())
+    assert document.template_content()["pages"] == 2
+    cleared = document.clear_template("Ouverture")
+    assert cleared["fields"] == document.template_content()["fields"]
+    saved = document.save(xref="table")
+    reopened = sealwax.Document.from_bytes(saved)
+    assert reopened.field_values()["name"] == ["", ""]
+    assert reopened.field_values()["agree"] == ["Off"]
+    assert reopened.metadata()["info"]["Title"] == "Ouverture"
+    assert reopened.template_content()["annotations"] == 0

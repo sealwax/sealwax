@@ -40,12 +40,29 @@ All notable changes to sealwax are recorded here. The format follows
   corner), with a gray border and no background, turned with the page so that its text reads
   upright. A name the form already has is refused (`Error::FieldNameTaken`,
   `FieldNameTakenError` in Python and WebAssembly).
-- `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
-  (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
-  silently. A state given as text while the document spells it otherwise lands there.
+- `fill_fields` says what it did with each name: refused, the field left as it was
+  (`Filled::refused`: no field of that name on the pages, a signature or push button, a check box
+  or radio button given a state none of its widgets has, a state given as text while the document
+  spells it otherwise included), or written, with the value the field held before
+  (`Filled::written`). `fill_fields_with` takes `FillOptions`: `keep_filled` leaves a field
+  holding another value as it is (`Filled::kept`), `strict` refuses what a reader would not let a
+  person type (a read-only field, a text longer than its maximum length or with characters its
+  font cannot draw, a choice the field does not offer). `unfill_fields` gives each field written
+  its previous value back, but those changed since. `Field::editable` tells a combo box that
+  takes typed text. In Python (`keep_filled`, `strict`, `unfill_fields`) and WebAssembly
+  (`keepFilled`, `strict`, `unfillFields`) too.
+- A filled form made a template again (`clear_template`, `template_content`; `clear_template`
+  and `template_content` in Python, `clearTemplate` and `templateContent` in WebAssembly): every
+  field cleared with its empty appearance drawn, the XFA form taken out, the annotations a person
+  added over the pages taken out (markup and their pop-ups; links and widgets stay) unless asked
+  to keep them, the information's title set and its author, subject and keywords taken out with
+  the XMP metadata. A full save leaves the values and appearances replaced out of the file.
 
 ### Changed
 
+- `fill_fields` leaves a check box or radio button given a state none of its widgets has as it
+  was, and reports it, where it turned it `Off`; signature fields and push buttons named are
+  reported too.
 - `fill_fields` draws a text field's appearance turned as its widget is (`/MK /R`): on a turned
   page, the value reads upright where it shows.
 

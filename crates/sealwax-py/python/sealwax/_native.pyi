@@ -60,6 +60,7 @@ class Field(TypedDict):
     required: bool
     read_only: bool
     max_length: int | None
+    editable: bool
     choices: list[str | tuple[str, str]]
     button_states: list[bytes]
     button_caption: str | None
@@ -97,10 +98,25 @@ class Metadata(TypedDict):
     pdfa: str | None
     info: dict[str, str]
 
+class Written(TypedDict):
+    value: str
+    previous: str
+
 class Filled(TypedDict):
     occurrences: int
     characters_replaced: int
-    unmatched: list[str]
+    refused: list[str]
+    kept: list[str]
+    written: dict[str, Written]
+
+class TemplateContent(TypedDict):
+    pages: int
+    fields: int
+    annotations: int
+
+class Cleared(TypedDict):
+    fields: int
+    annotations_removed: int
 
 class Coverage(TypedDict):
     certificates: int
@@ -199,7 +215,12 @@ class Document:
     def save_incremental(self) -> bytes: ...
     def flatten(self, *, fields_only: bool = False) -> Flattened: ...
     def fields(self, page_index: int | None = None) -> list[Field]: ...
-    def fill_fields(self, values: dict[str, str | bytes]) -> Filled: ...
+    def fill_fields(
+        self, values: dict[str, str | bytes], *, keep_filled: bool = False, strict: bool = False
+    ) -> Filled: ...
+    def unfill_fields(self, written: dict[str, Written]) -> list[str]: ...
+    def clear_template(self, title: str, *, keep_annotations: bool = False) -> Cleared: ...
+    def template_content(self) -> TemplateContent: ...
     def add_field(
         self, name: str, kind: str, page_index: int, rect: tuple[float, float, float, float], *, required: bool = False
     ) -> None: ...

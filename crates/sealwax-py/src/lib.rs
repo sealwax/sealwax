@@ -637,15 +637,24 @@ impl Document {
     /// Fill the fields `values` names, by full name, every occurrence of each: a text or choice
     /// field gets the text, and an appearance drawn for it (an empty text clears it); a button
     /// shows the state named, given as bytes exactly as `button_states` spells it or as text
-    /// (its UTF-8 bytes), `Off` when it has no such state. Signature fields and push buttons are
-    /// left alone. Returns `occurrences` (written), `characters_replaced` (characters the
-    /// appearance's font does not have, drawn as `?`; the value keeps them) and `unmatched` (the
-    /// check boxes and radio buttons given a state none of their widgets has, by name: they show
-    /// `Off`; a state given as text when the document spells it otherwise lands here).
+    /// (its UTF-8 bytes); an empty value turns it `Off`.
+    ///
+    /// Returns `occurrences` (written), `characters_replaced` (characters the appearance's font
+    /// does not have, drawn as `?`; the value keeps them), `refused` (the names not written, each
+    /// field left as it was: no field of that name on the pages, a signature or push button, a
+    /// button given a state none of its widgets has, and with `strict` a value the field does not
+    /// allow), `kept` (with `keep_filled`, the fields left as they were because they held another
+    /// value) and `written` (each field written: `value`, and `previous`, the value it held; a
+    /// button's state, `Off` when it has none). `strict` refuses what a reader would not let a
+    /// person type: a read-only field, a text longer than its maximum length or with characters
+    /// its font cannot draw, a choice the field does not offer.
+    #[pyo3(signature = (values, *, keep_filled = false, strict = false))]
     fn fill_fields<'py>(
         &mut self,
         py: Python<'py>,
         values: &Bound<'py, PyDict>,
+        keep_filled: bool,
+        strict: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let mut wanted = std::collections::HashMap::new();
         for (key, value) in values.iter() {
@@ -659,12 +668,81 @@ impl Document {
             };
             wanted.insert(name, value);
         }
+        let options = pdf::annots::FillOptions::default()
+            .keep_filled(keep_filled)
+            .strict(strict);
         let inner = &mut self.inner;
-        let filled = run(py, || Ok(pdf::annots::fill_fields(inner, &wanted)?))?;
+        let filled = run(py, || {
+            Ok(pdf::annots::fill_fields_with(inner, &wanted, &options)?)
+        })?;
         let dict = PyDict::new(py);
         dict.set_item("occurrences", filled.occurrences)?;
         dict.set_item("characters_replaced", filled.characters_replaced)?;
-        dict.set_item("unmatched", filled.unmatched)?;
+        dict.set_item("refused", filled.refused)?;
+        dict.set_item("kept", filled.kept)?;
+        let written = PyDict::new(py);
+        for (name, field) in filled.written {
+            let entry = PyDict::new(py);
+            entry.set_item("value", field.value)?;
+            entry.set_item("previous", field.previous)?;
+            written.set_item(name, entry)?;
+        }
+        dict.set_item("written", written)?;
+        Ok(dict)
+    }
+
+    /// Undo a filling: each field `written` names (as `fill_fields` returned it) gets back the
+    /// value it held before, unless it was changed since or refuses it. Returns those, left as
+    /// they are; a name the form no longer has is passed over.
+    fn unfill_fields(
+        &mut self,
+        py: Python<'_>,
+        written: std::collections::BTreeMap<String, std::collections::HashMap<String, String>>,
+    ) -> PyResult<Vec<String>> {
+        let mut fields = std::collections::BTreeMap::new();
+        for (name, field) in written {
+            let (Some(value), Some(previous)) = (field.get("value"), field.get("previous")) else {
+                return Err(PyValueError::new_err(
+                    "each field written needs its value and previous",
+                ));
+            };
+            fields.insert(name, pdf::annots::Written::new(value, previous));
+        }
+        let inner = &mut self.inner;
+        run(py, || Ok(pdf::annots::unfill_fields(inner, &fields)?))
+    }
+
+    /// Make the document a template: every field cleared with its empty appearance drawn, the
+    /// XFA form taken out, the annotations a person added over the pages taken out (markup and
+    /// their pop-ups; links and widgets stay) unless `keep_annotations`, the information's title
+    /// set to `title`, its author, subject and keywords and the XMP metadata taken out. What was
+    /// replaced is left out of a full `save()`. Returns `fields` (cleared) and
+    /// `annotations_removed`. What the pages' content draws is left as it is.
+    #[pyo3(signature = (title, *, keep_annotations = false))]
+    fn clear_template<'py>(
+        &mut self,
+        py: Python<'py>,
+        title: &str,
+        keep_annotations: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let options = pdf::annots::TemplateOptions::new(title).keep_annotations(keep_annotations);
+        let inner = &mut self.inner;
+        let cleared = run(py, || Ok(pdf::annots::clear_template(inner, &options)?))?;
+        let dict = PyDict::new(py);
+        dict.set_item("fields", cleared.fields)?;
+        dict.set_item("annotations_removed", cleared.annotations_removed)?;
+        Ok(dict)
+    }
+
+    /// What `clear_template` would clear or take out: `pages`, `fields` (each name once) and
+    /// `annotations` (added by a person over the pages).
+    fn template_content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let inner = &self.inner;
+        let content = run(py, || Ok(pdf::annots::template_content(inner)?))?;
+        let dict = PyDict::new(py);
+        dict.set_item("pages", content.pages)?;
+        dict.set_item("fields", content.fields)?;
+        dict.set_item("annotations", content.annotations)?;
         Ok(dict)
     }
 
@@ -1140,6 +1218,7 @@ fn field_dict<'py>(py: Python<'py>, field: &pdf::annots::Field) -> PyResult<Boun
     dict.set_item("required", field.required)?;
     dict.set_item("read_only", field.read_only)?;
     dict.set_item("max_length", field.max_length)?;
+    dict.set_item("editable", field.editable)?;
     let choices = PyList::empty(py);
     for choice in &field.choices {
         match choice {

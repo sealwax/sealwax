@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use sealwax_annots::{
-    FieldChoice, FieldKind, FieldValue, FillValue, Flattened, fields, fill_fields, flatten,
-    flatten_fields,
+    FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Flattened, TemplateOptions,
+    Written, fields, fill_fields_with, flatten, flatten_fields,
 };
 use sealwax_core::{
     Document as CoreDocument, Limits, OpenOptions, PageGeometry, PagePick, Rect, SaveOptions,
@@ -89,6 +89,8 @@ export interface Field {
   required: boolean;
   readOnly: boolean;
   maxLength: number | null;
+  /** A combo box that takes text typed beside its options. */
+  editable: boolean;
   /** Text, or [export, display] pairs. */
   choices: (string | [string, string])[];
   /** The names of a button's appearances, their bytes as the document spells them. */
@@ -96,13 +98,35 @@ export interface Field {
   buttonCaption: string | null;
 }
 
+export interface Written {
+  value: string;
+  /** The value the field held before; a button's state, "Off" when it had none. */
+  previous: string;
+}
+
 export interface Filled {
   /** The occurrences written: widgets of a field named. */
   occurrences: number;
   /** Characters the appearance's font lacks, drawn as "?" (the value keeps them). */
   charactersReplaced: number;
-  /** The check boxes and radio buttons given a state none of their widgets has. */
-  unmatched: string[];
+  /**
+   * The names not written, each field left as it was: no field of that name on the pages, a
+   * signature or push button, a button given a state none of its widgets has, and with `strict`
+   * a value the field does not allow.
+   */
+  refused: string[];
+  /** With `keepFilled`, the fields left as they were because they held another value. */
+  kept: string[];
+  /** Each field written, by name. */
+  written: Record<string, Written>;
+}
+
+export interface TemplateContent {
+  pages: number;
+  /** The fields, each name once. */
+  fields: number;
+  /** The annotations a person added over the pages. */
+  annotations: number;
 }
 
 export interface Flattened {
@@ -494,6 +518,7 @@ fn field(field: &sealwax_annots::Field) -> Object {
     );
     set(&object, "required", field.required);
     set(&object, "readOnly", field.read_only);
+    set(&object, "editable", field.editable);
     set(
         &object,
         "maxLength",
@@ -630,7 +655,10 @@ impl Document {
     /// Fill the fields `values` names, by full name, every occurrence of each: a text or choice
     /// field gets the text and an appearance drawn for it (an empty text clears it); a button
     /// shows the state named, given as bytes exactly as `buttonStates` spells it or as text (its
-    /// UTF-8 bytes), `Off` when it has no such state.
+    /// UTF-8 bytes); an empty value turns it `Off`. With `keepFilled`, a field holding another
+    /// value is left as it is (`kept`); with `strict`, what a reader would not let a person type
+    /// is refused (a read-only field, a text longer than its maximum length or with characters its
+    /// font cannot draw, a choice the field does not offer).
     ///
     /// # Errors
     /// A `PdfError`, or a `RangeError` for a value that is neither text nor bytes.
@@ -639,6 +667,8 @@ impl Document {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "Record<string, string | Uint8Array>")]
         values: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "{ keepFilled?: boolean; strict?: boolean }")]
+        options: Option<JsValue>,
     ) -> Result<Object, JsValue> {
         let mut wanted = HashMap::new();
         for entry in Object::entries(&Object::from(values)).iter() {
@@ -657,7 +687,17 @@ impl Document {
             };
             wanted.insert(name, value);
         }
-        let filled = fill_fields(&mut self.inner, &wanted).map_err(|error| core_error(&error))?;
+        let flag = |key: &str| {
+            options
+                .as_ref()
+                .and_then(|o| get(o, key))
+                .is_some_and(|v| v.is_truthy())
+        };
+        let options = FillOptions::default()
+            .keep_filled(flag("keepFilled"))
+            .strict(flag("strict"));
+        let filled = fill_fields_with(&mut self.inner, &wanted, &options)
+            .map_err(|error| core_error(&error))?;
         let object = Object::new();
         set(&object, "occurrences", count(filled.occurrences));
         set(
@@ -665,12 +705,104 @@ impl Document {
             "charactersReplaced",
             count(filled.characters_replaced),
         );
-        let unmatched: Array = filled
-            .unmatched
+        let names = |names: &[String]| -> Array {
+            names
+                .iter()
+                .map(|name| JsValue::from(name.as_str()))
+                .collect()
+        };
+        set(&object, "refused", names(&filled.refused));
+        set(&object, "kept", names(&filled.kept));
+        let written = Object::new();
+        for (name, field) in &filled.written {
+            let entry = Object::new();
+            set(&entry, "value", field.value.as_str());
+            set(&entry, "previous", field.previous.as_str());
+            set(&written, name, entry);
+        }
+        set(&object, "written", written);
+        Ok(object)
+    }
+
+    /// Undo a filling: each field `written` names (as `fillFields` returned it) gets back the
+    /// value it held before, unless it was changed since or refuses it. Returns those, left as
+    /// they are; a name the form no longer has is passed over.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` for an entry without its `value` and `previous`.
+    #[wasm_bindgen(js_name = unfillFields, unchecked_return_type = "string[]")]
+    pub fn unfill_fields(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Record<string, Written>")] written: JsValue,
+    ) -> Result<Array, JsValue> {
+        let mut fields = std::collections::BTreeMap::new();
+        for entry in Object::entries(&Object::from(written)).iter() {
+            let pair = Array::from(&entry);
+            let name = pair
+                .get(0)
+                .as_string()
+                .ok_or_else(|| argument("a field's name must be a string"))?;
+            let field = pair.get(1);
+            let text = |key: &str| get(&field, key).and_then(|v| v.as_string());
+            let (Some(value), Some(previous)) = (text("value"), text("previous")) else {
+                return Err(argument("each field written needs its value and previous"));
+            };
+            fields.insert(name, Written::new(&value, &previous));
+        }
+        let kept = sealwax_annots::unfill_fields(&mut self.inner, &fields)
+            .map_err(|error| core_error(&error))?;
+        Ok(kept
             .iter()
             .map(|name| JsValue::from(name.as_str()))
-            .collect();
-        set(&object, "unmatched", unmatched);
+            .collect())
+    }
+
+    /// Make the document a template: every field cleared with its empty appearance drawn, the
+    /// XFA form taken out, the annotations a person added over the pages taken out (markup and
+    /// their pop-ups; links and widgets stay) unless `keepAnnotations`, the information's title
+    /// set to `title`, its author, subject and keywords and the XMP metadata taken out. What was
+    /// replaced is left out of a full `save()`. What the pages' content draws stays.
+    ///
+    /// # Errors
+    /// A `PdfError`, or a `RangeError` without a title.
+    #[wasm_bindgen(
+        js_name = clearTemplate,
+        unchecked_return_type = "{ fields: number; annotationsRemoved: number }"
+    )]
+    pub fn clear_template(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "{ title: string; keepAnnotations?: boolean }")]
+        options: JsValue,
+    ) -> Result<Object, JsValue> {
+        let title = get(&options, "title")
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| argument("title must be a string"))?;
+        let keep = get(&options, "keepAnnotations").is_some_and(|v| v.is_truthy());
+        let options = TemplateOptions::new(&title).keep_annotations(keep);
+        let cleared = sealwax_annots::clear_template(&mut self.inner, &options)
+            .map_err(|error| annots_error(&error))?;
+        let object = Object::new();
+        set(&object, "fields", count(cleared.fields));
+        set(
+            &object,
+            "annotationsRemoved",
+            count(cleared.annotations_removed),
+        );
+        Ok(object)
+    }
+
+    /// What `clearTemplate` would clear or take out.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = templateContent, unchecked_return_type = "TemplateContent")]
+    pub fn template_content(&self) -> Result<Object, JsValue> {
+        let content =
+            sealwax_annots::template_content(&self.inner).map_err(|error| annots_error(&error))?;
+        let object = Object::new();
+        set(&object, "pages", count(content.pages));
+        set(&object, "fields", count(content.fields));
+        set(&object, "annotations", count(content.annotations));
         Ok(object)
     }
 

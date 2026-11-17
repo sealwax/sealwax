@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use sealwax_annots::{
-    FieldChoice, FieldKind, FieldValue, FillValue, field_values, fields, fill_fields,
+    FieldChoice, FieldKind, FieldValue, FillValue, Written, field_values, fields, fill_fields,
     flatten_fields,
 };
 use sealwax_core::{Document, Object, OpenOptions, SaveOptions};
@@ -245,10 +245,13 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
     let filled = fill_fields(&mut doc, &values).unwrap();
-    // name twice, agree, lang twice, country, bare; never the signature.
-    assert_eq!(filled.occurrences, 7);
+    // name twice, agree, lang twice, country; never the signature.
+    assert_eq!(filled.occurrences, 6);
     // bare has no appearance, so no state of that name; lang has it on one of its two widgets.
-    assert_eq!(filled.unmatched, ["bare"]);
+    assert_eq!(filled.refused, ["bare", "sign"]);
+    assert_eq!(filled.written["name"], Written::new("Élodie", ""));
+    assert_eq!(filled.written["lang"].previous, "Off");
+    assert_eq!(filled.written["lang"].value, "Français");
     let plain = doc
         .save(&SaveOptions::default().xref(sealwax_core::XrefFormat::Table))
         .unwrap();
@@ -265,7 +268,7 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
     assert_eq!(values["agree"], ["Yes"]);
     assert_eq!(values["lang"], ["Off", "Français"]);
     assert_eq!(values["country"], ["FR"]);
-    // No appearance, so no state of that name: the widget shows Off.
+    // No appearance, so no state of that name: refused, the widget left as it was.
     assert_eq!(values["bare"], ["Off"]);
     let read = fields(&doc, None).unwrap();
     assert_eq!(read[0].value, Some(FieldValue::Text("Élodie".into())));
@@ -289,10 +292,10 @@ fn values_written_are_read_back_and_button_names_keep_their_bytes() {
 }
 
 #[test]
-fn buttons_given_a_state_none_of_their_widgets_has_are_reported() {
+fn buttons_given_a_state_none_of_their_widgets_has_are_refused() {
     let mut doc = form();
     // A state given as its UTF-8 text while the document spells it in Latin-1, a state the box
-    // does not have, and an empty value (Off, asked for: not reported).
+    // does not have, and an empty value (Off, asked for: written).
     let values: HashMap<String, FillValue> = [
         ("lang", FillValue::Text("Français".into())),
         ("agree", FillValue::Text("No".into())),
@@ -302,7 +305,8 @@ fn buttons_given_a_state_none_of_their_widgets_has_are_reported() {
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
     let filled = fill_fields(&mut doc, &values).unwrap();
-    assert_eq!(filled.unmatched, ["agree", "lang"]);
+    assert_eq!(filled.refused, ["agree", "lang"]);
+    assert_eq!(filled.written.keys().collect::<Vec<_>>(), ["bare"]);
     let values: HashMap<String, Vec<String>> =
         field_values(&reopened(&doc)).unwrap().into_iter().collect();
     assert_eq!(values["lang"], ["Off", "Off"]);
