@@ -6,6 +6,15 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A page rendered again (at another scale, in parts, after another page of the same document)
+  reuses the fonts parsed and the glyphs drawn by the renders before it. Natively, pages of text
+  render again 1.3 to 4 times faster; in Chrome, where filling the pixels weighs more, up to twice
+  as fast as thumbnails and about a fifth faster at twice their size. Each thread keeps them for
+  the document it rendered last, until it renders another, `release_cache()` in Python, or, in
+  WebAssembly, a document freed. A scanned page's image is still decoded on every render.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

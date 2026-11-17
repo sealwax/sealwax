@@ -943,6 +943,7 @@ dependencies = [
  "png",
  "sealwax-annots",
  "sealwax-core",
+ "self_cell",
  "thiserror",
 ]
 

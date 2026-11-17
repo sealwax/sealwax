@@ -1905,12 +1905,14 @@ fn pdfa_convert<'py>(
     Ok((PyBytes::new(py, &saved), pdfa_dict(py, &report)?))
 }
 
-/// Drop what this thread keeps of the document it read last: the fonts its glyphs, drawings and
-/// tagging parsed, and the document with them. Reading another document replaces it anyway; call
-/// this when a thread is done with a large document it will not read again.
+/// Drop what this thread keeps of the documents it read and rendered last: the fonts its glyphs,
+/// drawings and tagging parsed, what its renders parsed and drew, and the documents with them.
+/// Reading or rendering another document replaces them anyway; call this when a thread is done
+/// with a large document it will not read again.
 #[pyfunction]
 fn release_cache() {
     pdf::text::release_cache();
+    pdf::raster::release_cache();
 }
 
 #[pymodule]

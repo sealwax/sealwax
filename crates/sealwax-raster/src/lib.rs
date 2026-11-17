@@ -7,6 +7,8 @@
 //! averaged over 4 x 4 pixels differ by about one level at the median, the same ink, glyphs drawn
 //! a little differently.
 
+mod cache;
+
 use std::io::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -19,6 +21,8 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{PixmapSettings, RenderCache, RenderSettings, render as render_page, render_into};
 use sealwax_core::{Dict, Document, Name, Object, OpenOptions, Rect, SaveOptions, Stream};
+
+pub use cache::release_cache;
 
 /// The fine resolution of a fax.
 pub const DEFAULT_DPI: f32 = 200.0;
@@ -139,6 +143,10 @@ impl Raster {
 /// A modified document (a field filled) is rendered as it stands: saved and read again once,
 /// until it changes again ([`Document::reopened_if_modified`]).
 ///
+/// What the renderer parsed and drew (fonts, glyphs) is kept for the next render of the same
+/// document on the same thread, until [`release_cache`] or a render of another document: a page
+/// rendered again, at another scale or in parts, is faster.
+///
 /// With [`RenderOptions::clip`], the image is that part of the page's image alone, its pixels
 /// those of the whole page's image there; the page is interpreted whole all the same, the
 /// drawing outside the part skipped.
@@ -227,39 +235,45 @@ pub fn render(
         3 => Affine::new([0.0, -1.0, 1.0, 0.0, 0.0, h]),
         _ => Affine::IDENTITY,
     };
-    let cache = RenderCache::new();
+    // The page as hayro read it for the cache kept: the same document, so the same page.
+    let drawn = cache::draw(
+        doc,
+        u64::from(columns) * u64::from(rows),
+        |pdf, cache| -> Option<Pixmap> {
+            let pages = pdf.pages();
+            let page = pages.get(page_index)?;
+            let mut context = RenderContext::new(columns, rows);
+            // A clip moves the page by whole pixels: each pixel's coverage stays what it is in
+            // the whole page's image.
+            let transform = Affine::translate((-left, -top))
+                * Affine::scale(scale)
+                * turned
+                * page.initial_transform(true).to_kurbo();
+            render_into(
+                page,
+                cache,
+                &InterpreterSettings::default(),
+                &RenderSettings::default(),
+                &mut context,
+                transform,
+            );
+            context.flush();
+            if cancelled() {
+                return None;
+            }
+            let mut pixmap = Pixmap::new(columns, rows);
+            context.render_with(
+                &mut pixmap,
+                &mut Resources::default(),
+                RasterizerSettings {
+                    target_init: TargetInit::Clear(WHITE),
+                    ..RasterizerSettings::default()
+                },
+            );
+            Some(pixmap)
+        },
+    )
     // A panic of the renderer is an error of this page, not of the process.
-    let drawn = catch_unwind(AssertUnwindSafe(|| {
-        let mut context = RenderContext::new(columns, rows);
-        // A clip moves the page by whole pixels: each pixel's coverage stays what it is in the
-        // whole page's image.
-        let transform = Affine::translate((-left, -top))
-            * Affine::scale(scale)
-            * turned
-            * page.initial_transform(true).to_kurbo();
-        render_into(
-            page,
-            &cache,
-            &InterpreterSettings::default(),
-            &RenderSettings::default(),
-            &mut context,
-            transform,
-        );
-        context.flush();
-        if cancelled() {
-            return None;
-        }
-        let mut pixmap = Pixmap::new(columns, rows);
-        context.render_with(
-            &mut pixmap,
-            &mut Resources::default(),
-            RasterizerSettings {
-                target_init: TargetInit::Clear(WHITE),
-                ..RasterizerSettings::default()
-            },
-        );
-        Some(pixmap)
-    }))
     .map_err(|_| Error::Unrenderable)?;
     doc.check_time()?;
     let Some(pixmap) = drawn else {
