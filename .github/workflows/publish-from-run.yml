@@ -1,0 +1,112 @@
+name: Publish a release run's packages
+
+# A release whose npm publication or GitHub release failed is finished from its own run: what
+# that run built and tested is published, never rebuilt, and its tag cannot move (the ruleset
+# keeps release tags in place). PyPI and crates.io are not here: their jobs can be re-run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: The id of the release run of a tag (Actions, release.yml)
+        required: true
+      npm:
+        description: Publish its npm package
+        type: boolean
+        default: true
+      release:
+        description: Create its GitHub release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: The release run
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      tag: ${{ steps.run.outputs.tag }}
+    steps:
+      - id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.run }}
+        run: |
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" \
+            --jq 'select(.path == ".github/workflows/release.yml" and .event == "push") | .head_branch')
+          case "$tag" in
+            v*) echo "tag=$tag" >> "$GITHUB_OUTPUT" ;;
+            *) echo "run $RUN is no release run of a tag" >&2; exit 1 ;;
+          esac
+
+  npm:
+    name: Publish on npm
+    if: inputs.npm
+    needs: run
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm
+          path: dist
+          run-id: ${{ inputs.run }}
+          github-token: ${{ github.token }}
+      - name: The package is the tag's version
+        env:
+          TAG: ${{ needs.run.outputs.tag }}
+        run: |
+          version=$(tar -xzOf dist/*.tgz package/package.json | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+          if [ "v$version" != "$TAG" ]; then
+            echo "the package is $version, the tag $TAG" >&2
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install --global npm@^11.5.1
+      # A path, not `dist/...`: npm reads `a/b` as a GitHub repository.
+      - run: npm publish ./dist/*.tgz --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    name: GitHub release
+    if: always() && inputs.release && needs.run.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped')
+    needs: [run, npm]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.run.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+          run-id: ${{ inputs.run }}
+          github-token: ${{ github.token }}
+      - name: Release with the changelog's section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.run.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "$TAG" dist/* --title "sealwax $version" --notes-file notes.md
