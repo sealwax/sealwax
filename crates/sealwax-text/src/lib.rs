@@ -15,12 +15,14 @@ mod cache;
 mod drawings;
 mod drawn;
 mod glyphs;
+mod redact;
 mod scan;
 
 pub use cache::release_cache;
 pub use drawings::{Drawings, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
+pub use redact::{RedactedText, redact_text};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};

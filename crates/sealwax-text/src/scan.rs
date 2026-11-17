@@ -68,6 +68,8 @@ fn inline_image_end(data: &[u8], at: usize) -> usize {
 pub(crate) fn operators(data: &[u8]) -> Vec<Op> {
     let mut ops = Vec::new();
     let mut operands: Option<usize> = None;
+    // A word inside an array is an operand, as readers take it: `[(a) 0 Tc (b)] TJ` is one `TJ`.
+    let mut depth = 0usize;
     let mut at = 0;
     loop {
         while at < data.len() && is_white(data[at]) {
@@ -94,6 +96,14 @@ pub(crate) fn operators(data: &[u8]) -> Vec<Op> {
                     .map_or(data.len(), |p| at + p + 1);
             }
             b'>' if data.get(at + 1) == Some(&b'>') => at += 2,
+            b'[' => {
+                depth += 1;
+                at += 1;
+            }
+            b']' => {
+                depth = depth.saturating_sub(1);
+                at += 1;
+            }
             b'/' => {
                 at += 1;
                 while at < data.len() && is_regular(data[at]) {
@@ -106,7 +116,8 @@ pub(crate) fn operators(data: &[u8]) -> Vec<Op> {
                     at += 1;
                 }
                 let word = &data[start..at];
-                operator = !(b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.'))
+                operator = depth == 0
+                    && !(b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.'))
                     && !matches!(word, b"true" | b"false" | b"null");
             }
         }
@@ -137,4 +148,236 @@ pub(crate) fn name_operand<'d>(data: &'d [u8], op: &Op) -> Option<&'d [u8]> {
         .position(|b| !is_regular(*b))
         .unwrap_or(name.len());
     Some(&name[..end])
+}
+
+/// An operand of a content-stream operator, as far as rewriting text needs: numbers, names,
+/// strings (their bytes, escapes read), arrays of those.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Operand {
+    Number(f64),
+    Name(Vec<u8>),
+    String(Vec<u8>),
+    Array(Vec<Operand>),
+    /// A dictionary, a boolean, `null`: what text never needs.
+    Other,
+}
+
+/// The operands of `data`, the bytes before an operator.
+pub(crate) fn operands(data: &[u8]) -> Vec<Operand> {
+    let mut at = 0;
+    let mut stack: Vec<Vec<Operand>> = vec![Vec::new()];
+    while at < data.len() {
+        let b = data[at];
+        if is_white(b) {
+            at += 1;
+            continue;
+        }
+        let operand = match b {
+            b'%' => {
+                while at < data.len() && !matches!(data[at], b'\r' | b'\n') {
+                    at += 1;
+                }
+                continue;
+            }
+            b'(' => {
+                let end = skip_string(data, at);
+                let operand =
+                    Operand::String(literal(&data[at + 1..end.saturating_sub(1).max(at + 1)]));
+                at = end;
+                operand
+            }
+            b'<' if data.get(at + 1) == Some(&b'<') => {
+                // A dictionary: skipped whole, nested ones included.
+                let mut depth = 0usize;
+                while at < data.len() {
+                    if data[at..].starts_with(b"<<") {
+                        depth += 1;
+                        at += 2;
+                    } else if data[at..].starts_with(b">>") {
+                        depth = depth.saturating_sub(1);
+                        at += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else if data[at] == b'(' {
+                        at = skip_string(data, at);
+                    } else {
+                        at += 1;
+                    }
+                }
+                Operand::Other
+            }
+            b'<' => {
+                let end = data[at..]
+                    .iter()
+                    .position(|c| *c == b'>')
+                    .map_or(data.len(), |p| at + p);
+                let operand = Operand::String(hex(&data[at + 1..end]));
+                at = (end + 1).min(data.len());
+                operand
+            }
+            b'[' => {
+                stack.push(Vec::new());
+                at += 1;
+                continue;
+            }
+            b']' => {
+                at += 1;
+                if stack.len() > 1 {
+                    let items = stack.pop().unwrap_or_default();
+                    Operand::Array(items)
+                } else {
+                    continue;
+                }
+            }
+            b'/' => {
+                let start = at + 1;
+                at = start;
+                while at < data.len() && is_regular(data[at]) {
+                    at += 1;
+                }
+                Operand::Name(name(&data[start..at]))
+            }
+            _ if !is_regular(b) => {
+                at += 1;
+                Operand::Other
+            }
+            _ => {
+                let start = at;
+                while at < data.len() && is_regular(data[at]) {
+                    at += 1;
+                }
+                std::str::from_utf8(&data[start..at])
+                    .ok()
+                    .and_then(|word| word.parse::<f64>().ok())
+                    .map_or(Operand::Other, Operand::Number)
+            }
+        };
+        if let Some(top) = stack.last_mut() {
+            top.push(operand);
+        }
+    }
+    // An array left open is closed where the operands end.
+    while stack.len() > 1 {
+        let items = stack.pop().unwrap_or_default();
+        if let Some(top) = stack.last_mut() {
+            top.push(Operand::Array(items));
+        }
+    }
+    stack.pop().unwrap_or_default()
+}
+
+/// A name's bytes, its `#xx` escapes read.
+fn name(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut at = 0;
+    while at < raw.len() {
+        if raw[at] == b'#'
+            && let Some(value) = raw
+                .get(at + 1..at + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(value);
+            at += 3;
+        } else {
+            out.push(raw[at]);
+            at += 1;
+        }
+    }
+    out
+}
+
+/// A literal string's bytes, between its parentheses (ISO 32000-1, 7.3.4.2).
+fn literal(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut at = 0;
+    while at < raw.len() {
+        let b = raw[at];
+        at += 1;
+        match b {
+            b'\\' => {
+                let Some(&next) = raw.get(at) else {
+                    break;
+                };
+                at += 1;
+                match next {
+                    b'n' => out.push(b'\n'),
+                    b'r' => out.push(b'\r'),
+                    b't' => out.push(b'\t'),
+                    b'b' => out.push(0x08),
+                    b'f' => out.push(0x0C),
+                    b'0'..=b'7' => {
+                        let mut value = u32::from(next - b'0');
+                        for _ in 0..2 {
+                            match raw.get(at) {
+                                Some(digit @ b'0'..=b'7') => {
+                                    value = value * 8 + u32::from(digit - b'0');
+                                    at += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        out.push((value & 0xFF) as u8);
+                    }
+                    // A line continued: the end of line is not part of the string.
+                    b'\r' => {
+                        if raw.get(at) == Some(&b'\n') {
+                            at += 1;
+                        }
+                    }
+                    b'\n' => {}
+                    other => out.push(other),
+                }
+            }
+            // An end of line in a string is a line feed.
+            b'\r' => {
+                if raw.get(at) == Some(&b'\n') {
+                    at += 1;
+                }
+                out.push(b'\n');
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A hexadecimal string's bytes, between its angle brackets: white space ignored, a missing last
+/// digit read as 0.
+fn hex(raw: &[u8]) -> Vec<u8> {
+    let digits: Vec<u8> = raw
+        .iter()
+        .filter_map(|b| (*b as char).to_digit(16))
+        .map(|d| d as u8)
+        .collect();
+    digits
+        .chunks(2)
+        .map(|pair| pair[0] << 4 | pair.get(1).copied().unwrap_or(0))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Operand, operands};
+
+    #[test]
+    fn operands_are_read_with_their_escapes() {
+        assert_eq!(
+            operands(b"[(a\\(b\\)\\101\\\n c) -120 <48 6> /F#31] 12.5"),
+            vec![
+                Operand::Array(vec![
+                    Operand::String(b"a(b)A c".to_vec()),
+                    Operand::Number(-120.0),
+                    Operand::String(vec![0x48, 0x60]),
+                    Operand::Name(b"F1".to_vec()),
+                ]),
+                Operand::Number(12.5),
+            ]
+        );
+        assert_eq!(
+            operands(b"/Span <</MCID 3>>"),
+            vec![Operand::Name(b"Span".to_vec()), Operand::Other]
+        );
+    }
 }
