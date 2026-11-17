@@ -10,6 +10,7 @@ from typing import Protocol
 
 from ._native import (
     Document,
+    FieldNameTakenError,
     Limits,
     PageGeometry,
     PdfAError,
@@ -44,6 +45,7 @@ from .isolation import isolated
 
 __all__ = [
     "Document",
+    "FieldNameTakenError",
     "Limits",
     "PageGeometry",
     "PdfAError",

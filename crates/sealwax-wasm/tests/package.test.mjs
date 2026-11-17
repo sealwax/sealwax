@@ -238,3 +238,24 @@ test("pages render to canvas pixels, turned, and a cancelled rendering draws not
   assert.notEqual(doc.renderRgba(0, 1, { cancel: token }), null);
   assert.throws(() => doc.renderRgba(0, 1, { quarterTurns: 0.5 }), RangeError);
 });
+
+test("fields are created and a name taken is refused with its own error", () => {
+  const flat = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+  ]);
+  const doc = Document.fromBytes(flat);
+  doc.addField({ name: "name", kind: "text", pageIndex: 0, rect: [100, 100, 280, 120], required: true });
+  doc.addField({ name: "agree", kind: "checkbox", pageIndex: 0, rect: [100, 150, 114, 164] });
+  assert.throws(
+    () => doc.addField({ name: "name", kind: "date", pageIndex: 0, rect: [10, 10, 100, 30] }),
+    (error) => error instanceof sealwax.FieldNameTakenError && error instanceof PdfError,
+  );
+  assert.throws(() => doc.addField({ name: "x", kind: "radio", pageIndex: 0, rect: [0, 0, 1, 1] }), RangeError);
+  const reopened = Document.fromBytes(doc.save());
+  assert.deepEqual(reopened.fields().map((f) => [f.name, f.kind, f.rect]), [
+    ["name", "text", [100, 680, 280, 700]],
+    ["agree", "checkbox", [100, 636, 114, 650]],
+  ]);
+});

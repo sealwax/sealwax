@@ -438,6 +438,37 @@ pub(crate) fn form_stream(drawing: &[u8], width: f64, height: f64, resources: Di
     pdf::flate(dict, drawing)
 }
 
+/// A form XObject stream drawn in a frame turned `turns` quarter turns counterclockwise (a
+/// widget's `/MK /R`): its `/Matrix` turns it back onto the widget.
+pub(crate) fn turned_form_stream(
+    drawing: &[u8],
+    width: f64,
+    height: f64,
+    resources: Dict,
+    turns: i64,
+) -> Object {
+    let mut form = form_stream(drawing, width, height, resources);
+    let matrix: Option<[f64; 6]> = match turns {
+        1 => Some([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
+        2 => Some([-1.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
+        3 => Some([0.0, -1.0, 1.0, 0.0, 0.0, 0.0]),
+        _ => None,
+    };
+    if let (Some(matrix), Object::Stream(stream)) = (matrix, &mut form) {
+        stream.dict.insert("Matrix", pdf::numbers(&matrix));
+    }
+    form
+}
+
+/// The quarter turns counterclockwise a widget's `/MK /R` gives it (0 to 3).
+pub(crate) fn widget_turns(doc: &Document, widget: &Dict) -> Result<i64> {
+    let characteristics = pdf::dict(doc, widget.get(b"MK"))?.unwrap_or_default();
+    Ok(characteristics
+        .get(b"R")
+        .and_then(Object::as_i64)
+        .map_or(0, |degrees| (degrees / 90).rem_euclid(4)))
+}
+
 /// A standard font, not embedded: the PDF/A conversion embeds its program.
 pub(crate) fn font_dict(font: Font) -> Object {
     let mut dict = Dict::new();

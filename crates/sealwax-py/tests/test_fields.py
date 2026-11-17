@@ -181,3 +181,27 @@ def test_a_value_of_another_type_is_refused():
         assert "str or bytes" in str(error)
     else:
         raise AssertionError("not refused")
+
+
+def test_fields_are_created_on_a_flat_page_and_a_name_taken_is_refused():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Rotate 90 >>",
+    ]))
+    document.add_field("name", "text", 0, (100, 50, 280, 70), required=True)
+    document.add_field("when", "date", 0, (100, 100, 190, 120))
+    document.add_field("agree", "checkbox", 0, (100, 150, 114, 164))
+    try:
+        document.add_field("name", "text", 0, (10, 10, 50, 30))
+    except sealwax.FieldNameTakenError:
+        pass
+    else:
+        raise AssertionError("a name taken was accepted")
+    reopened = sealwax.Document.from_bytes(document.save())
+    found = {f["name"]: f for f in reopened.fields()}
+    assert found["name"]["kind"] == "text" and found["name"]["required"]
+    # A quarter turn: (u, v) from the shown top-left corner is (v, u) in user space.
+    assert found["name"]["rect"] == (50, 100, 70, 280)
+    assert found["agree"]["button_states"] == [b"Off", b"Yes"]
+    assert reopened.fill_fields({"name": "Zoé", "agree": "Yes"})["unmatched"] == []

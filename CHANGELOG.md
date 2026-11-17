@@ -34,11 +34,20 @@ All notable changes to sealwax are recorded here. The format follows
   drawing nothing. Python: `render_rgba` and `quarter_turns`; WebAssembly: `renderRgba`
   (a `Uint8ClampedArray`; cancelled through an `Int32Array` over a `SharedArrayBuffer`) and
   `quarterTurns`.
+- Fields created on a page (`sealwax_annots::add_field`): a text field, a date field (with
+  Acrobat's `yyyy-mm-dd` date actions) or a check box, named, required or not, placed at a
+  rectangle given on the page as it shows (rotation applied, from the crop box's top-left
+  corner), with a gray border and no background, turned with the page so that its text reads
+  upright. A name the form already has is refused (`Error::FieldNameTaken`,
+  `FieldNameTakenError` in Python and WebAssembly).
 - `fill_fields` reports the check boxes and radio buttons given a state none of their widgets has
   (`Filled::unmatched`, `unmatched` in Python): they show `Off`, as before, but no longer
   silently. A state given as text while the document spells it otherwise lands there.
 
 ### Changed
+
+- `fill_fields` draws a text field's appearance turned as its widget is (`/MK /R`): on a turned
+  page, the value reads upright where it shows.
 
 - Glyphs, drawings and PDF/A tagging keep the fonts they parsed from one call to the next: each
   thread keeps them for the document it read last (`release_cache()` drops them). On a document

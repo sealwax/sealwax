@@ -64,6 +64,11 @@ pub enum Error {
         page: usize,
     },
 
+    /// A field to create is named as one the form already has: two fields of one name are one
+    /// field to a reader.
+    #[error("the form already has a field of that name")]
+    FieldNameTaken,
+
     /// A save did not read back as it should; nothing is returned rather than a broken file.
     #[error("saved document failed its check: {what}")]
     SaveCheck {

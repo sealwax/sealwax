@@ -58,6 +58,12 @@ create_exception!(
 );
 create_exception!(
     sealwax,
+    FieldNameTakenError,
+    PdfError,
+    "A field to create is named as one the form already has."
+);
+create_exception!(
+    sealwax,
     PdfAError,
     PdfError,
     "The conversion to PDF/A cannot be made."
@@ -120,6 +126,7 @@ fn pdf_error(py: Python<'_>, error: &pdf::Error) -> PyErr {
             exception
         }
         pdf::Error::InvalidArgument { .. } => PyValueError::new_err(message),
+        pdf::Error::FieldNameTaken => FieldNameTakenError::new_err(message),
         _ => PdfError::new_err(message),
     }
 }
@@ -659,6 +666,44 @@ impl Document {
         dict.set_item("characters_replaced", filled.characters_replaced)?;
         dict.set_item("unmatched", filled.unmatched)?;
         Ok(dict)
+    }
+
+    /// Create a field on page `page_index` (from 0): `kind` "text", "date" (a text field
+    /// carrying Acrobat's `yyyy-mm-dd` date actions) or "checkbox" (states `Yes` and `Off`),
+    /// named `name` (not empty, no period), at `rect` (x1, y1, x2, y2) on the page as it shows:
+    /// turned by its rotation, from the top-left corner of its crop box, y down, in points.
+    /// It gets a gray border one point wide and no background, and turns with the page so that
+    /// its text reads upright. The form is created if the document has none; the fields it has
+    /// are left as they are. `FieldNameTakenError` when the form already has a field of that
+    /// name; `ValueError` for a bad name, page or rectangle.
+    #[pyo3(signature = (name, kind, page_index, rect, *, required = false))]
+    fn add_field(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        kind: &str,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+        required: bool,
+    ) -> PyResult<()> {
+        let kind = match kind {
+            "text" => pdf::annots::NewFieldKind::Text,
+            "date" => pdf::annots::NewFieldKind::Date,
+            "checkbox" => pdf::annots::NewFieldKind::CheckBox,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "kind must be \"text\", \"date\" or \"checkbox\"",
+                ));
+            }
+        };
+        let field =
+            pdf::annots::NewField::new(name, kind, page_index, [rect.0, rect.1, rect.2, rect.3])
+                .required(required);
+        let inner = &mut self.inner;
+        run(
+            py,
+            || Ok(pdf::annots::add_field(inner, &field).map(|_| ())?),
+        )
     }
 
     /// Page `page_index` (from 0) rendered as a reader shows it (annotations and field values
@@ -1316,6 +1361,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PdfTimeoutError", py.get_type::<PdfTimeoutError>())?;
     m.add("XfdfError", py.get_type::<XfdfError>())?;
     m.add("PdfAError", py.get_type::<PdfAError>())?;
+    m.add("FieldNameTakenError", py.get_type::<FieldNameTakenError>())?;
     m.add_class::<Document>()?;
     m.add_class::<PageGeometry>()?;
     m.add_class::<Limits>()?;
