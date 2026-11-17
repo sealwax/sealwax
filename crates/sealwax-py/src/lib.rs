@@ -908,10 +908,14 @@ impl Document {
     /// named `name` (not empty, no period), at `rect` (x1, y1, x2, y2) on the page as it shows:
     /// turned by its rotation, from the top-left corner of its crop box, y down, in points.
     /// It gets a gray border one point wide and no background, and turns with the page so that
-    /// its text reads upright. The form is created if the document has none; the fields it has
-    /// are left as they are. `FieldNameTakenError` when the form already has a field of that
-    /// name; `ValueError` for a bad name, page or rectangle.
-    #[pyo3(signature = (name, kind, page_index, rect, *, required = false))]
+    /// its text reads upright. `font_size` (1 to 1000 points) fixes the size of a text or date
+    /// field's text; `None` fits it to the field (`0 Tf`), which some viewers (PDFium) do not
+    /// keep a typed value in. A check box's mark is always fitted. The form is created if the
+    /// document has none; the fields it has are left as they are. `FieldNameTakenError` when
+    /// the form already has a field of that name; `ValueError` for a bad name, page, rectangle
+    /// or font size.
+    #[pyo3(signature = (name, kind, page_index, rect, *, required = false, font_size = None))]
+    #[allow(clippy::too_many_arguments)]
     fn add_field(
         &mut self,
         py: Python<'_>,
@@ -920,6 +924,7 @@ impl Document {
         page_index: usize,
         rect: (f64, f64, f64, f64),
         required: bool,
+        font_size: Option<f64>,
     ) -> PyResult<()> {
         let kind = match kind {
             "text" => pdf::annots::NewFieldKind::Text,
@@ -933,7 +938,8 @@ impl Document {
         };
         let field =
             pdf::annots::NewField::new(name, kind, page_index, [rect.0, rect.1, rect.2, rect.3])
-                .required(required);
+                .required(required)
+                .font_size(font_size);
         let inner = &mut self.inner;
         run(
             py,

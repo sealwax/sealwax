@@ -8,10 +8,11 @@ use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Rotation, encode_t
 use crate::fields::{FillValue, fields, fill_fields};
 use crate::flatten::{Font, font_dict, turned_form_stream};
 use crate::pdf;
+use crate::text::number;
 use crate::{Error, Result};
 
-/// The form's default appearance of text, as fields created take it: Helvetica, its size fitted
-/// to the field, black.
+/// The form's default appearance of text, as fields created without a font size take it:
+/// Helvetica, its size fitted to the field, black.
 const TEXT_APPEARANCE: &[u8] = b"/Helv 0 Tf 0 g";
 /// A check box's: ZapfDingbats, whose `4` is the check mark.
 const CHECK_APPEARANCE: &[u8] = b"/ZaDb 0 Tf 0 g";
@@ -47,6 +48,10 @@ pub struct NewField {
     pub rect: [f64; 4],
     /// The field must be filled (`Required`).
     pub required: bool,
+    /// The size of a text or date field's text, in points; `None`, the size fitted to the field
+    /// (`0 Tf`). Some readers do not keep a value typed into a field whose size is fitted. A
+    /// check box's mark is always fitted.
+    pub font_size: Option<f64>,
 }
 
 impl NewField {
@@ -59,6 +64,7 @@ impl NewField {
             page_index,
             rect,
             required: false,
+            font_size: None,
         }
     }
 
@@ -68,7 +74,17 @@ impl NewField {
         self.required = required;
         self
     }
+
+    /// The size of its text, in points ([`NewField::font_size`]); `None` fits it to the field.
+    #[must_use]
+    pub fn font_size(mut self, size: Option<f64>) -> Self {
+        self.font_size = size;
+        self
+    }
 }
+
+/// The font sizes a field created takes, in points.
+pub const FIELD_FONT_SIZES: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 
 /// Create a field on its page: a widget with its appearance (a gray border, one point wide, no
 /// background; a check box's check mark), at the place `field.rect` gives on the page as it
@@ -80,11 +96,19 @@ impl NewField {
 /// # Errors
 /// [`sealwax_core::Error::FieldNameTaken`] when the form already has a field of that name (or
 /// fields under it); [`sealwax_core::Error::InvalidArgument`] for an empty name or one with a
-/// period, a page the document does not have, or a rectangle without area.
+/// period, a page the document does not have, a rectangle without area, or a font size outside
+/// [`FIELD_FONT_SIZES`].
 pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
     if field.name.is_empty() || field.name.contains('.') {
         return Err(sealwax_core::Error::InvalidArgument { what: "field name" }.into());
     }
+    let text_appearance = match field.font_size {
+        None => TEXT_APPEARANCE.to_vec(),
+        Some(size) if FIELD_FONT_SIZES.contains(&size) => {
+            format!("/Helv {} Tf 0 g", number(size)).into_bytes()
+        }
+        Some(_) => return Err(sealwax_core::Error::InvalidArgument { what: "font size" }.into()),
+    };
     let mut names: Vec<String> = fields(doc, None)?.into_iter().map(|f| f.name).collect();
     names.extend(
         form_tree(doc)?
@@ -139,7 +163,7 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
     match field.kind {
         NewFieldKind::Text | NewFieldKind::Date => {
             widget.insert("FT", Name::from("Tx"));
-            widget.insert("DA", Object::String(TEXT_APPEARANCE.to_vec()));
+            widget.insert("DA", Object::String(text_appearance));
             if field.kind == NewFieldKind::Date {
                 widget.insert("AA", date_actions());
             }
