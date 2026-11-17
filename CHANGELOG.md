@@ -19,6 +19,14 @@ All notable changes to sealwax are recorded here. The format follows
 - `Applied.pages` (`pages` in Python and WebAssembly): the pages an XFDF changed, from 0, those it
   draws on and those whose annotations were flattened or taken out, for a viewer to render again;
   `Applied.annotations_removed`.
+- A part of a page rendered alone (`RenderOptions::clip` and `Clip`; `clip=(x, y, width, height)`
+  in Python, `clip: { x, y, width, height }` in WebAssembly, for PNG and RGBA): the part of the
+  whole page's image, in its pixels at the scale and turned as asked, its pixels those of the
+  whole image there to rounding (the drawing moved by whole pixels: at most a level or two apart
+  on edges, a sample of an image at a texel's border now and then). `max_render_pixels` counts
+  the part's pixels, so that a page zoomed past the bound renders by parts. Each part interprets
+  the page whole and decodes the images it shows: render the part a screen shows in one call
+  rather than many small tiles.
 
 ### Changed
 

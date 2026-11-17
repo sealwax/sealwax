@@ -238,6 +238,15 @@ export interface Metadata {
   info: Record<string, string>;
 }
 
+/** A part of a page's image, in pixels of the whole page's image at the scale (turned as
+ * asked), from its top-left corner: a tile of a page shown larger than the screen. */
+export interface Clip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /** A page rendered for a canvas: `new ImageData(pixels, width, height)`. */
 export interface RenderedPage {
   width: number;
@@ -336,6 +345,29 @@ fn render_options(
             }
             _ => return Err(argument("quarterTurns must be a whole number")),
         }
+    }
+    if let Some(clip) = options.and_then(|o| get(o, "clip")) {
+        let side = |key: &str| -> Result<u32, JsValue> {
+            match get(&clip, key).and_then(|v| v.as_f64()) {
+                Some(n)
+                    if n.is_finite()
+                        && n.fract() == 0.0
+                        && (0.0..=f64::from(u32::MAX)).contains(&n) =>
+                {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    Ok(n as u32)
+                }
+                _ => Err(argument(
+                    "clip must be { x, y, width, height }, whole numbers of pixels",
+                )),
+            }
+        };
+        render = render.clip(sealwax_raster::Clip {
+            x: side("x")?,
+            y: side("y")?,
+            width: side("width")?,
+            height: side("height")?,
+        });
     }
     Ok(render)
 }
@@ -1225,16 +1257,20 @@ impl Document {
     /// Page `pageIndex` (from 0) rendered as a reader shows it (annotations and field values
     /// included), as PNG bytes: 8-bit RGB over white, the crop box as shown (rotated, then turned
     /// `quarterTurns` more quarter turns clockwise), at `scale` pixels per point, sides rounded
-    /// up. A modified document is saved and read again once, until it changes again.
+    /// up. A modified document is saved and read again once, until it changes again. `clip`
+    /// renders that part of the page's image alone, its pixels those of the whole image there
+    /// (to rounding); `maxRenderPixels` counts its pixels. The page is interpreted whole for
+    /// each part: render the part the screen shows in one call rather than many small tiles.
     ///
     /// # Errors
-    /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError`.
+    /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError` (a `clip`
+    /// not within the page's image).
     #[wasm_bindgen(js_name = renderPng)]
     pub fn render_png(
         &self,
         page_index: usize,
         scale: f64,
-        #[wasm_bindgen(unchecked_optional_param_type = "{ quarterTurns?: number }")]
+        #[wasm_bindgen(unchecked_optional_param_type = "{ quarterTurns?: number; clip?: Clip }")]
         options: Option<JsValue>,
     ) -> Result<Uint8Array, JsValue> {
         let options = render_options(scale, options.as_ref())?;
@@ -1254,7 +1290,8 @@ impl Document {
     /// opaque over white) for `new ImageData(pixels, width, height)`. `cancel`, an `Int32Array`
     /// over a `SharedArrayBuffer`, stops the rendering between its steps once its first element
     /// is not 0 (set from another thread with `Atomics.store`): the result is then `null`, and
-    /// nothing is drawn.
+    /// nothing is drawn. `clip` renders a part of the page, as `renderPng` does: a tile that
+    /// leaves the screen is cancelled the same way.
     ///
     /// # Errors
     /// A `PdfError` (a `PdfLimitError` past `maxRenderPixels`), or a `RangeError`.
@@ -1264,7 +1301,7 @@ impl Document {
         page_index: usize,
         scale: f64,
         #[wasm_bindgen(
-            unchecked_optional_param_type = "{ quarterTurns?: number; cancel?: Int32Array }"
+            unchecked_optional_param_type = "{ quarterTurns?: number; cancel?: Int32Array; clip?: Clip }"
         )]
         options: Option<JsValue>,
     ) -> Result<JsValue, JsValue> {

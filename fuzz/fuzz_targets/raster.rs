@@ -1,5 +1,5 @@
 #![no_main]
-//! Whatever the bytes: rendering a page to PNG and a document to grayscale (at a low resolution,
+//! Whatever the bytes: rendering a page to PNG, a part of it, and a document to grayscale (at a low resolution,
 //! to keep runs fast) never panics; a PNG rendered is one, and a grayscale output opens again
 //! with as many pages as the input, each the size of one gray image drawn over it.
 //!
@@ -18,6 +18,13 @@ fuzz_target!(|data: &[u8]| {
         && let Ok(png) = sealwax_raster::render_png(&input, 0, 0.1)
     {
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG");
+        // A part of the page, at a scale whose whole page would be past the bound, has its size.
+        let clip = sealwax_raster::Clip { x: 3, y: 5, width: 8, height: 6 };
+        let options = sealwax_raster::RenderOptions::new(50.0).clip(clip);
+        if let Ok(Some(part)) = sealwax_raster::render(&input, 0, &options, &|| false) {
+            assert_eq!((part.width, part.height), (8, 6));
+            assert_eq!(part.pixels.len(), 8 * 6 * 4);
+        }
     }
     let Ok(gray) = sealwax_raster::grayscale(data, 6.0, &options) else {
         return;

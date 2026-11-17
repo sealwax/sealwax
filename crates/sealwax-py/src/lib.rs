@@ -467,6 +467,24 @@ fn flattened_dict<'py>(
     Ok(dict)
 }
 
+/// How to render: `clip` as `(x, y, width, height)`.
+fn render_options(
+    scale: f64,
+    quarter_turns: i32,
+    clip: Option<(u32, u32, u32, u32)>,
+) -> pdf::raster::RenderOptions {
+    let options = pdf::raster::RenderOptions::new(scale).quarter_turns(quarter_turns);
+    match clip {
+        Some((x, y, width, height)) => options.clip(pdf::raster::Clip {
+            x,
+            y,
+            width,
+            height,
+        }),
+        None => options,
+    }
+}
+
 fn applied_dict<'py>(
     py: Python<'py>,
     applied: &pdf::annots::Applied,
@@ -938,19 +956,23 @@ impl Document {
     /// was opened (a field filled) is rendered as it stands, saved and read again once until it
     /// changes again. Past `Limits.max_render_pixels` (or a side of 65,535 pixels),
     /// `PdfLimitError` with `limit` "max_render_pixels"; past the deadline, `PdfTimeoutError`;
-    /// `ValueError` for a scale that is not a positive number or a page the document does not
-    /// have.
-    #[pyo3(signature = (page_index, scale, quarter_turns = 0))]
+    /// `ValueError` for a scale that is not a positive number, a page the document does not
+    /// have, or a `clip` not within the page's image. `clip`, `(x, y, width, height)` in pixels
+    /// of the whole page's image (from its top-left corner), renders that part alone, its pixels
+    /// those of the whole image there (to rounding): a tile of a zoomed page; the bound counts
+    /// its pixels.
+    #[pyo3(signature = (page_index, scale, quarter_turns = 0, *, clip = None))]
     fn render_png<'py>(
         &self,
         py: Python<'py>,
         page_index: usize,
         scale: f64,
         quarter_turns: i32,
+        clip: Option<(u32, u32, u32, u32)>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let inner = &self.inner;
         let png = run(py, || {
-            let options = pdf::raster::RenderOptions::new(scale).quarter_turns(quarter_turns);
+            let options = render_options(scale, quarter_turns, clip);
             match pdf::raster::render(inner, page_index, &options, &|| false)? {
                 Some(raster) => Ok(raster.png()?),
                 None => Err(Failure::Value("rendering cancelled".to_owned())),
@@ -962,17 +984,18 @@ impl Document {
     /// Page `page_index` rendered as `render_png` renders it, as raw pixels: `(width, height,
     /// pixels)`, `pixels` holding 4 bytes per pixel (red, green, blue, alpha), row by row from
     /// the top, opaque over white.
-    #[pyo3(signature = (page_index, scale, quarter_turns = 0))]
+    #[pyo3(signature = (page_index, scale, quarter_turns = 0, *, clip = None))]
     fn render_rgba<'py>(
         &self,
         py: Python<'py>,
         page_index: usize,
         scale: f64,
         quarter_turns: i32,
+        clip: Option<(u32, u32, u32, u32)>,
     ) -> PyResult<(u32, u32, Bound<'py, PyBytes>)> {
         let inner = &self.inner;
         let raster = run(py, || {
-            let options = pdf::raster::RenderOptions::new(scale).quarter_turns(quarter_turns);
+            let options = render_options(scale, quarter_turns, clip);
             pdf::raster::render(inner, page_index, &options, &|| false)?
                 .ok_or_else(|| Failure::Value("rendering cancelled".to_owned()))
         })?;
