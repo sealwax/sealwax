@@ -1,15 +1,15 @@
 //! A page's content stream, written from its items: the graphics state is tracked so that only
 //! what changes is written, and each glyph is placed by `TJ` where the layout put it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use sealwax_core::Document;
 
 use crate::fonts::{Fonts, Placed};
 use crate::model::{
-    Color, Composition, FillRule, Item, LineCap, LineJoin, LinearGradient, Paint, Path, Segment,
-    Stroke, TextMode, TextRun,
+    Color, Composition, FillRule, Image, ImageColorSpace, Item, LineCap, LineJoin, LinearGradient,
+    Paint, Path, Segment, Stroke, TextMode, TextRun,
 };
 use crate::{Error, Skipped};
 
@@ -57,8 +57,35 @@ pub(crate) struct Used {
     /// Fill (`ca`) and stroke (`CA`) opacities, in thousandths.
     pub(crate) fill_alphas: BTreeSet<u16>,
     pub(crate) stroke_alphas: BTreeSet<u16>,
-    /// Named `P{index}`.
+    /// Named `P{index}`, each once.
     pub(crate) gradients: Vec<LinearGradient>,
+    /// The index of each gradient, by [`gradient_key`].
+    gradient_indexes: BTreeMap<Vec<u64>, usize>,
+}
+
+/// What tells a gradient from another: the bits of its numbers, in order.
+pub(crate) fn gradient_key(gradient: &LinearGradient) -> Vec<u64> {
+    let LinearGradient {
+        matrix,
+        start,
+        end,
+        stops,
+        extend,
+        linear_light,
+    } = gradient;
+    let flags = [extend[0], extend[1], *linear_light];
+    matrix
+        .iter()
+        .chain(start)
+        .chain(end)
+        .map(|v| v.to_bits())
+        .chain(flags.iter().map(|flag| u64::from(*flag)))
+        .chain(stops.iter().flat_map(|stop| {
+            std::iter::once(stop.offset)
+                .chain(stop.color)
+                .map(f64::to_bits)
+        }))
+        .collect()
 }
 
 /// The state `q` saves and `Q` restores, as far as the writer sets it.
@@ -88,6 +115,28 @@ impl Default for State {
             mode: 0,
         }
     }
+}
+
+/// Why `image` cannot be written, if it cannot: it or its soft mask past
+/// [`sealwax_core::Limits::max_image_pixels`], a palette of no 1 to 256 colours, a soft mask
+/// in colour.
+fn unwritable(image: &Image, limits: &sealwax_core::Limits) -> Option<&'static str> {
+    let pixels = |image: &Image| u64::from(image.width) * u64::from(image.height);
+    let mask = image.soft_mask.as_deref();
+    if pixels(image) > limits.max_image_pixels
+        || mask.is_some_and(|mask| pixels(mask) > limits.max_image_pixels)
+    {
+        return Some("pictures past max_image_pixels");
+    }
+    if let ImageColorSpace::IndexedRgb(palette) = &image.color_space
+        && !(palette.len() % 3 == 0 && (3..=768).contains(&palette.len()))
+    {
+        return Some("pictures whose palette has no 1 to 256 colours");
+    }
+    if mask.is_some_and(|mask| mask.color_space != ImageColorSpace::Gray) {
+        return Some("pictures whose soft mask is not gray");
+    }
+    None
 }
 
 /// Thousandths of an opacity.
@@ -209,8 +258,17 @@ impl<'a, 'f> Writer<'a, 'f> {
                 fill_rule,
                 gradient,
             } => {
-                let _ = writeln!(self.out, "/Pattern cs /P{} scn", self.used.gradients.len());
-                self.used.gradients.push(gradient.clone());
+                // A gradient has no opacity of its own: it is opaque.
+                self.fill_alpha(1000);
+                let used = &mut self.used;
+                let index = *used
+                    .gradient_indexes
+                    .entry(gradient_key(gradient))
+                    .or_insert_with(|| {
+                        used.gradients.push(gradient.clone());
+                        used.gradients.len() - 1
+                    });
+                let _ = writeln!(self.out, "/Pattern cs /P{index} scn");
                 self.state.fill = None;
                 self.path(path);
                 self.out.push_str(match fill_rule {
@@ -220,14 +278,13 @@ impl<'a, 'f> Writer<'a, 'f> {
             }
             Item::Text(run) => self.text(run)?,
             Item::Image(index) => match self.composition.images.get(*index) {
-                Some(image)
-                    if u64::from(image.width) * u64::from(image.height)
-                        <= self.limits.max_image_pixels =>
-                {
-                    self.used.images.insert(*index);
-                    let _ = writeln!(self.out, "/Im{index} Do");
-                }
-                Some(_) => self.skipped.count("pictures past max_image_pixels", 1),
+                Some(image) => match unwritable(image, self.limits) {
+                    None => {
+                        self.used.images.insert(*index);
+                        let _ = writeln!(self.out, "/Im{index} Do");
+                    }
+                    Some(why) => self.skipped.count(why, 1),
+                },
                 None => self.skipped.count("picture indexes out of range", 1),
             },
         }
@@ -258,7 +315,11 @@ impl<'a, 'f> Writer<'a, 'f> {
             self.color(paint.color, false);
             self.state.fill = Some(paint.color);
         }
-        let alpha = permille(paint.alpha);
+        self.fill_alpha(permille(paint.alpha));
+    }
+
+    /// Fill opacity, in thousandths.
+    fn fill_alpha(&mut self, alpha: u16) {
         if self.state.fill_alpha != alpha {
             self.used.fill_alphas.insert(alpha);
             let _ = writeln!(self.out, "/Ca{alpha} gs");
@@ -313,7 +374,7 @@ impl<'a, 'f> Writer<'a, 'f> {
     }
 
     /// The run's glyphs in one `TJ`, each moved to its `x` from where the font's own advance
-    /// leaves the pen.
+    /// leaves the pen. A glyph the font lacks is left out.
     fn text(&mut self, run: &TextRun) -> Result<(), Error> {
         let scale = run.horizontal_scaling;
         if run.glyphs.is_empty() || !(run.size.is_finite() && run.size != 0.0 && scale != 0.0) {
@@ -354,7 +415,12 @@ impl<'a, 'f> Writer<'a, 'f> {
         let mut array = String::from("[");
         let mut open = false;
         let mut pen = 0.0;
+        let mut lacking = 0;
         for glyph in &run.glyphs {
+            let Some(Placed { code, advance }) = self.fonts.place(run.font, glyph) else {
+                lacking += 1;
+                continue;
+            };
             let adjust = (pen - glyph.x) / unit;
             if adjust.abs() >= 0.0005 {
                 if open {
@@ -367,7 +433,6 @@ impl<'a, 'f> Writer<'a, 'f> {
                 array.push('<');
                 open = true;
             }
-            let Placed { code, advance } = self.fonts.place(run.font, glyph);
             array.push_str(&code);
             pen = glyph.x + advance * unit;
         }
@@ -376,6 +441,9 @@ impl<'a, 'f> Writer<'a, 'f> {
         }
         array.push_str("] TJ\nET\n");
         self.out.push_str(&array);
+        if lacking > 0 {
+            self.skipped.count("glyphs their font lacks", lacking);
+        }
         Ok(())
     }
 }

@@ -110,7 +110,7 @@ pixels) and an optional deadline, `timeoutMs`, counted from the call that opens 
 They are the first line of defence against hostile files, not a sandbox.
 
 A panic cannot unwind in WebAssembly: where the native library would recover from a page it
-cannot interpret, the module stops. Every call then throws `SealwaxCrashedError` (not a
+cannot interpret, or from a font of `applyXfdf` it cannot cut, the module stops. Every call then throws `SealwaxCrashedError` (not a
 `PdfError`: the document is not the cause it names) and `isCrashed()` says so, until `reset()`
 makes the module anew (`await reset(source)`, `source` as `init` takes it; under Node, none). The
 documents opened before are lost: using one throws `SealwaxCrashedError`; open them again. To keep

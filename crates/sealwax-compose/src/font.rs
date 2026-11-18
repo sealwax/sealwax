@@ -177,12 +177,25 @@ fn postscript_name(font: &FontRef<'_>) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// The glyphs drawn so far: their codes in the subset and what they stand for.
-#[derive(Default)]
+/// The glyphs drawn so far: their codes in the subset, their advances and what they stand for.
 struct Drawn {
     remapper: subsetter::GlyphRemapper,
+    /// By code: the advance the font's widths give, in thousandths of an em. `.notdef` (code 0)
+    /// has the default width, 0.
+    advances: Vec<f64>,
     /// By code: the text the first drawing of the glyph gave.
     texts: BTreeMap<u16, String>,
+}
+
+impl Default for Drawn {
+    fn default() -> Self {
+        // The remapper gives `.notdef` code 0 before any glyph is drawn.
+        Self {
+            remapper: subsetter::GlyphRemapper::new(),
+            advances: vec![0.0],
+            texts: BTreeMap::new(),
+        }
+    }
 }
 
 /// A program as a document draws with it, written at its object once every drawing is made.
@@ -234,6 +247,11 @@ impl EmbeddedFont {
         }
         let mut drawn = self.drawn.borrow_mut();
         let code = drawn.remapper.remap(glyph);
+        // Codes are given in turn: a new one is the next.
+        if usize::from(code) == drawn.advances.len() {
+            let advance = (self.program.advance(glyph) * 1000.0).round() / 1000.0;
+            drawn.advances.push(advance);
+        }
         if !text.is_empty() && code != 0 {
             drawn.texts.entry(code).or_insert_with(|| text.to_owned());
         }
@@ -244,35 +262,33 @@ impl EmbeddedFont {
     /// gives it: `.notdef` (code 0) has the default width, 0.
     #[must_use]
     pub fn code_advance(&self, code: u16) -> f64 {
-        if code == 0 {
-            return 0.0;
-        }
-        let original = self
-            .drawn
+        self.drawn
             .borrow()
-            .remapper
-            .remapped_gids()
-            .nth(usize::from(code));
-        original.map_or(0.0, |glyph| self.program.advance(glyph))
+            .advances
+            .get(usize::from(code))
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Writes the font at its object: the subset of the glyphs drawn, their widths, the text
-    /// they stand for.
+    /// they stand for. `false`, and nothing written, when the subsetter cannot cut the program.
+    ///
+    /// A panic in the subsetter is caught as a program it cannot cut, where panics unwind: in
+    /// WebAssembly, where they abort, the module stops.
     ///
     /// # Errors
-    /// [`sealwax_core::Error::InvalidArgument`] when the program cannot be cut, and what
-    /// [`Document::add_object`] returns.
-    pub fn write(&self, doc: &mut Document) -> sealwax_core::Result<()> {
-        let refused = || sealwax_core::Error::InvalidArgument { what: "font" };
+    /// What [`Document::add_object`] returns.
+    pub fn write(&self, doc: &mut Document) -> sealwax_core::Result<bool> {
         let drawn = self.drawn.borrow();
         let program = &self.program;
-        // A panic in the subsetter is a font it cannot cut, not a failure of the document.
         let subset = catch_unwind(AssertUnwindSafe(|| {
             subsetter::subset(&program.data, program.face, &drawn.remapper).ok()
         }))
         .ok()
-        .flatten()
-        .ok_or_else(refused)?;
+        .flatten();
+        let Some(subset) = subset else {
+            return Ok(false);
+        };
         let originals: Vec<u16> = drawn.remapper.remapped_gids().collect();
         let tag = subset_tag(&originals, &program.name);
         let base_font = format!("{tag}+{}", program.name);
@@ -290,8 +306,10 @@ impl EmbeddedFont {
                 let cff = FontRef::new(&subset)
                     .ok()
                     .and_then(|font| font.table_data(Tag::new(b"CFF ")))
-                    .map(|data| data.as_bytes().to_vec())
-                    .ok_or_else(refused)?;
+                    .map(|data| data.as_bytes().to_vec());
+                let Some(cff) = cff else {
+                    return Ok(false);
+                };
                 let mut dict = Dict::new();
                 dict.insert("Subtype", Name::from("CIDFontType0C"));
                 ("FontFile3", flate(dict, &cff), "CIDFontType0")
@@ -322,14 +340,13 @@ impl EmbeddedFont {
         descriptor.insert(file_key, Object::Ref(file));
         let descriptor = doc.add_object(Object::Dict(descriptor))?;
 
-        let mut widths = Vec::new();
-        // `.notdef` (code 0) keeps the default width, 0.
-        for (code, original) in originals.iter().enumerate().skip(1) {
-            widths.push(Object::Integer(i64::try_from(code).unwrap_or(0)));
-            widths.push(Object::Array(vec![Object::Real(
-                (program.advance(*original) * 1000.0).round() / 1000.0,
-            )]));
-        }
+        // One run from code 1: `.notdef` (code 0) keeps the default width, 0.
+        let widths: Vec<Object> = drawn
+            .advances
+            .iter()
+            .skip(1)
+            .map(|w| Object::Real(*w))
+            .collect();
         let mut system = Dict::new();
         system.insert("Registry", Object::String(b"Adobe".to_vec()));
         system.insert("Ordering", Object::String(b"Identity".to_vec()));
@@ -344,7 +361,12 @@ impl EmbeddedFont {
             cid_font.insert("CIDToGIDMap", Name::from("Identity"));
         }
         cid_font.insert("DW", Object::Integer(0));
-        cid_font.insert("W", Object::Array(widths));
+        if !widths.is_empty() {
+            cid_font.insert(
+                "W",
+                Object::Array(vec![Object::Integer(1), Object::Array(widths)]),
+            );
+        }
         let cid_font = doc.add_object(Object::Dict(cid_font))?;
 
         let to_unicode = doc.add_object(flate(Dict::new(), to_unicode(&drawn.texts).as_bytes()))?;
@@ -360,7 +382,7 @@ impl EmbeddedFont {
         );
         font.insert("ToUnicode", Object::Ref(to_unicode));
         doc.set_object(self.id, Object::Dict(font));
-        Ok(())
+        Ok(true)
     }
 }
 

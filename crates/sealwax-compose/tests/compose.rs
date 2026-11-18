@@ -85,17 +85,17 @@ fn text_reads_back_where_it_was_placed() {
 }
 
 #[test]
-fn notdef_glyphs_land_where_they_are_placed() {
+fn glyphs_their_font_lacks_are_left_out_and_counted() {
     // Glyph 0 (.notdef, as a layout draws a character no font has) and a glyph past the
-    // program's are drawn as code 0, whose width is 0: each stays at its x.
+    // program's: PDF/A-2 forbids showing .notdef. The glyph after them stays at its x.
     let program = common::program("Test", &['H']);
     let composition = Composition {
         pages: vec![page(vec![Item::Text(run(
             0,
             vec![
                 glyph(0, 0.0, ""),
-                glyph(0, 0.0, ""),
-                glyph(999, 0.0, ""),
+                glyph(0, 2.0, ""),
+                glyph(999, 3.0, ""),
                 glyph(1, 4.0, "H"),
             ],
         ))])],
@@ -106,13 +106,57 @@ fn notdef_glyphs_land_where_they_are_placed() {
         ..Composition::default()
     };
     let composed = compose(&composition, &Limits::default()).unwrap();
+    assert_eq!(
+        composed.skipped.iter().collect::<Vec<_>>(),
+        [("glyphs their font lacks", 3)]
+    );
     let doc = reopened(&composed.document);
     let glyphs = sealwax_text::glyphs(&doc, 0, false).unwrap();
-    let xs: Vec<f64> = glyphs
+    let read: Vec<(Option<String>, f64)> = glyphs
         .iter()
-        .map(|g| (g.origin[0] * 100.0).round() / 100.0)
+        .map(|g| (g.text.clone(), (g.origin[0] * 100.0).round() / 100.0))
         .collect();
-    assert_eq!(xs, [10.0, 10.0, 10.0, 14.0]);
+    assert_eq!(read, [(Some("H".to_owned()), 14.0)]);
+}
+
+#[test]
+fn fonts_the_subsetter_refuses_are_left_out_and_counted() {
+    // Font 0 reads but cannot be cut; font 1 is embedded as if font 0 had never been given.
+    let refused = common::program_with_bad_name(&['H']);
+    assert!(sealwax_compose::font::FontProgram::parse(Arc::new(refused.clone()), 0).is_some());
+    let composition = Composition {
+        pages: vec![
+            page(vec![
+                Item::Text(run(0, vec![glyph(1, 0.0, "H"), glyph(1, 6.0, "H")])),
+                Item::Text(run(1, vec![glyph(2, 20.0, "i")])),
+            ]),
+            page(vec![Item::Text(run(0, vec![glyph(1, 0.0, "H")]))]),
+        ],
+        fonts: vec![
+            Font::Program {
+                program: Arc::new(refused),
+                face: 0,
+            },
+            Font::Program {
+                program: Arc::new(common::program("Test", &['H', 'i'])),
+                face: 0,
+            },
+        ],
+        ..Composition::default()
+    };
+    let composed = compose(&composition, &Limits::default()).unwrap();
+    assert_eq!(
+        composed.skipped.iter().collect::<Vec<_>>(),
+        [("glyphs in an unembeddable font", 3)]
+    );
+    let doc = reopened(&composed.document);
+    let glyphs = sealwax_text::glyphs(&doc, 0, false).unwrap();
+    let read: Vec<(Option<String>, f64)> = glyphs
+        .iter()
+        .map(|g| (g.text.clone(), (g.origin[0] * 100.0).round() / 100.0))
+        .collect();
+    assert_eq!(read, [(Some("i".to_owned()), 30.0)]);
+    assert!(sealwax_text::glyphs(&doc, 1, false).unwrap().is_empty());
 }
 
 #[test]
@@ -354,6 +398,130 @@ fn gradients_fill_in_page_space() {
     );
 }
 
+fn gradient(stops: &[(f64, [f64; 3])]) -> sealwax_compose::LinearGradient {
+    sealwax_compose::LinearGradient {
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        start: [0.0, 0.0],
+        end: [200.0, 0.0],
+        stops: stops
+            .iter()
+            .map(|(offset, color)| sealwax_compose::GradientStop {
+                offset: *offset,
+                color: *color,
+            })
+            .collect(),
+        extend: [true, true],
+        linear_light: false,
+    }
+}
+
+fn fill_gradient(gradient: sealwax_compose::LinearGradient) -> Item {
+    Item::FillGradient {
+        path: Path(vec![Segment::Rect(0.0, 0.0, 200.0, 100.0)]),
+        fill_rule: FillRule::NonZero,
+        gradient,
+    }
+}
+
+/// Page 0 of `composition` rendered at 1: the colour at (x, 50).
+fn row(composition: &Composition) -> impl Fn(u32) -> [u8; 3] {
+    let composed = compose(composition, &Limits::default()).unwrap();
+    let doc = reopened(&composed.document);
+    let options = sealwax_raster::RenderOptions::new(1.0);
+    let raster = sealwax_raster::render(&doc, 0, &options, &|| false)
+        .unwrap()
+        .unwrap();
+    move |x| {
+        let at = usize::try_from(4 * (50 * raster.width + x)).unwrap();
+        [
+            raster.pixels[at],
+            raster.pixels[at + 1],
+            raster.pixels[at + 2],
+        ]
+    }
+}
+
+#[test]
+fn gradients_are_opaque_after_a_translucent_fill() {
+    let translucent = Item::Fill {
+        path: Path(vec![Segment::Rect(0.0, 0.0, 1.0, 1.0)]),
+        fill_rule: FillRule::NonZero,
+        paint: Paint {
+            color: Color::Gray(0.0),
+            alpha: 0.3,
+        },
+    };
+    let red = [1.0, 0.0, 0.0];
+    let composition = Composition {
+        pages: vec![page(vec![
+            translucent,
+            fill_gradient(gradient(&[(0.0, red), (1.0, red)])),
+        ])],
+        ..Composition::default()
+    };
+    let pixel = row(&composition);
+    let [r, g, b] = pixel(100);
+    assert!(
+        r > 240 && g < 15 && b < 15,
+        "not opaque red: {:?}",
+        pixel(100)
+    );
+}
+
+#[test]
+fn gradient_stops_past_either_end_give_the_colour_there() {
+    // Red at -1 and blue at 1: purple at 0, where the gradient starts.
+    let composition = Composition {
+        pages: vec![page(vec![fill_gradient(gradient(&[
+            (-1.0, [1.0, 0.0, 0.0]),
+            (1.0, [0.0, 0.0, 1.0]),
+        ]))])],
+        ..Composition::default()
+    };
+    let pixel = row(&composition);
+    let [r, _, b] = pixel(1);
+    assert!(
+        (110..146).contains(&r) && (110..146).contains(&b),
+        "left: {:?}",
+        pixel(1)
+    );
+    let [r, _, b] = pixel(198);
+    assert!(r < 15 && b > 240, "right is not blue: {:?}", pixel(198));
+}
+
+#[test]
+fn a_gradient_drawn_again_is_written_once() {
+    let one = gradient(&[(0.0, [1.0, 0.0, 0.0]), (1.0, [0.0, 0.0, 1.0])]);
+    let other = gradient(&[(0.0, [0.0, 1.0, 0.0]), (1.0, [0.0, 0.0, 1.0])]);
+    let drawn = page(vec![
+        fill_gradient(one.clone()),
+        fill_gradient(other),
+        fill_gradient(one.clone()),
+    ]);
+    let composition = Composition {
+        pages: vec![drawn.clone(), drawn],
+        ..Composition::default()
+    };
+    let composed = compose(&composition, &Limits::default()).unwrap();
+    let doc = reopened(&composed.document);
+    let patterns = |index: usize| {
+        let id = doc.page_ids()[index].unwrap();
+        let Some(Object::Dict(page)) = doc.object(id).unwrap() else {
+            panic!("no page");
+        };
+        let Some(Object::Dict(resources)) = page.get(b"Resources").cloned() else {
+            panic!("no resources");
+        };
+        let Some(Object::Dict(patterns)) = resources.get(b"Pattern").cloned() else {
+            panic!("no patterns");
+        };
+        patterns
+    };
+    let first = patterns(0);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first, patterns(1));
+}
+
 #[test]
 fn links_lead_to_pages_and_addresses() {
     let mut first = page(Vec::new());
@@ -409,6 +577,20 @@ fn links_lead_to_pages_and_addresses() {
     assert!(annotation(1).get(b"A").is_some());
 }
 
+/// A gray picture `side` pixels square, with `soft_mask`.
+fn gray(side: u32, soft_mask: Option<Image>) -> Image {
+    Image {
+        width: side,
+        height: side,
+        color_space: ImageColorSpace::Gray,
+        bits_per_component: 8,
+        filter: ImageFilter::None,
+        data: vec![0; usize::try_from(side * side).unwrap()],
+        soft_mask: soft_mask.map(Box::new),
+        interpolate: false,
+    }
+}
+
 #[test]
 fn what_cannot_be_written_is_counted() {
     let mut limits = Limits::default();
@@ -418,21 +600,34 @@ fn what_cannot_be_written_is_counted() {
             Item::Text(run(0, vec![glyph(1, 0.0, "x")])),
             Item::Image(0),
             Item::Image(7),
+            Item::Image(1),
+            Item::Image(2),
+            Item::Image(3),
+            Item::Image(4),
         ])],
         fonts: vec![Font::Program {
             program: Arc::new(b"not a font".to_vec()),
             face: 0,
         }],
-        images: vec![Image {
-            width: 3,
-            height: 3,
-            color_space: ImageColorSpace::Gray,
-            bits_per_component: 8,
-            filter: ImageFilter::None,
-            data: vec![0; 9],
-            soft_mask: None,
-            interpolate: false,
-        }],
+        images: vec![
+            gray(3, None),
+            // Its soft mask is past the bound.
+            gray(1, Some(gray(3, None))),
+            Image {
+                color_space: ImageColorSpace::IndexedRgb(Vec::new()),
+                ..gray(1, None)
+            },
+            Image {
+                soft_mask: Some(Box::new(Image {
+                    color_space: ImageColorSpace::Rgb,
+                    data: vec![0; 3],
+                    ..gray(1, None)
+                })),
+                ..gray(1, None)
+            },
+            // Written: its mask's own soft mask, past the bound, is not.
+            gray(1, Some(gray(1, Some(gray(3, None))))),
+        ],
         ..Composition::default()
     };
     let composed = compose(&composition, &limits).unwrap();
@@ -442,7 +637,9 @@ fn what_cannot_be_written_is_counted() {
         [
             ("glyphs in an unembeddable font", 1),
             ("picture indexes out of range", 1),
-            ("pictures past max_image_pixels", 1),
+            ("pictures past max_image_pixels", 2),
+            ("pictures whose palette has no 1 to 256 colours", 1),
+            ("pictures whose soft mask is not gray", 1),
         ]
     );
     reopened(&composed.document);

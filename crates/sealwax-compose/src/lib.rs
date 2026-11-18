@@ -9,16 +9,16 @@
 //! subsets with their `ToUnicode` maps, so the text reads back; each glyph lands where the
 //! composition puts it, whatever the program's own advances.
 //!
-//! What a composition holds that cannot be written (a font program that cannot be embedded, a
-//! picture past [`sealwax_core::Limits::max_image_pixels`]) is left out and counted in
-//! [`Composed::skipped`], rather than failing the document.
+//! What a composition holds that cannot be written (a font program that cannot be embedded or
+//! cut, a glyph its font lacks, a picture past [`sealwax_core::Limits::max_image_pixels`]) is
+//! left out and counted in [`Composed::skipped`], rather than failing the document.
 
 mod content;
 pub mod font;
 mod fonts;
 mod model;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sealwax_core::{Dict, Document, Limits, Name, ObjId, Object, Rect, Stream};
 
@@ -28,7 +28,7 @@ pub use model::{
     Segment, Stroke, TextMode, TextRun,
 };
 
-use content::{Used, Writer};
+use content::{Used, Writer, gradient_key};
 use fonts::Fonts;
 
 /// What [`compose`] can fail with. Messages never contain document content.
@@ -76,12 +76,43 @@ pub struct Composed {
 /// has no area; [`sealwax_core::Error::Timeout`] past the deadline;
 /// [`sealwax_core::Error::LimitExceeded`] for groups nested past 64 levels.
 pub fn compose(composition: &Composition, limits: &Limits) -> Result<Composed, Error> {
+    // Whether the subsetter cuts a program is known once every page has drawn with it: the
+    // composition is then written again without the programs it refused. Those are unusable
+    // from the start, so each pass refuses others, and the second refuses none.
+    let mut refused = BTreeSet::new();
+    loop {
+        match write(composition, limits, &refused)? {
+            Written::Composed(composed) => return Ok(*composed),
+            Written::Refused(fonts) => {
+                let before = refused.len();
+                refused.extend(fonts);
+                if refused.len() == before {
+                    return Err(sealwax_core::Error::InvalidArgument { what: "font" }.into());
+                }
+            }
+        }
+    }
+}
+
+/// A pass of [`compose`].
+enum Written {
+    Composed(Box<Composed>),
+    /// The fonts whose programs the subsetter refused.
+    Refused(Vec<usize>),
+}
+
+/// `composition` written, the fonts at `refused` left out.
+fn write(
+    composition: &Composition,
+    limits: &Limits,
+    refused: &BTreeSet<usize>,
+) -> Result<Written, Error> {
     limits.check_time()?;
     if composition.pages.is_empty() {
         return Err(sealwax_core::Error::InvalidArgument { what: "pages" }.into());
     }
     let mut doc = Document::empty_with(*limits)?;
-    let mut fonts = Fonts::new(&composition.fonts);
+    let mut fonts = Fonts::new(&composition.fonts, refused);
     let mut shared = Shared::default();
     let mut skipped = Skipped::default();
     let mut page_ids = Vec::with_capacity(composition.pages.len());
@@ -107,22 +138,27 @@ pub fn compose(composition: &Composition, limits: &Limits) -> Result<Composed, E
     for (page, id) in composition.pages.iter().zip(&page_ids) {
         add_links(&mut doc, &page.links, *id, &page_ids, &mut skipped)?;
     }
-    fonts.write(&mut doc)?;
+    let unwritten = fonts.write(&mut doc)?;
+    if !unwritten.is_empty() {
+        return Ok(Written::Refused(unwritten));
+    }
     add_info(&mut doc, &composition.info)?;
-    Ok(Composed {
+    Ok(Written::Composed(Box::new(Composed {
         document: doc,
         skipped,
-    })
+    })))
 }
 
 use font::flate;
 
-/// The objects pages share: pictures and opacity states, written on first use.
+/// The objects pages share: pictures, opacity states and gradients, written on first use.
 #[derive(Default)]
 struct Shared {
     images: BTreeMap<usize, ObjId>,
     fill_alphas: BTreeMap<u16, ObjId>,
     stroke_alphas: BTreeMap<u16, ObjId>,
+    /// By [`gradient_key`].
+    patterns: BTreeMap<Vec<u64>, ObjId>,
 }
 
 impl Shared {
@@ -187,7 +223,15 @@ impl Shared {
         }
         let mut patterns = Dict::new();
         for (index, gradient) in used.gradients.iter().enumerate() {
-            let id = doc.add_object(Object::Dict(pattern(gradient)))?;
+            let key = gradient_key(gradient);
+            let id = match self.patterns.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let id = doc.add_object(Object::Dict(pattern(gradient)))?;
+                    self.patterns.insert(key, id);
+                    id
+                }
+            };
             patterns.insert(format!("P{index}").as_str(), Object::Ref(id));
         }
         if !patterns.is_empty() {
@@ -207,58 +251,71 @@ fn linear(component: f64) -> f64 {
     }
 }
 
+/// `stops` (offset, colour), ascending, brought within 0 to 1, the domain of the shading's
+/// function: the stops outside give way to one at 0 and one at 1, with the colour the gradient
+/// has there. Black without stops.
+fn within(stops: &[(f64, [f64; 3])]) -> Vec<(f64, [f64; 3])> {
+    // The colour at `t`, between the last stop up to it and the first from it.
+    let at = |t: f64| -> [f64; 3] {
+        let before = stops.iter().rev().find(|(offset, _)| *offset <= t);
+        let after = stops.iter().find(|(offset, _)| *offset >= t);
+        match (before, after) {
+            (Some(&(a, from)), Some(&(b, to))) if b > a => {
+                let f = (t - a) / (b - a);
+                std::array::from_fn(|i| from[i] + (to[i] - from[i]) * f)
+            }
+            (Some(&(_, color)), _) | (None, Some(&(_, color))) => color,
+            (None, None) => [0.0; 3],
+        }
+    };
+    let mut kept: Vec<(f64, [f64; 3])> = stops
+        .iter()
+        .copied()
+        .filter(|(offset, _)| (0.0..=1.0).contains(offset))
+        .collect();
+    if kept.first().is_none_or(|(offset, _)| *offset > 0.0) {
+        kept.insert(0, (0.0, at(0.0)));
+    }
+    if kept.last().is_none_or(|(offset, _)| *offset < 1.0) {
+        kept.push((1.0, at(1.0)));
+    }
+    kept
+}
+
 /// The shading pattern of `gradient`: an axial shading whose function goes through its stops,
 /// in `DeviceRGB`, or in a linear `CalRGB` (sRGB primaries, D65) for linear light.
 fn pattern(gradient: &LinearGradient) -> Dict {
-    let color = |c: [f64; 3]| -> Object {
-        let c = if gradient.linear_light {
-            c.map(linear)
-        } else {
-            c.map(|v| v.clamp(0.0, 1.0))
-        };
-        Object::Array(c.iter().map(|v| Object::Real(*v)).collect())
-    };
-    let mut stops = gradient.stops.clone();
-    stops.retain(|s| s.offset.is_finite());
-    stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-    if let Some(first) = stops.first().copied().filter(|s| s.offset > 0.0) {
-        stops.insert(
-            0,
-            GradientStop {
-                offset: 0.0,
-                ..first
-            },
-        );
-    }
-    if let Some(last) = stops.last().copied().filter(|s| s.offset < 1.0) {
-        stops.push(GradientStop {
-            offset: 1.0,
-            ..last
-        });
-    }
-    let segment = |a: &GradientStop, b: &GradientStop| {
+    // The stops in the shading's colour space, where its function interpolates.
+    let mut stops: Vec<(f64, [f64; 3])> = gradient
+        .stops
+        .iter()
+        .filter(|stop| stop.offset.is_finite())
+        .map(|stop| {
+            let color = if gradient.linear_light {
+                stop.color.map(linear)
+            } else {
+                stop.color.map(|v| v.clamp(0.0, 1.0))
+            };
+            (stop.offset, color)
+        })
+        .collect();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let stops = within(&stops);
+    let color = |c: [f64; 3]| Object::Array(c.iter().map(|v| Object::Real(*v)).collect());
+    let segment = |(_, a): &(f64, [f64; 3]), (_, b): &(f64, [f64; 3])| {
         let mut f = Dict::new();
         f.insert("FunctionType", Object::Integer(2));
         f.insert(
             "Domain",
             Object::Array(vec![Object::Real(0.0), Object::Real(1.0)]),
         );
-        f.insert("C0", color(a.color));
-        f.insert("C1", color(b.color));
+        f.insert("C0", color(*a));
+        f.insert("C1", color(*b));
         f.insert("N", Object::Integer(1));
         Object::Dict(f)
     };
     let function = match stops.as_slice() {
-        [] => segment(
-            &GradientStop {
-                offset: 0.0,
-                color: [0.0; 3],
-            },
-            &GradientStop {
-                offset: 1.0,
-                color: [0.0; 3],
-            },
-        ),
+        [] => segment(&(0.0, [0.0; 3]), &(1.0, [0.0; 3])),
         [only] => segment(only, only),
         [a, b] => segment(a, b),
         many => {
@@ -277,7 +334,7 @@ fn pattern(gradient: &LinearGradient) -> Dict {
                 Object::Array(
                     many[1..many.len() - 1]
                         .iter()
-                        .map(|s| Object::Real(s.offset))
+                        .map(|(offset, _)| Object::Real(*offset))
                         .collect(),
                 ),
             );
@@ -345,12 +402,18 @@ fn pattern(gradient: &LinearGradient) -> Dict {
     pattern
 }
 
-/// An image XObject of `image`, its soft mask written first.
+/// An image XObject of `image`, its soft mask written first (a soft mask's own is not: a
+/// reader ignores it).
 fn write_image(doc: &mut Document, image: &Image) -> Result<ObjId, Error> {
     let mask = match &image.soft_mask {
-        Some(mask) => Some(write_image(doc, mask)?),
+        Some(mask) => Some(image_object(doc, mask, None)?),
         None => None,
     };
+    image_object(doc, image, mask)
+}
+
+/// An image XObject of `image`'s samples, with `mask` as its soft mask.
+fn image_object(doc: &mut Document, image: &Image, mask: Option<ObjId>) -> Result<ObjId, Error> {
     let mut dict = Dict::new();
     dict.insert("Type", Name::from("XObject"));
     dict.insert("Subtype", Name::from("Image"));
@@ -360,6 +423,7 @@ fn write_image(doc: &mut Document, image: &Image) -> Result<ObjId, Error> {
         ImageColorSpace::Gray => Object::Name(Name::from("DeviceGray")),
         ImageColorSpace::Rgb => Object::Name(Name::from("DeviceRGB")),
         ImageColorSpace::Cmyk => Object::Name(Name::from("DeviceCMYK")),
+        // A palette of 1 to 256 colours (see `content::unwritable`).
         ImageColorSpace::IndexedRgb(palette) => {
             let entries = i64::try_from(palette.len() / 3).unwrap_or(1).max(1);
             Object::Array(vec![

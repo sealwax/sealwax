@@ -365,17 +365,15 @@ fn the_program_embedded_keeps_the_glyphs_used_only_and_its_widths_are_the_progra
     }
     let cid_font = cid_font.expect("a CIDFontType2");
     // ó (glyph 9, advance 580) is drawn first, so it is code 1 of the subset; k (glyph 3,
-    // advance 520) code 2.
+    // advance 520) code 2. `W` holds runs: a first code, then the widths from it.
     let widths = cid_font.get(b"W").and_then(Object::as_array).unwrap();
-    let pairs: Vec<(i64, f64)> = widths
-        .chunks(2)
-        .map(|pair| {
-            (
-                pair[0].as_i64().unwrap(),
-                pair[1].as_array().unwrap()[0].as_f64().unwrap(),
-            )
-        })
-        .collect();
+    let mut pairs: Vec<(i64, f64)> = Vec::new();
+    for run in widths.chunks(2) {
+        let first = run[0].as_i64().unwrap();
+        for (i, width) in run[1].as_array().unwrap().iter().enumerate() {
+            pairs.push((first + i64::try_from(i).unwrap(), width.as_f64().unwrap()));
+        }
+    }
     assert_eq!(pairs, [(1, 580.0), (2, 520.0)]);
     // The program embedded: .notdef and the glyphs used, with their outlines, nothing else.
     let descriptor = cid_font

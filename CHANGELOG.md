@@ -16,8 +16,10 @@ All notable changes to sealwax are recorded here. The format follows
   address or a page). Fonts are embedded as subsets with their `ToUnicode` maps, TrueType or
   CFF outlines, from a file or a collection (`font`, cut by subsetter); a standard-14 font is
   written with the widths the layout measured. What cannot be written (a program that cannot
-  be embedded, a picture past `max_image_pixels`) is left out and counted (`Composed::skipped`);
-  the deadline is checked as pages are written. A fuzz target covers the font programs.
+  be embedded or that the subsetter cannot cut, a glyph its font lacks, which PDF/A forbids
+  showing as `.notdef`, a picture or its soft mask past `max_image_pixels`, a palette of no 1
+  to 256 colours) is left out and counted (`Composed::skipped`); the deadline is checked as
+  pages are written. A fuzz target covers the font programs.
 
 ### Changed
 

@@ -1,7 +1,6 @@
 #![no_main]
 //! Whatever the font program a document gives: a page drawn with it composes without a panic
-//! escaping (the program embedded, left out and counted, or refused with an error), and the page
-//! saves and reads back.
+//! escaping (the program embedded, or left out and counted), and the page saves and reads back.
 //!
 //!     cargo +nightly fuzz run compose fuzz/corpus/compose crates/sealwax-compose/tests/data \
 //!         -- -max_len=65536
@@ -15,7 +14,7 @@ use sealwax_compose::{
 use sealwax_core::{Document, Limits, OpenOptions, SaveOptions};
 
 /// libFuzzer aborts at any panic, before unwinding: a panic in the subsetter, which sealwax
-/// catches and returns as an error, is let unwind to that catch; any other still aborts.
+/// catches as a program it cannot cut, is let unwind to that catch; any other still aborts.
 fn tolerate_subsetter_panics() {
     let abort = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -64,10 +63,8 @@ fuzz_target!(init: tolerate_subsetter_panics(), |data: &[u8]| {
         }],
         ..Composition::default()
     };
-    // A program the subsetter cannot cut fails the composition with an error, not a panic.
-    let Ok(composed) = compose(&composition, &Limits::default()) else {
-        return;
-    };
+    // A program the subsetter cannot cut is left out, as one that cannot be read.
+    let composed = compose(&composition, &Limits::default()).expect("a page composes");
     let saved = composed
         .document
         .save(&SaveOptions::default())

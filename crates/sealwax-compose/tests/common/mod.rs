@@ -13,16 +13,22 @@ fn be32(out: &mut Vec<u8>, value: u32) {
 /// A TrueType program named `name` whose glyph `i + 1` is a box of width `500 + 10 i` for
 /// `characters[i]`, glyph 0 its `.notdef`. Advances differ, so that widths tell glyphs apart.
 pub fn program(name: &str, characters: &[char]) -> Vec<u8> {
-    program_with(name, characters, false)
+    program_with(name, characters, false, false)
 }
 
 /// [`program`], its table directory also holding a record (`zzzz`) that points far past the
 /// end of the file, as some fonts Word embeds have.
 pub fn program_with_bad_record(name: &str, characters: &[char]) -> Vec<u8> {
-    program_with(name, characters, true)
+    program_with(name, characters, true, false)
 }
 
-fn program_with(name: &str, characters: &[char], bad_record: bool) -> Vec<u8> {
+/// [`program`], its name record pointing past the names: the program reads (without its name),
+/// the subsetter refuses to cut it.
+pub fn program_with_bad_name(characters: &[char]) -> Vec<u8> {
+    program_with("Test", characters, false, true)
+}
+
+fn program_with(name: &str, characters: &[char], bad_record: bool, bad_name: bool) -> Vec<u8> {
     let mut unique: Vec<char> = Vec::new();
     for c in characters {
         if !unique.contains(c) {
@@ -161,7 +167,7 @@ fn program_with(name: &str, characters: &[char], bad_record: bool) -> Vec<u8> {
         0x409,
         6,
         u16::try_from(encoded.len()).unwrap(),
-        0,
+        if bad_name { 0x4000 } else { 0 },
     ] {
         be16(&mut name_table, value);
     }

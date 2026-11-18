@@ -194,9 +194,14 @@ impl Embedded {
     }
 
     /// Write the font at its object: the subset of the glyphs used, their widths, the
-    /// characters they stand for.
+    /// characters they stand for. A program the subsetter cannot cut is refused, as one that
+    /// cannot be read.
     pub(crate) fn write(&self, doc: &mut Document) -> Result<()> {
-        Ok(self.font.write(doc)?)
+        if self.font.write(doc)? {
+            Ok(())
+        } else {
+            Err(sealwax_core::Error::InvalidArgument { what: "font" }.into())
+        }
     }
 }
 

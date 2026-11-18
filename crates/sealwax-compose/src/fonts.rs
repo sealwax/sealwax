@@ -1,7 +1,7 @@
 //! The fonts a composition's text is drawn with: programs embedded as subset composite fonts
 //! ([`crate::font`]), standard-14 fonts written with the widths the layout measured.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sealwax_core::{Dict, Document, Name, ObjId, Object};
@@ -37,7 +37,8 @@ enum Slot {
         /// The width each code was drawn with, the first one given.
         widths: BTreeMap<u8, f64>,
     },
-    /// A program that cannot be embedded (`CFF2` outlines, too large, unreadable).
+    /// A program that cannot be embedded (`CFF2` outlines, too large, unreadable, refused by
+    /// the subsetter).
     Unusable,
 }
 
@@ -54,10 +55,13 @@ pub(crate) struct Fonts<'a> {
 }
 
 impl<'a> Fonts<'a> {
-    pub(crate) fn new(fonts: &'a [Font]) -> Self {
+    /// `fonts`, those at the indexes `refused` taken as unusable.
+    pub(crate) fn new(fonts: &'a [Font], refused: &BTreeSet<usize>) -> Self {
         Self {
             fonts,
-            slots: fonts.iter().map(|_| None).collect(),
+            slots: (0..fonts.len())
+                .map(|index| refused.contains(&index).then_some(Slot::Unusable))
+                .collect(),
         }
     }
 
@@ -94,27 +98,26 @@ impl<'a> Fonts<'a> {
     }
 
     /// `glyph` drawn in font `index` (made [`Fonts::usable`] first): its code and advance.
-    pub(crate) fn place(&mut self, index: usize, glyph: &Glyph) -> Placed {
-        match self.slots.get_mut(index).and_then(Option::as_mut) {
-            Some(Slot::Embedded(font)) => {
+    /// `None` for a glyph a program lacks (`.notdef`, or past its glyphs), which PDF/A-2 and
+    /// later forbid showing (ISO 19005-2, 6.2.11.8).
+    pub(crate) fn place(&mut self, index: usize, glyph: &Glyph) -> Option<Placed> {
+        match self.slots.get_mut(index)?.as_mut()? {
+            Slot::Embedded(font) => {
                 let code = font.code(glyph.id, &glyph.text);
-                Placed {
+                (code != 0).then(|| Placed {
                     code: format!("{code:04X}"),
                     advance: font.code_advance(code),
-                }
+                })
             }
-            Some(Slot::Standard { widths, .. }) => {
+            Slot::Standard { widths, .. } => {
                 let code = u8::try_from(glyph.id).unwrap_or(b'?');
                 let advance = *widths.entry(code).or_insert(glyph.advance);
-                Placed {
+                Some(Placed {
                     code: format!("{code:02X}"),
                     advance,
-                }
+                })
             }
-            Some(Slot::Unusable) | None => Placed {
-                code: String::new(),
-                advance: 0.0,
-            },
+            Slot::Unusable => None,
         }
     }
 
@@ -127,18 +130,24 @@ impl<'a> Fonts<'a> {
         }
     }
 
-    /// Writes every font used, at the object reserved for it.
-    pub(crate) fn write(&self, doc: &mut Document) -> Result<(), Error> {
-        for slot in self.slots.iter().flatten() {
+    /// Writes every font used, at the object reserved for it. The indexes of the programs the
+    /// subsetter refused, left unwritten.
+    pub(crate) fn write(&self, doc: &mut Document) -> Result<Vec<usize>, Error> {
+        let mut refused = Vec::new();
+        for (index, slot) in self.slots.iter().enumerate() {
             match slot {
-                Slot::Embedded(font) => font.write(doc)?,
-                Slot::Standard { id, name, widths } => {
+                Some(Slot::Embedded(font)) => {
+                    if !font.write(doc)? {
+                        refused.push(index);
+                    }
+                }
+                Some(Slot::Standard { id, name, widths }) => {
                     doc.set_object(*id, Object::Dict(standard(name, widths)));
                 }
-                Slot::Unusable => {}
+                Some(Slot::Unusable) | None => {}
             }
         }
-        Ok(())
+        Ok(refused)
     }
 }
 
