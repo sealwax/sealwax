@@ -20,6 +20,10 @@ memchr = "2.7"
 # reads `performance.now()` (std's panics there). MIT OR Apache-2.0.
 web-time = "1.1"
 sha2 = "0.11"
+# Saving encrypted: the AES block cipher (CBC written here) and MD5 for the key of revisions 3
+# and 4 (MIT OR Apache-2.0, RustCrypto, no unsafe in the portable code paths used).
+aes = "0.9"
+md-5 = "0.11"
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
