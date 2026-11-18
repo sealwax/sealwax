@@ -126,6 +126,7 @@ class Redacted(TypedDict):
     images: int
     images_removed: int
     paths: int
+    replacement_texts: int
 
 class AppliedRedactions(TypedDict):
     marks: int
