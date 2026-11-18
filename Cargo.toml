@@ -28,7 +28,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
@@ -39,14 +39,14 @@ keywords = ["pdf", "pdfa", "pades", "signature", "xfdf"]
 categories = ["parser-implementations", "encoding", "cryptography"]
 
 [workspace.dependencies]
-sealwax-core = { path = "crates/sealwax-core", version = "0.4.0" }
-sealwax = { path = "crates/sealwax", version = "0.4.0" }
-sealwax-text = { path = "crates/sealwax-text", version = "0.4.0" }
-sealwax-pdfa = { path = "crates/sealwax-pdfa", version = "0.4.0" }
-sealwax-annots = { path = "crates/sealwax-annots", version = "0.4.0" }
-sealwax-raster = { path = "crates/sealwax-raster", version = "0.4.0" }
-sealwax-sign = { path = "crates/sealwax-sign", version = "0.4.0" }
-sealwax-compose = { path = "crates/sealwax-compose", version = "0.4.0" }
+sealwax-core = { path = "crates/sealwax-core", version = "0.5.0" }
+sealwax = { path = "crates/sealwax", version = "0.5.0" }
+sealwax-text = { path = "crates/sealwax-text", version = "0.5.0" }
+sealwax-pdfa = { path = "crates/sealwax-pdfa", version = "0.5.0" }
+sealwax-annots = { path = "crates/sealwax-annots", version = "0.5.0" }
+sealwax-raster = { path = "crates/sealwax-raster", version = "0.5.0" }
+sealwax-sign = { path = "crates/sealwax-sign", version = "0.5.0" }
+sealwax-compose = { path = "crates/sealwax-compose", version = "0.5.0" }
 
 # Reading. Default features off: no image decoders and no `unsafe` feature for now; revisit with
 # measurements.
