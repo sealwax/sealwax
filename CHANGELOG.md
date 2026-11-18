@@ -6,6 +6,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
 ### Added
 
 - Documents built from nothing, as test fixtures are (`Document.new()` in Python): blank pages
@@ -30,7 +32,6 @@ All notable changes to sealwax are recorded here. The format follows
   The randomness keys and initialization vectors take comes from the caller in Rust
   (`Encrypt::seed`), from the system in Python. sealwax itself opens a document of RC4 or
   AES-128 with its user password only, as hayro does.
-
 - `metadata()` describes how a document is encrypted (`encryption`): its security handler, `/V`
   and `/R`, the length of its key and how its streams are encrypted (RC4, AES, none), as a
   string as PyMuPDF writes it (`Standard V5 R6 256-bit AES`) in Python and WebAssembly. None
@@ -339,7 +340,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sealwax/sealwax/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sealwax/sealwax/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sealwax/sealwax/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sealwax/sealwax/compare/v0.1.0...v0.2.0
