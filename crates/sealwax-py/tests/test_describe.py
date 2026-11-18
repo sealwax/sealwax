@@ -173,3 +173,24 @@ def test_documents_processed_in_parallel_threads_read_as_they_do_alone():
     with ThreadPoolExecutor(8) as pool:
         images = list(pool.map(lambda page: shared.render_png(page % 5, 0.5), range(20)))
     assert images == [shared.render_png(page % 5, 0.5) for page in range(20)]
+
+
+def test_links_say_where_they_lead_and_pages_their_labels():
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /r >> 1 << /S /D /P (A-) >>] >> >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Annots [5 0 R 6 0 R 7 0 R] >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+        "<< /Type /Annot /Subtype /Link /Rect [10 20 110 40] /Dest [4 0 R /Fit] >>",
+        "<< /Type /Annot /Subtype /Link /Rect [10 50 110 70] /A << /S /URI /URI (https://example.org) >> >>",
+        "<< /Type /Annot /Subtype /Link /Rect [10 80 110 99] /A << /S /JavaScript /JS (x) >> >>",
+    ]))
+    links = document.links(0)
+    assert [(link["kind"], link["page_number"], link["uri"], link["name"]) for link in links] == [
+        ("page", 2, None, None),
+        ("uri", None, "https://example.org", None),
+        ("unknown", None, None, "JavaScript"),
+    ]
+    assert links[0]["rect"] == (10, 20, 110, 40)
+    assert document.links(1) == []
+    assert document.page_labels() == ["i", "A-1"]

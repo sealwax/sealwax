@@ -13,6 +13,7 @@ import init, {
   type Applied,
   type Drawings,
   type Glyph,
+  type Link,
   type Field,
   type SignedMark,
   type RenderedPage,
@@ -28,6 +29,9 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const fields: Field[] = doc.fields();
   const page: RenderedPage | null = doc.renderRgba(0, 1);
   const drawn: Drawings = doc.drawings(0, true);
+  const links: Link[] = doc.links(0);
+  const firstPage: number | null = links[0]?.kind === "page" ? links[0].pageNumber : null;
+  const labels: string[] | null = doc.pageLabels();
   const boxes = drawn.rectangles.filter((r) => r.stroked && !r.filled).map((r) => r.box);
   const glyphs: Glyph[] = doc.glyphs(0);
   const text = glyphs.map((g) => g.text ?? "").join("") + (glyphs[0]?.ink?.[0] ?? 0);
@@ -49,6 +53,7 @@ export async function use(bytes: Uint8Array): Promise<number> {
     }
   }
   return (
-    merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length + boxes.length + text.length
+    merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length + boxes.length + text.length +
+    (firstPage ?? 0) + (labels?.length ?? 0)
   );
 }
