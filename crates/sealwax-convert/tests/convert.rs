@@ -1,0 +1,100 @@
+//! DOCX documents converted: laid out by docxide-pdf, written by sealwax-compose, read back by
+//! sealwax. `data/two-pages.docx` is written by `data/make_docx.py`.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::time::Duration;
+
+use sealwax_convert::{DocxOptions, Error, docx_to_pdf, layout_docx};
+use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, SaveOptions};
+
+const TWO_PAGES: &[u8] = include_bytes!("data/two-pages.docx");
+
+fn converted(docx: &[u8]) -> Document {
+    let converted = docx_to_pdf(docx, &DocxOptions::default(), &Limits::default()).unwrap();
+    let bytes = converted
+        .composed
+        .document
+        .save(&SaveOptions::default())
+        .unwrap();
+    Document::open(bytes, &OpenOptions::default()).unwrap()
+}
+
+/// The text a page reads back, whitespace aside: whether a space is drawn is the layout's choice.
+fn text(doc: &Document, page: usize) -> String {
+    sealwax_text::glyphs(doc, page, false)
+        .unwrap()
+        .into_iter()
+        .filter_map(|glyph| glyph.text)
+        .collect::<String>()
+        .split_whitespace()
+        .collect()
+}
+
+fn dict(doc: &Document, object: &Object) -> Dict {
+    match object {
+        Object::Ref(id) => match doc.object(*id).unwrap() {
+            Some(Object::Dict(dict)) => dict,
+            other => panic!("not a dictionary: {other:?}"),
+        },
+        Object::Dict(dict) => dict.clone(),
+        other => panic!("not a dictionary: {other:?}"),
+    }
+}
+
+#[test]
+fn pages_and_their_text_read_back() {
+    let doc = converted(TWO_PAGES);
+    assert_eq!(doc.page_count(), 2);
+    assert_eq!(text(&doc, 0), "Hellofromasyntheticdocument.Alink");
+    assert_eq!(text(&doc, 1), "Secondpage.");
+}
+
+#[test]
+fn a_link_leads_to_its_address() {
+    let doc = converted(TWO_PAGES);
+    let page = doc.page_ids()[0].unwrap();
+    let page = dict(&doc, &Object::Ref(page));
+    let Some(Object::Array(annotations)) = page.get(b"Annots") else {
+        panic!("no annotations");
+    };
+    let [annotation] = annotations.as_slice() else {
+        panic!("{} annotations", annotations.len());
+    };
+    let action = dict(&doc, dict(&doc, annotation).get(b"A").unwrap());
+    assert_eq!(
+        action.get(b"URI"),
+        Some(&Object::String(b"https://example.org/".to_vec()))
+    );
+}
+
+#[test]
+fn a_plain_document_is_described_and_written_whole() {
+    let converted = docx_to_pdf(TWO_PAGES, &DocxOptions::default(), &Limits::default()).unwrap();
+    assert!(converted.not_described.is_empty());
+    assert_eq!(converted.composed.skipped.iter().count(), 0);
+}
+
+#[test]
+fn what_is_not_a_docx_is_refused() {
+    let options = DocxOptions::default();
+    assert!(matches!(
+        docx_to_pdf(b"not a docx", &options, &Limits::default()),
+        Err(Error::Layout)
+    ));
+    assert!(matches!(
+        layout_docx(&TWO_PAGES[..TWO_PAGES.len() / 2], &options),
+        Err(Error::Layout)
+    ));
+}
+
+#[test]
+fn a_passed_deadline_stops_the_conversion() {
+    let limits = Limits::default().timeout(Duration::ZERO);
+    assert!(matches!(
+        docx_to_pdf(TWO_PAGES, &DocxOptions::default(), &limits),
+        Err(Error::Compose(sealwax_compose::Error::Pdf(
+            sealwax_core::Error::Timeout
+        )))
+    ));
+}

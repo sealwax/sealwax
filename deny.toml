@@ -6,7 +6,11 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # ttf-parser is unmaintained (no vulnerability). Only docxide-pdf uses it, for
+    # sealwax-convert, which is not published.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained; docxide-pdf only, for sealwax-convert (not published)" },
+]
 
 [licenses]
 version = 2
@@ -34,3 +38,6 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# docxide-pdf with its display list, from a fork until it publishes one: sealwax-convert only,
+# which is not published.
+allow-git = ["https://github.com/sboily/docxide-pdf"]

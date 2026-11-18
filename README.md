@@ -138,6 +138,7 @@ sealwax glyphs in.pdf --out glyphs.jsonl
 |---|---|
 | `crates/sealwax` | The facade crate: the document model, with `annots`, `compose`, `pdfa`, `raster`, `sign` and `text` modules |
 | `crates/sealwax-*` | One crate per area. `sealwax-cli` is the command line, `sealwax-py` the Python bindings |
+| `crates/sealwax-convert` | Other formats converted to PDF: DOCX laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by `sealwax-compose`. Not published: it takes docxide-pdf's display list from a fork until docxide-pdf publishes one. Needs Rust 1.97 |
 | `fuzz/` | `cargo-fuzz` targets, one per entry point |
 | `benchmark/` | Hostile-input bench, and judges that check outputs with veraPDF, pyHanko, PDFium and qpdf |
 
