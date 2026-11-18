@@ -851,3 +851,32 @@ fn a_figure_tied_by_an_object_reference_loses_its_texts() {
     assert_eq!((done.images, done.replacement_texts), (1, 1));
     assert!(find(&everything(&doc), b"SECRET").is_none());
 }
+
+#[test]
+fn a_form_painting_with_the_pattern_it_inherits_loses_the_shape_and_the_page_the_pattern() {
+    // The page makes the pattern the colour; the form, with resources of its own, paints with it.
+    let content = "/Pattern cs /P1 scn /Fm Do";
+    let resources = "/Pattern << /P1 5 0 R >> /XObject << /Fm 8 0 R >>";
+    let mut objects = pattern_objects();
+    objects.push(stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << >>",
+        "100 100 200 200 re f",
+    ));
+    for (area, paths) in [
+        (
+            Rect::from_corners(0.0, 0.0, 600.0, 800.0),
+            PathRedaction::Touched,
+        ),
+        (
+            Rect::from_corners(90.0, 90.0, 200.0, 320.0),
+            PathRedaction::Covered,
+        ),
+    ] {
+        let mut doc = page(content, resources, &objects);
+        let done = redact(&mut doc, 0, &[area], &RedactOptions::default().paths(paths)).unwrap();
+        assert_eq!((done.paths, done.forms), (1, 1), "{paths:?}");
+        for saved in [&doc, &doc.rebuilt_for_redaction().unwrap()] {
+            assert!(find(&everything(saved), b"LEAK-").is_none(), "{paths:?}");
+        }
+    }
+}

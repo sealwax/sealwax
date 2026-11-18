@@ -31,6 +31,7 @@ worker.
 | **Optimization** | Lossless size reduction: unfiltered streams compressed, unreachable objects dropped |
 | **Building** | A new document from nothing, as test fixtures are: pages of a given size, crop box and user unit, text in the standard fonts, lines, rectangles, links, fields, outline, information and XMP. Photos (JPEG, PNG) made pages, as a phone's photos are printed |
 | **Composition** | A new document written from pages another engine laid out: glyphs placed one by one, paths, clips, gradients, pictures, links; fonts (TrueType or CFF, from a file or a collection) embedded as subsets whose text reads back; tagged content and its structure tree, bookmarks |
+| **Conversion** | Word documents (DOCX) converted to PDF, in the Python package (`docx_to_pdf`): laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by the composition above with Word's structure tagged and its fonts embedded as subsets; what the PDF could not hold, and what the layout drew that sealwax does not take yet, counted. The older binary `.doc` format is not read: save it as DOCX first. Convert documents you do not trust with `sealwax.isolated` |
 | **Python** | Bindings for all of the above (Python 3.12+, `abi3`). The interpreter lock is released while sealwax works. An `isolated` helper runs an operation in a process of its own |
 | **WebAssembly** | The npm package `sealwax`, for browsers, web views, workers and Node: forms, annotations, rendering, text and drawings, redaction, pages, photos made PDF. It works on bytes in memory and never reaches the network ([its README](crates/sealwax-wasm/README.md)) |
 
@@ -107,6 +108,7 @@ limits = sealwax.Limits(timeout=60)
 pages = sealwax.read_geometry(data, max_pages=1000, limits=limits)
 archived, report = sealwax.pdfa_convert(data, level="3a", limits=limits)
 flattened = sealwax.flatten_bytes(data, limits=limits)
+converted, left_out = sealwax.docx_to_pdf(open("in.docx", "rb").read(), limits=limits)
 
 document = sealwax.Document.from_bytes(data, limits=limits)
 image = document.render_png(0, scale=150 / 72)  # PNG bytes, 150 dpi
@@ -129,6 +131,42 @@ last, so that the next page, or the same page at another scale, does not parse o
 again; reading or rendering another document replaces them, and `sealwax.release_cache()` drops
 them, with the documents they hold.
 
+### JavaScript (browser and Node)
+
+The npm package is sealwax compiled to WebAssembly. In a browser, a web view or a worker, the
+module is a file of its own, served from your origin and loaded once:
+
+```js
+import init, { Document } from "sealwax";
+import wasmUrl from "sealwax/sealwax_bg.wasm?url"; // Vite; any bundler that gives a URL
+
+await init({ module_or_path: wasmUrl });
+
+const doc = Document.fromBytes(new Uint8Array(await file.arrayBuffer()), {
+  limits: { timeoutMs: 10_000 },
+});
+console.log(doc.pageCount(), doc.geometry());
+doc.fillFields({ name: "Jane", agree: "Yes" });
+const png = doc.renderPng(0, 150 / 72); // PNG bytes, 150 dpi
+const saved = doc.save(); // Uint8Array
+```
+
+Under Node, the package reads its module itself and is ready once imported, with no `init`:
+
+```js
+import { readFileSync, writeFileSync } from "node:fs";
+import { Document } from "sealwax";
+
+const doc = Document.fromBytes(readFileSync("in.pdf"));
+const glyphs = doc.glyphs(0); // text, origin, box, size, font of each glyph
+const links = doc.links(0); // rectangle and target of each link
+writeFileSync("out.pdf", doc.save());
+```
+
+Errors are `PdfError` and its subclasses. TypeScript declarations ship with the package. Its
+[README](crates/sealwax-wasm/README.md) covers encrypted documents, signed fields, rendering,
+limits and what to do after a panic.
+
 ### Command line
 
 ```sh
@@ -144,7 +182,7 @@ sealwax glyphs in.pdf --out glyphs.jsonl
 |---|---|
 | `crates/sealwax` | The facade crate: the document model, with `annots`, `compose`, `pdfa`, `raster`, `sign` and `text` modules |
 | `crates/sealwax-*` | One crate per area. `sealwax-cli` is the command line, `sealwax-py` the Python bindings, `sealwax-wasm` the npm package |
-| `crates/sealwax-convert` | Other formats converted to PDF: DOCX laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by `sealwax-compose`. Not published: it takes docxide-pdf's display list from a fork until docxide-pdf publishes one. Needs Rust 1.97 |
+| `crates/sealwax-convert` | Other formats converted to PDF: DOCX laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by `sealwax-compose`. Shipped in the Python package (`docx_to_pdf`), not on crates.io: it takes docxide-pdf's display list from a fork until docxide-pdf publishes one. Its layout reads the documents' fonts with ttf-parser, which is no longer maintained, and its time is not bounded: convert documents you do not trust with `sealwax.isolated`. Needs Rust 1.97 |
 | `fuzz/` | `cargo-fuzz` targets, one per entry point |
 | `benchmark/` | Hostile-input bench, and judges that check outputs with veraPDF, pyHanko, PDFium and qpdf |
 
