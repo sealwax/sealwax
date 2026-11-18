@@ -947,6 +947,197 @@ impl Document {
         )
     }
 
+    /// A new document without pages, to build: add pages with `add_page`, then draw on them,
+    /// add fields, an outline, information. `save` needs a page at least; what a page added
+    /// shows (`glyphs`, `drawings`, rendering) reads once the document is saved and opened again.
+    #[staticmethod]
+    #[pyo3(signature = (*, limits=None))]
+    fn new(py: Python<'_>, limits: Option<PyRef<'_, Limits>>) -> PyResult<Self> {
+        let limits = limits.map_or_else(pdf::Limits::default, |limits| limits.counted_from_now());
+        run(py, || Ok(pdf::Document::empty_with(limits)?)).map(|inner| Self { inner })
+    }
+
+    /// Add a blank page of `width` by `height` points (A4, PyMuPDF's 595 by 842, by default)
+    /// after the others; returns its index (from 0). `ValueError` for a side not between 1 and
+    /// 14,400 points.
+    #[pyo3(signature = (width=595.0, height=842.0))]
+    fn add_page(&mut self, py: Python<'_>, width: f64, height: f64) -> PyResult<usize> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.add_page(width, height)?))
+    }
+
+    /// Give page `page_index` (from 0) the crop box `rect` (x1, y1, x2, y2): from the top-left
+    /// corner of its media box, y down, unrotated, in points, as PyMuPDF's `set_cropbox` takes
+    /// it. What lies outside the media box is left out. `ValueError` for a page the document
+    /// does not have, or a box that leaves nothing of the page.
+    fn set_crop_box(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+    ) -> PyResult<()> {
+        let media_box = self
+            .inner
+            .geometry()
+            .get(page_index)
+            .map(|page| page.media_box)
+            .ok_or_else(|| PyValueError::new_err("page index out of range"))?;
+        let user = pdf::Rect::from_corners(
+            media_box.x1 + rect.0,
+            media_box.y2 - rect.1,
+            media_box.x1 + rect.2,
+            media_box.y2 - rect.3,
+        );
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.set_crop_box(page_index, user)?))
+    }
+
+    /// Draw `text` on page `page_index` (from 0), the first line's baseline starting at `point`
+    /// (x, y) on the page as it shows (turned by its rotation, from the top-left corner of its
+    /// crop box, y down, in points), upright; `\n` starts the next line, the font's height
+    /// below. `font` is a standard font but Symbol and ZapfDingbats, by its name
+    /// ("Helvetica-Bold") or PyMuPDF's ("hebo"), not embedded, in WinAnsiEncoding (French
+    /// accents included); `color` fills it (RGB, 0 to 1). Returns the characters the font
+    /// cannot show, drawn as `?`. `ValueError` for a page, font, size (0 to 1,000) or color it
+    /// cannot take; nothing is drawn then.
+    #[pyo3(signature = (page_index, point, text, *, font="Helvetica", size=11.0, color=(0.0, 0.0, 0.0)))]
+    #[allow(clippy::too_many_arguments)]
+    fn insert_text(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        point: (f64, f64),
+        text: &str,
+        font: &str,
+        size: f64,
+        color: (f64, f64, f64),
+    ) -> PyResult<usize> {
+        let shape = pdf::annots::Shape::Text {
+            at: [point.0, point.1],
+            text: text.to_owned(),
+            font: font.to_owned(),
+            size,
+            color: [color.0, color.1, color.2],
+        };
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::draw_shapes(inner, page_index, &[shape])?)
+        })
+    }
+
+    /// Draw a straight line from `start` to `end` (x, y on the page as it shows, as
+    /// `insert_text` takes them) on page `page_index`, `width` points wide in `color` (RGB, 0 to
+    /// 1). `ValueError` for a page or a value it cannot take.
+    #[pyo3(signature = (page_index, start, end, *, width=1.0, color=(0.0, 0.0, 0.0)))]
+    fn draw_line(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        start: (f64, f64),
+        end: (f64, f64),
+        width: f64,
+        color: (f64, f64, f64),
+    ) -> PyResult<()> {
+        let shape = pdf::annots::Shape::Line {
+            from: [start.0, start.1],
+            to: [end.0, end.1],
+            width,
+            color: [color.0, color.1, color.2],
+        };
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::draw_shapes(inner, page_index, &[shape]).map(|_| ())?)
+        })
+    }
+
+    /// Draw the rectangle `rect` (x1, y1, x2, y2 on the page as it shows, as `insert_text`
+    /// takes points) on page `page_index`: its border `width` points wide in `color`, filled
+    /// with `fill` (RGB, 0 to 1; None for no border or no filling, not both). `ValueError` for a
+    /// page or a value it cannot take.
+    #[pyo3(signature = (page_index, rect, *, width=1.0, color=Some((0.0, 0.0, 0.0)), fill=None))]
+    fn draw_rect(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+        width: f64,
+        color: Option<(f64, f64, f64)>,
+        fill: Option<(f64, f64, f64)>,
+    ) -> PyResult<()> {
+        let shape = pdf::annots::Shape::Rectangle {
+            rect: [rect.0, rect.1, rect.2, rect.3],
+            width,
+            color: color.map(|c| [c.0, c.1, c.2]),
+            fill: fill.map(|c| [c.0, c.1, c.2]),
+        };
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::draw_shapes(inner, page_index, &[shape]).map(|_| ())?)
+        })
+    }
+
+    /// Add a link to the address `uri` over `rect` (x1, y1, x2, y2 on the page as it shows, as
+    /// `add_field` takes it) on page `page_index`, without a border. `ValueError` for a page, a
+    /// rectangle without area or an empty address.
+    fn add_link(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+        uri: &str,
+    ) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::add_link(
+                inner,
+                page_index,
+                [rect.0, rect.1, rect.2, rect.3],
+                uri,
+            )?)
+        })
+    }
+
+    /// Replace the outline (bookmarks) by `entries`, (level, title, page number from 1 or None)
+    /// in the order a reader lists them, as `outline` gives them back: levels from 1, each at
+    /// most one deeper than the one before. Each leads to its page, all shown open; an empty
+    /// list removes the outline. `ValueError` for a level or a page it cannot take.
+    fn set_outline(
+        &mut self,
+        py: Python<'_>,
+        entries: Vec<(usize, String, Option<usize>)>,
+    ) -> PyResult<()> {
+        let mut outline = Vec::with_capacity(entries.len());
+        for (level, title, page_number) in entries {
+            let page_index = match page_number {
+                Some(0) => return Err(PyValueError::new_err("page numbers start at 1")),
+                Some(number) => Some(number - 1),
+                None => None,
+            };
+            outline.push(pdf::NewOutlineEntry {
+                level,
+                title,
+                page_index,
+            });
+        }
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.set_outline(&outline)?))
+    }
+
+    /// Replace the document information by `entries` (`Title`, `Author`, `CreationDate` as PDF
+    /// writes dates, "D:20240131120000Z", any other), each written as a text string; an empty
+    /// dict removes it. `ValueError` for an empty key.
+    fn set_info(&mut self, py: Python<'_>, entries: BTreeMap<String, String>) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.set_info(&entries)?))
+    }
+
+    /// Make `packet` the document's XMP metadata, as given: what `metadata` reads its PDF/A
+    /// claim from.
+    fn set_xmp(&mut self, py: Python<'_>, packet: Vec<u8>) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.set_xmp(&packet)?))
+    }
+
     /// Add a page for each photo of `photos` (JPEG or PNG bytes), in order, after the document's
     /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of margin,
     /// the photo centered and fitted without being stretched. A JPEG is embedded as it is, never

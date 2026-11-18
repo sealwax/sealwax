@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod build;
 mod census;
 mod decode;
 mod document;
@@ -32,13 +33,14 @@ mod serialize;
 mod text;
 mod trailer;
 
+pub use build::NewOutlineEntry;
 pub use census::{Census, Font, Form, PageFacts, Tagging};
 pub use document::{Document, MAX_OBJECT_NUMBER, OpenOptions};
 pub use error::{Error, Result};
 pub use geometry::{PageGeometry, Rect, Rotation};
 pub use limits::{Limits, Peaks};
 pub use merge::PagePick;
-pub use metadata::Metadata;
+pub use metadata::{Encryption, Metadata};
 pub use object::{Dict, Name, ObjId, Object, Stream};
 pub use optimize::{Kept, Optimized, optimize};
 pub use outline::OutlineEntry;

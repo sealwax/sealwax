@@ -283,9 +283,20 @@ pub(crate) fn form_tree(doc: &Document) -> Result<Vec<FormNode>> {
     Ok(nodes)
 }
 
+/// The matrix from a page as it shows (turned by `rotation`, from the top-left corner of
+/// `crop_box`, y down) to its default user space: [`shown_to_user`]'s, for a drawing.
+pub(crate) fn shown_matrix(crop_box: Rect, rotation: Rotation) -> [f64; 6] {
+    match rotation {
+        Rotation::None => [1.0, 0.0, 0.0, -1.0, crop_box.x1, crop_box.y2],
+        Rotation::Quarter => [0.0, 1.0, 1.0, 0.0, crop_box.x1, crop_box.y1],
+        Rotation::Half => [-1.0, 0.0, 0.0, 1.0, crop_box.x2, crop_box.y1],
+        Rotation::ThreeQuarters => [0.0, -1.0, -1.0, 0.0, crop_box.x2, crop_box.y2],
+    }
+}
+
 /// `rect` given on a page as it shows (turned by `rotation`, from the top-left corner of
 /// `crop_box`, y down) in the page's default user space; `None` without area.
-fn shown_to_user(rect: [f64; 4], crop_box: Rect, rotation: Rotation) -> Option<Rect> {
+pub(crate) fn shown_to_user(rect: [f64; 4], crop_box: Rect, rotation: Rotation) -> Option<Rect> {
     if !rect.iter().all(|v| v.is_finite()) {
         return None;
     }

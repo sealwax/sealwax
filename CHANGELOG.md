@@ -8,6 +8,16 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Documents built from nothing, as test fixtures are (`Document.new()` in Python): blank pages
+  of a given size (`add_page`, A4 by default) and their crop box (`set_crop_box`, given as
+  PyMuPDF's `set_cropbox` takes it); text in a standard font, not embedded, in WinAnsiEncoding
+  (`insert_text`, `\n` starting a line the font's height below, as PyMuPDF writes it), lines
+  and rectangles (`draw_line`, `draw_rect`), links to addresses (`add_link`), all placed on the
+  page as it shows, as fields are, text upright; an outline (`set_outline`, as `outline` reads
+  it back), the document information (`set_info`) and an XMP packet (`set_xmp`). In Rust,
+  `Document::add_page`, `set_crop_box`, `set_outline`, `set_info`, `set_xmp`, and
+  `sealwax_annots::draw_shapes` and `add_link`.
+
 - `metadata()` describes how a document is encrypted (`encryption`): its security handler, `/V`
   and `/R`, the length of its key and how its streams are encrypted (RC4, AES, none), as a
   string as PyMuPDF writes it (`Standard V5 R6 256-bit AES`) in Python and WebAssembly. None
