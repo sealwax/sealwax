@@ -23,8 +23,11 @@ subsetter = "0.2.6"
 thiserror.workspace = true
 
 [dev-dependencies]
-sealwax-raster.workspace = true
-sealwax-text.workspace = true
+# The tests read back and render what is composed. These crates depend on this one (through
+# sealwax-annots): without a version, they are left out of the crate published, so that the
+# workspace packages each crate after those it depends on.
+sealwax-raster = { path = "../sealwax-raster" }
+sealwax-text = { path = "../sealwax-text" }
 
 [lints]
 workspace = true

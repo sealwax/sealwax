@@ -1051,7 +1051,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "sealwax"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "sealwax-annots",
  "sealwax-compose",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-annots"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "flate2",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "sealwax",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-compose"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "read-fonts 0.46.0",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "hayro-syntax",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-pdfa"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "hayro-cmap",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-py"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pyo3",
  "sealwax",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-raster"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "hayro",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-sign"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cms",
  "const-oid 0.9.6",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-text"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "hayro-font",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "js-sys",
  "sealwax-annots",
