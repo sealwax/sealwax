@@ -1,12 +1,13 @@
 //! DOCX documents converted: laid out by docxide-pdf, written by sealwax-compose, read back by
-//! sealwax. `data/two-pages.docx` is written by `data/make_docx.py`.
+//! sealwax: pages, text, links, the structure of the document and its bookmarks.
+//! `data/two-pages.docx` is written by `data/make_docx.py`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
 
 use sealwax_convert::{DocxOptions, Error, docx_to_pdf, layout_docx};
-use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, SaveOptions};
+use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, OutlineEntry, SaveOptions};
 
 const TWO_PAGES: &[u8] = include_bytes!("data/two-pages.docx");
 
@@ -46,7 +47,10 @@ fn dict(doc: &Document, object: &Object) -> Dict {
 fn pages_and_their_text_read_back() {
     let doc = converted(TWO_PAGES);
     assert_eq!(doc.page_count(), 2);
-    assert_eq!(text(&doc, 0), "Hellofromasyntheticdocument.Alink");
+    assert_eq!(
+        text(&doc, 0),
+        "AheadingHellofromasyntheticdocument.Alink•Firstitem•Seconditem"
+    );
     assert_eq!(text(&doc, 1), "Secondpage.");
 }
 
@@ -65,6 +69,52 @@ fn a_link_leads_to_its_address() {
     assert_eq!(
         action.get(b"URI"),
         Some(&Object::String(b"https://example.org/".to_vec()))
+    );
+}
+
+/// The structure types in reading order.
+fn structure(doc: &Document) -> Vec<String> {
+    let catalog = dict(doc, &Object::Ref(doc.catalog_id()));
+    let root = dict(doc, catalog.get(b"StructTreeRoot").unwrap());
+    let mut kinds = Vec::new();
+    let mut stack = vec![root.get(b"K").unwrap().clone()];
+    while let Some(kid) = stack.pop() {
+        let Object::Ref(_) = kid else {
+            continue;
+        };
+        let element = dict(doc, &kid);
+        if let Some(Object::Name(kind)) = element.get(b"S") {
+            kinds.push(String::from_utf8_lossy(kind.as_bytes()).into_owned());
+        }
+        if let Some(Object::Array(kids)) = element.get(b"K") {
+            stack.extend(kids.iter().rev().cloned());
+        }
+    }
+    kinds
+}
+
+#[test]
+fn the_structure_of_the_document_is_kept() {
+    let doc = converted(TWO_PAGES);
+    assert_eq!(
+        structure(&doc),
+        [
+            "Document", "H1", "P", "P", "Link", "L", "LI", "Lbl", "LBody", "LI", "Lbl", "LBody",
+            "P"
+        ]
+    );
+}
+
+#[test]
+fn the_heading_is_a_bookmark() {
+    let doc = converted(TWO_PAGES);
+    assert_eq!(
+        doc.outline().unwrap(),
+        [OutlineEntry {
+            level: 1,
+            title: "A heading".to_owned(),
+            page_index: Some(0),
+        }]
     );
 }
 

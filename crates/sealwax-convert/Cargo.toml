@@ -14,10 +14,11 @@ publish = false
 [dependencies]
 sealwax-core.workspace = true
 sealwax-compose.workspace = true
-# DOCX laid out to a display list (Apache-2.0), proposed upstream in sverrejb/docxide-pdf#168.
-# Branch `sealwax-crate` of the fork holds the files docxide-pdf publishes on crates.io, taken from
-# its branch `sealwax`, without the repository's history (1.4 GB with its fixtures).
-docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "e8f35ddcda6d61be62c38eaa239b77a5b50869d2", default-features = false }
+# DOCX laid out to a display list (Apache-2.0), proposed upstream in sverrejb/docxide-pdf#168;
+# here with its marked content, structure tree, outline and PDF/UA claim. Branch `sealwax-crate`
+# of the fork holds snapshots of the files docxide-pdf publishes on crates.io, taken from its
+# branch `sealwax`, without the repository's history (1.4 GB with its fixtures).
+docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "c7ab58b16605b3f4a3678e3b0588e9aa6d00686b", default-features = false }
 thiserror.workspace = true
 
 [dev-dependencies]

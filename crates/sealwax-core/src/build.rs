@@ -13,13 +13,16 @@ use crate::text::encode_text_string;
 const MAX_PAGE_SIDE: f64 = 14_400.0;
 
 /// An entry of an outline to write ([`Document::set_outline`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewOutlineEntry {
     /// Its depth: 1 for the entries at the top, at most one more than the entry before.
     pub level: usize,
     pub title: String,
     /// The page it leads to (from 0), or none.
     pub page_index: Option<usize>,
+    /// The height of the page shown at the top of the window, in default user space; none
+    /// shows the whole page.
+    pub top: Option<f64>,
 }
 
 impl Document {
@@ -43,8 +46,8 @@ impl Document {
     }
 
     /// Replace the outline (bookmarks) by `entries`, in the order a reader lists them (each
-    /// entry, then its children). Each leads to the top of its page, if it has one; all are
-    /// shown open. No entry removes the outline.
+    /// entry, then its children). Each leads to its page, if it has one: to its `top`, or the
+    /// whole page; all are shown open. No entry removes the outline.
     ///
     /// # Errors
     /// [`Error::InvalidArgument`] for a first entry not at level 1, a level more than one
@@ -80,47 +83,56 @@ impl Document {
         for _ in entries {
             ids.push(self.add_object(Object::Null)?);
         }
-        // Each entry's parent: the last entry before it one level up, else the root.
+        // Each entry's parent: the last entry before it one level up, else the root. The
+        // children of each, in order, and how many entries each holds, all open.
         let mut parents = Vec::with_capacity(entries.len());
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
+        let mut top = Vec::new();
         let mut open: Vec<usize> = Vec::new();
         for (index, entry) in entries.iter().enumerate() {
             open.truncate(entry.level - 1);
-            parents.push(open.last().copied());
+            let parent = open.last().copied();
+            match parent {
+                Some(parent) => children[parent].push(index),
+                None => top.push(index),
+            }
+            parents.push(parent);
             open.push(index);
         }
-        let children = |parent: Option<usize>| -> Vec<usize> {
-            (0..entries.len())
-                .filter(|index| parents[*index] == parent)
-                .collect()
-        };
-        // Every entry open: a node counts all its descendants.
-        let descendants = |index: usize| -> usize {
-            entries[index + 1..]
+        let mut descendants = vec![0_usize; entries.len()];
+        for index in (0..entries.len()).rev() {
+            descendants[index] = children[index]
                 .iter()
-                .take_while(|entry| entry.level > entries[index].level)
-                .count()
-        };
+                .map(|kid| 1 + descendants[*kid])
+                .sum();
+        }
         let mut items: BTreeMap<usize, Dict> = BTreeMap::new();
         for (index, entry) in entries.iter().enumerate() {
             let mut item = Dict::new();
             item.insert("Title", Object::String(encode_text_string(&entry.title)));
             item.insert("Parent", parents[index].map_or(root, |parent| ids[parent]));
             if let Some(Some(page)) = entry.page_index.and_then(|page| pages.get(page)) {
-                item.insert(
-                    "Dest",
-                    vec![Object::Ref(*page), Object::Name(Name::from("Fit"))],
-                );
+                let destination = match entry.top.filter(|top| top.is_finite()) {
+                    Some(top) => vec![
+                        Object::Ref(*page),
+                        Object::Name(Name::from("XYZ")),
+                        Object::Integer(0),
+                        Object::Real(top),
+                        Object::Null,
+                    ],
+                    None => vec![Object::Ref(*page), Object::Name(Name::from("Fit"))],
+                };
+                item.insert("Dest", destination);
             }
-            let kids = children(Some(index));
+            let kids = &children[index];
             if let (Some(first), Some(last)) = (kids.first(), kids.last()) {
                 item.insert("First", ids[*first]);
                 item.insert("Last", ids[*last]);
-                item.insert("Count", i64::try_from(descendants(index)).unwrap_or(0));
+                item.insert("Count", i64::try_from(descendants[index]).unwrap_or(0));
             }
             items.insert(index, item);
         }
-        for parent in std::iter::once(None).chain((0..entries.len()).map(Some)) {
-            let kids = children(parent);
+        for kids in children.iter().chain(std::iter::once(&top)) {
             for pair in kids.windows(2) {
                 if let [a, b] = pair {
                     if let Some(item) = items.get_mut(a) {
@@ -132,7 +144,6 @@ impl Document {
                 }
             }
         }
-        let top = children(None);
         let mut outlines = Dict::new();
         outlines.insert("Type", Name::from("Outlines"));
         if let (Some(first), Some(last)) = (top.first(), top.last()) {

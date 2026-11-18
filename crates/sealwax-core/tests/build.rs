@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use sealwax_core::{
-    Document, Error, NewOutlineEntry, OpenOptions, OutlineEntry, Rect, SaveOptions,
+    Document, Error, Name, NewOutlineEntry, Object, OpenOptions, OutlineEntry, Rect, SaveOptions,
 };
 
 fn reopened(doc: &Document) -> Document {
@@ -19,6 +19,7 @@ fn entry(level: usize, title: &str, page_index: Option<usize>) -> NewOutlineEntr
         level,
         title: title.to_owned(),
         page_index,
+        top: None,
     }
 }
 
@@ -112,6 +113,46 @@ fn the_outline_reads_back_as_written() {
     assert_eq!(reopened(&doc).outline().unwrap().len(), 1);
     doc.set_outline(&[]).unwrap();
     assert!(reopened(&doc).outline().unwrap().is_empty());
+}
+
+#[test]
+fn an_outline_entry_with_a_top_leads_to_that_height() {
+    let mut doc = Document::empty().unwrap();
+    doc.add_page(100.0, 800.0).unwrap();
+    let mut heading = entry(1, "Heading", Some(0));
+    heading.top = Some(700.5);
+    doc.set_outline(&[heading, entry(1, "Page", Some(0))])
+        .unwrap();
+    let doc = reopened(&doc);
+    let dict = |id| match doc.object(id).unwrap() {
+        Some(Object::Dict(dict)) => dict,
+        other => panic!("not a dictionary: {other:?}"),
+    };
+    let reference = |object: Option<&Object>| match object {
+        Some(Object::Ref(id)) => *id,
+        other => panic!("not a reference: {other:?}"),
+    };
+    let outlines = dict(reference(dict(doc.catalog_id()).get(b"Outlines")));
+    let first = dict(reference(outlines.get(b"First")));
+    let page = doc.page_ids()[0].unwrap();
+    assert_eq!(
+        first.get(b"Dest"),
+        Some(&Object::Array(vec![
+            Object::Ref(page),
+            Object::Name(Name::from("XYZ")),
+            Object::Integer(0),
+            Object::Real(700.5),
+            Object::Null,
+        ]))
+    );
+    let second = dict(reference(first.get(b"Next")));
+    assert_eq!(
+        second.get(b"Dest"),
+        Some(&Object::Array(vec![
+            Object::Ref(page),
+            Object::Name(Name::from("Fit"))
+        ]))
+    );
 }
 
 #[test]
