@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 
 use sealwax_annots::{
-    Error, FieldChoice, FieldKind, FillValue, NewField, NewFieldKind, add_field, field_values,
-    fields, fill_fields, remove_field_appearances, rename_button_state, set_field_label,
+    Error, FieldChoice, FieldKind, FillValue, NewField, NewFieldKind, add_field, add_widget,
+    field_values, fields, fill_fields, remove_field_appearances, rename_button_state,
+    set_field_label,
 };
 use sealwax_core::{Document, Object, OpenOptions, SaveOptions};
 
@@ -441,4 +442,263 @@ fn retouches_of_a_field_the_form_lacks_are_refused() {
     .unwrap();
     assert!(rename_button_state(&mut doc, "box", b"Off").is_err());
     assert!(rename_button_state(&mut doc, "box", b"").is_err());
+}
+
+/// Two pages, 600 x 800, the second turned `rotate` degrees, with `catalog` in the catalog.
+fn two_pages(rotate: u16, catalog: &str, extra: &[String]) -> Document {
+    let mut objects = vec![
+        format!("<< /Type /Catalog /Pages 2 0 R {catalog} >>"),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>".to_owned(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Rotate {rotate} >>"),
+    ];
+    objects.extend_from_slice(extra);
+    Document::open(build(&objects), &OpenOptions::default()).unwrap()
+}
+
+fn dict(doc: &Document, id: sealwax_core::ObjId) -> sealwax_core::Dict {
+    match doc.object(id).unwrap() {
+        Some(Object::Dict(dict)) => dict,
+        other => panic!("no dictionary: {other:?}"),
+    }
+}
+
+#[test]
+fn a_field_given_another_widget_shows_on_both_pages_with_one_value() {
+    let mut doc = two_pages(90, "", &[]);
+    let field = NewField::new("name", NewFieldKind::Text, 0, [20.0, 20.0, 180.0, 50.0])
+        .required(true)
+        .max_length(Some(12))
+        .label(Some("Name".to_owned()));
+    let first = add_field(&mut doc, &field).unwrap();
+    let second = add_widget(&mut doc, "name", 1, [20.0, 20.0, 180.0, 50.0]).unwrap();
+    let third = add_widget(&mut doc, "name", 1, [20.0, 60.0, 180.0, 90.0]).unwrap();
+
+    // One field, its three widgets under it; the first kept its object.
+    let parent = dict(&doc, first)
+        .get(b"Parent")
+        .and_then(Object::as_ref_id)
+        .unwrap();
+    let kids = dict(&doc, parent).get(b"Kids").cloned().unwrap();
+    assert_eq!(
+        kids,
+        Object::Array(vec![
+            Object::Ref(first),
+            Object::Ref(second),
+            Object::Ref(third)
+        ])
+    );
+    assert!(!dict(&doc, first).contains_key(b"T"));
+    // On the turned page, the widget is turned with it.
+    let characteristics = dict(&doc, second).get(b"MK").cloned().unwrap();
+    assert_eq!(
+        characteristics
+            .as_dict()
+            .and_then(|mk| mk.get(b"R"))
+            .and_then(Object::as_i64),
+        Some(90)
+    );
+
+    let doc = reopened(&doc);
+    let found = fields(&doc, None).unwrap();
+    assert_eq!(
+        found.iter().map(|f| f.page_index).collect::<Vec<_>>(),
+        [0, 1, 1]
+    );
+    for occurrence in &found {
+        assert_eq!(occurrence.name, "name");
+        assert!(occurrence.required);
+        assert_eq!(occurrence.max_length, Some(12));
+        assert_eq!(occurrence.label.as_deref(), Some("Name"));
+    }
+    // Where the page shows it: turned a quarter, (20, 20) from the top-left corner is (20, 20)
+    // from the bottom-left corner of the unturned page.
+    let rect = found[1].rect;
+    assert_eq!(
+        (rect.x1, rect.y1, rect.x2, rect.y2),
+        (20.0, 20.0, 50.0, 180.0)
+    );
+    let mut doc = doc;
+    let filled = HashMap::from([("name".to_owned(), FillValue::Text("Élodie".into()))]);
+    assert_eq!(fill_fields(&mut doc, &filled).unwrap().occurrences, 3);
+    assert_eq!(values(&doc)["name"], ["Élodie", "Élodie", "Élodie"]);
+}
+
+#[test]
+fn a_widget_added_shows_the_value_and_the_states_the_field_has() {
+    let mut doc = two_pages(0, "", &[]);
+    add_field(
+        &mut doc,
+        &NewField::new("city", NewFieldKind::Text, 0, [20.0, 20.0, 180.0, 40.0]),
+    )
+    .unwrap();
+    add_field(
+        &mut doc,
+        &NewField::new("agree", NewFieldKind::CheckBox, 0, [20.0, 60.0, 34.0, 74.0]),
+    )
+    .unwrap();
+    add_field(
+        &mut doc,
+        &NewField::new(
+            "country",
+            NewFieldKind::ComboBox,
+            0,
+            [20.0, 100.0, 180.0, 120.0],
+        )
+        .choices(vec![
+            ("fr".into(), "France".into()),
+            ("ca".into(), "Canada".into()),
+        ]),
+    )
+    .unwrap();
+    add_field(
+        &mut doc,
+        &NewField::new("when", NewFieldKind::Date, 0, [20.0, 140.0, 180.0, 160.0]),
+    )
+    .unwrap();
+    rename_button_state(&mut doc, "agree", b"Oui").unwrap();
+    let values_given = HashMap::from([
+        ("city".to_owned(), FillValue::Text("Lyon".into())),
+        ("agree".to_owned(), FillValue::Text("Oui".into())),
+    ]);
+    fill_fields(&mut doc, &values_given).unwrap();
+    let city = add_widget(&mut doc, "city", 1, [20.0, 20.0, 180.0, 40.0]).unwrap();
+    let agree = add_widget(&mut doc, "agree", 1, [20.0, 60.0, 34.0, 74.0]).unwrap();
+    add_widget(&mut doc, "country", 1, [20.0, 100.0, 180.0, 120.0]).unwrap();
+    let when = add_widget(&mut doc, "when", 1, [20.0, 140.0, 180.0, 160.0]).unwrap();
+
+    // The value is drawn in the new widget, the check box shows its field's state.
+    let (_, drawing) = appearance_inherited(&doc, city);
+    assert!(drawing.contains("(Lyon) Tj"), "{drawing}");
+    assert_eq!(
+        dict(&doc, agree).get(b"AS").and_then(Object::as_name),
+        Some(&b"Oui"[..])
+    );
+    // The date's actions are the field's, for both widgets.
+    let field = dict(&doc, when)
+        .get(b"Parent")
+        .and_then(Object::as_ref_id)
+        .unwrap();
+    let actions = dict(&doc, field).get(b"AA").cloned().unwrap();
+    assert!(
+        actions
+            .as_dict()
+            .is_some_and(|aa| aa.contains_key(b"K") && aa.contains_key(b"F"))
+    );
+
+    let found = fields(&reopened(&doc), Some(1)).unwrap();
+    let by_name = |name: &str| found.iter().find(|f| f.name == name).unwrap();
+    assert_eq!(
+        by_name("agree").button_states,
+        [b"Off".to_vec(), b"Oui".to_vec()]
+    );
+    assert_eq!(by_name("agree").state.as_deref(), Some(&b"Oui"[..]));
+    assert_eq!(by_name("country").kind, FieldKind::ComboBox);
+    assert_eq!(by_name("country").choices.len(), 2);
+    assert_eq!(values(&doc)["city"], ["Lyon", "Lyon"]);
+    let unchecked = HashMap::from([("agree".to_owned(), FillValue::Text("Off".into()))]);
+    assert_eq!(fill_fields(&mut doc, &unchecked).unwrap().occurrences, 2);
+    assert_eq!(values(&doc)["agree"], ["Off", "Off"]);
+}
+
+/// The widget's normal appearance's drawing, its `/DA` inherited.
+fn appearance_inherited(doc: &Document, widget: sealwax_core::ObjId) -> ((), String) {
+    let normal = dict(doc, widget)
+        .get(b"AP")
+        .and_then(Object::as_dict)
+        .and_then(|ap| ap.get(b"N"))
+        .and_then(Object::as_ref_id)
+        .unwrap();
+    let drawing = decoded(&doc.object(normal).unwrap().unwrap());
+    ((), String::from_utf8_lossy(&drawing).into_owned())
+}
+
+#[test]
+fn a_field_under_a_parent_is_split_where_it_hangs() {
+    // `person.name`: a field and its widget in one dictionary, under a field without a widget,
+    // and in the calculation order.
+    let mut doc = two_pages(
+        0,
+        "/AcroForm << /Fields [5 0 R] /CO [6 0 R] /DA (/Helv 0 Tf 0 g) >>",
+        &[
+            "<< /T (person) /Kids [6 0 R] >>".to_owned(),
+            "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /T (name) /FT /Tx /V (Ana) \
+             /Rect [20 700 180 720] /P 3 0 R /F 4 >>"
+                .to_owned(),
+        ],
+    );
+    // The page's annotations.
+    let Some(Object::Dict(mut page)) = doc.object(doc.page_ids()[0].unwrap()).unwrap() else {
+        panic!("no page");
+    };
+    page.insert(
+        "Annots",
+        Object::Array(vec![Object::Ref(sealwax_core::ObjId::new(6))]),
+    );
+    doc.set_object(doc.page_ids()[0].unwrap(), Object::Dict(page));
+
+    add_widget(&mut doc, "person.name", 1, [20.0, 20.0, 180.0, 40.0]).unwrap();
+    // The parent holds the new field where the merged one was, and so does the calculation order.
+    let merged = sealwax_core::ObjId::new(6);
+    let Some(Object::Array(kids)) = dict(&doc, sealwax_core::ObjId::new(5))
+        .get(b"Kids")
+        .cloned()
+    else {
+        panic!("no kids");
+    };
+    assert_eq!(kids.len(), 1);
+    assert_ne!(kids[0], Object::Ref(merged));
+    assert_eq!(dict(&doc, merged).get(b"Parent"), Some(&kids[0]));
+    let form = dict(&doc, doc.catalog_id())
+        .get(b"AcroForm")
+        .cloned()
+        .unwrap();
+    let order = form.as_dict().and_then(|f| f.get(b"CO")).cloned().unwrap();
+    assert_eq!(order, Object::Array(kids.clone()));
+    let doc = reopened(&doc);
+    let found = fields(&doc, None).unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .map(|f| (f.name.as_str(), f.page_index))
+            .collect::<Vec<_>>(),
+        [("person.name", 0), ("person.name", 1)]
+    );
+    assert_eq!(values(&doc)["person.name"], ["Ana", "Ana"]);
+}
+
+#[test]
+fn another_widget_for_what_cannot_have_one_is_refused() {
+    let mut doc = two_pages(0, "", &[]);
+    add_field(
+        &mut doc,
+        &NewField::new(
+            "sign",
+            NewFieldKind::Signature,
+            0,
+            [20.0, 20.0, 180.0, 60.0],
+        ),
+    )
+    .unwrap();
+    add_field(
+        &mut doc,
+        &NewField::new("name", NewFieldKind::Text, 0, [20.0, 80.0, 180.0, 100.0]),
+    )
+    .unwrap();
+    let refused = |doc: &mut Document, name: &str, page: usize, rect: [f64; 4]| match add_widget(
+        doc, name, page, rect,
+    ) {
+        Err(Error::Pdf(sealwax_core::Error::InvalidArgument { what })) => what,
+        other => panic!("{other:?}"),
+    };
+    let rect = [20.0, 20.0, 180.0, 40.0];
+    assert_eq!(refused(&mut doc, "nobody", 1, rect), "field name");
+    assert_eq!(refused(&mut doc, "sign", 1, rect), "field kind");
+    assert_eq!(refused(&mut doc, "name", 2, rect), "page index");
+    assert_eq!(
+        refused(&mut doc, "name", 1, [20.0, 20.0, 20.0, 40.0]),
+        "field rectangle"
+    );
+    // Nothing changed: the field is still one with its widget.
+    assert_eq!(fields(&doc, None).unwrap().len(), 2);
 }

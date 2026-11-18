@@ -1017,6 +1017,29 @@ impl Document {
         )
     }
 
+    /// Give the field named `name` (its full name) another widget on page `page_index`, at
+    /// `rect` on the page as it shows (as `add_field` takes it): the same field shown twice, on
+    /// one page or two, one value for both. The field keeps its kind, flags, value, maximum
+    /// length, label and choices; the widget takes the look of its first one, turned with its own
+    /// page. `ValueError` when no widget belongs to a field of that name, for a field that is no
+    /// text field, combo box, list box or check box, a page the document does not have, or a
+    /// rectangle without area.
+    fn add_widget(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+    ) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(
+                pdf::annots::add_widget(inner, name, page_index, [rect.0, rect.1, rect.2, rect.3])
+                    .map(|_| ())?,
+            )
+        })
+    }
+
     /// Set the name shown to users (`/TU`) of the field named `name` (its full name), or remove
     /// it with None. `ValueError` when no widget belongs to a field of that name.
     fn set_field_label(

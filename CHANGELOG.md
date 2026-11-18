@@ -6,6 +6,26 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-18
+
+### Added
+
+- In WebAssembly, `drawings(pageIndex, annotations)` and `glyphs(pageIndex, annotations)`, as in
+  Python: the straight lines, rectangles and quads a page paints, and the glyphs it draws, in its
+  default user space. Each line, rectangle and quad says whether it is filled, stroked or both
+  (`filled`, `stroked`; a shape filled then stroked counts once, as both), and each line the
+  subpath it belongs to (`subpath`), for a caller that reads a subpath whole: a box open on one
+  side is three lines of one subpath. In Rust, `Drawings` gains `lines_painted`,
+  `rectangles_painted` and `quads_painted` (`Painted`), and `lines_subpath`. Python's `drawings`
+  is unchanged.
+- `add_widget` gives a field a form has another widget (`addWidget` in WebAssembly,
+  `sealwax_annots::add_widget` in Rust): the same field shown on several pages, or twice on one,
+  one value for all, as real forms repeat a name or a date. A text field, combo or list box, or
+  check box; the field keeps what it is (its kind, flags, value, maximum length, label, options),
+  the widget takes the look of its first one, turned with its own page, and shows the field's
+  value. A field that is one dictionary with its widget becomes that widget's parent, where it
+  was in the form.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
@@ -340,7 +360,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sealwax/sealwax/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sealwax/sealwax/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sealwax/sealwax/compare/v0.2.0...v0.3.0
