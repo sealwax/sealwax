@@ -1800,25 +1800,6 @@ impl Document {
         Ok(dict)
     }
 
-    /// Where `text` reads on page `page_index` (from 0), as PyMuPDF's `search_for` finds it:
-    /// case ignored, white space one space, a line break a space, a hyphen ending a line joining
-    /// it to the next. Each occurrence a list of boxes (x1, y1, x2, y2, in the page's default
-    /// user space, y up), one for each line it spans. `ValueError` for a page the document does
-    /// not have or a text over 1,024 characters.
-    fn search<'py>(
-        &self,
-        py: Python<'py>,
-        page_index: usize,
-        text: &str,
-    ) -> PyResult<Vec<Vec<Box4>>> {
-        let inner = &self.inner;
-        let hits = run(py, || Ok(pdf::text::search(inner, page_index, text)?))?;
-        Ok(hits
-            .into_iter()
-            .map(|boxes| boxes.into_iter().map(|[a, b, c, d]| (a, b, c, d)).collect())
-            .collect())
-    }
-
     /// The words of page `page_index` (from 0), as PyMuPDF's `get_text("words")` gives them:
     /// block by block, line by line, in the order of the content, cut at white space, a space
     /// counted where glyphs leave a gap. Each a dict with `text` (an `/ActualText` in place of
@@ -2367,9 +2348,6 @@ fn redact_options(images: &str, paths: &str) -> PyResult<pdf::text::RedactOption
         .images(images)
         .paths(paths))
 }
-
-/// A box as Python takes it: x1, y1, x2, y2.
-type Box4 = (f64, f64, f64, f64);
 
 /// The extension PyMuPDF gives an image extracted in `format`.
 fn image_ext(format: pdf::text::ImageFormat) -> &'static str {

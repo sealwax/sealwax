@@ -39,15 +39,14 @@ pub struct TextWord {
 }
 
 /// A character of a line: a glyph's, or a space added between two glyphs (no box).
-pub(crate) struct Char {
-    pub(crate) c: char,
-    pub(crate) bbox: Option<Bounds>,
+struct Char {
+    c: char,
+    bbox: Option<Bounds>,
 }
 
-/// A line of a page's text, and the block it is in.
-pub(crate) struct Line {
-    pub(crate) block: usize,
-    pub(crate) chars: Vec<Char>,
+struct Line {
+    block: usize,
+    chars: Vec<Char>,
 }
 
 /// The words of page `page_index` (from 0), block by block and line by line, in the order of its
@@ -57,7 +56,45 @@ pub(crate) struct Line {
 /// # Errors
 /// As [`glyphs`].
 pub fn words(doc: &Document, page_index: usize) -> sealwax_core::Result<Vec<TextWord>> {
-    let lines = page_lines(doc, page_index)?;
+    let (found, clips) = glyphs_and_clips(doc, page_index, false)?;
+    let media = doc
+        .geometry()
+        .get(page_index)
+        .map(|page| page.media_box)
+        .ok_or(sealwax_core::Error::InvalidArgument { what: "page index" })?;
+    let media = [media.x1, media.y1, media.x2, media.y2];
+    // A glyph wholly outside the clip in effect, or the media box, is not read (MuPDF's
+    // `FZ_STEXT_CLIP`, which PyMuPDF's words ask for): what bounds it is its outline, else its
+    // origin for a glyph that draws nothing (a space), else its box.
+    let found: Vec<TextGlyph> = found
+        .into_iter()
+        .zip(clips)
+        .filter(|(glyph, clip)| {
+            let shape = glyph.ink.unwrap_or_else(|| {
+                let blank = glyph.text.as_deref().is_some_and(|t| t.trim().is_empty());
+                if blank {
+                    let [x, y] = glyph.origin;
+                    [x, y, x + 1e-7, y + 1e-7]
+                } else {
+                    glyph.bbox
+                }
+            });
+            let area = clip.map_or(media, |c| {
+                [
+                    c[0].max(media[0]),
+                    c[1].max(media[1]),
+                    c[2].min(media[2]),
+                    c[3].min(media[3]),
+                ]
+            });
+            !(shape[2] <= area[0]
+                || shape[3] <= area[1]
+                || shape[0] >= area[2]
+                || shape[1] >= area[3])
+        })
+        .map(|(glyph, _)| glyph)
+        .collect();
+    let lines = lines(&found);
     let mut words = Vec::new();
     let mut block = usize::MAX;
     let mut line_in_block = 0;
@@ -101,50 +138,6 @@ pub fn words(doc: &Document, page_index: usize) -> sealwax_core::Result<Vec<Text
         close(&mut text, &mut bbox, &mut words);
     }
     Ok(words)
-}
-
-/// The lines of page `page_index`'s text, as [`words`] reads them: annotations left out, glyphs
-/// wholly outside the clip in effect or the media box too.
-pub(crate) fn page_lines(doc: &Document, page_index: usize) -> sealwax_core::Result<Vec<Line>> {
-    let (found, clips) = glyphs_and_clips(doc, page_index, false)?;
-    let media = doc
-        .geometry()
-        .get(page_index)
-        .map(|page| page.media_box)
-        .ok_or(sealwax_core::Error::InvalidArgument { what: "page index" })?;
-    let media = [media.x1, media.y1, media.x2, media.y2];
-    // A glyph wholly outside the clip in effect, or the media box, is not read (MuPDF's
-    // `FZ_STEXT_CLIP`, which PyMuPDF's words ask for): what bounds it is its outline, else its
-    // origin for a glyph that draws nothing (a space), else its box.
-    let found: Vec<TextGlyph> = found
-        .into_iter()
-        .zip(clips)
-        .filter(|(glyph, clip)| {
-            let shape = glyph.ink.unwrap_or_else(|| {
-                let blank = glyph.text.as_deref().is_some_and(|t| t.trim().is_empty());
-                if blank {
-                    let [x, y] = glyph.origin;
-                    [x, y, x + 1e-7, y + 1e-7]
-                } else {
-                    glyph.bbox
-                }
-            });
-            let area = clip.map_or(media, |c| {
-                [
-                    c[0].max(media[0]),
-                    c[1].max(media[1]),
-                    c[2].min(media[2]),
-                    c[3].min(media[3]),
-                ]
-            });
-            !(shape[2] <= area[0]
-                || shape[3] <= area[1]
-                || shape[0] >= area[2]
-                || shape[1] >= area[3])
-        })
-        .map(|(glyph, _)| glyph)
-        .collect();
-    Ok(lines(&found))
 }
 
 fn union(a: Bounds, b: Bounds) -> Bounds {

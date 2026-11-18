@@ -38,7 +38,6 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const labels: string[] | null = doc.pageLabels();
   doc.addAttachment("a.txt", new Uint8Array([97]), { mimeType: "text/plain" });
   const pageWords: TextWord[] = doc.words(0);
-  const hits: number[][][] = doc.search(0, "total");
   const files: Attachment[] = doc.attachments();
   const first: Uint8Array | null = files.length > 0 ? doc.attachmentData(0) : null;
   const pictures: PageImage[] = doc.images(0);
@@ -65,6 +64,6 @@ export async function use(bytes: Uint8Array): Promise<number> {
   }
   return (
     merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length + boxes.length + text.length +
-    (firstPage ?? 0) + (labels?.length ?? 0) + (picture?.image.length ?? 0) + (first?.length ?? 0) + pageWords.length + hits.length
+    (firstPage ?? 0) + (labels?.length ?? 0) + (picture?.image.length ?? 0) + (first?.length ?? 0) + pageWords.length
   );
 }

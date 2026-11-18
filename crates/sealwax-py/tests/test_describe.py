@@ -262,6 +262,3 @@ def test_words_come_in_blocks_and_lines():
         ("Hello", 0, 0, 0), ("world", 0, 0, 1), ("again", 1, 0, 0),
     ]
     assert words[0]["bbox"][0] == 72
-    hits = document.search(0, "HELLO world")
-    assert len(hits) == 1 and len(hits[0]) == 1 and hits[0][0][0] == 72
-    assert document.search(0, "absent") == []
