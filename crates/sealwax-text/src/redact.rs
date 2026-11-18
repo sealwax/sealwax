@@ -108,6 +108,7 @@ pub enum ImageRedaction {
 #[non_exhaustive]
 pub enum PathRedaction {
     /// Those the areas touch, even in part: a line crossing an area goes whole, on both sides.
+    /// A shape painted with a tiling pattern goes so whatever is asked (see [`redact`]).
     #[default]
     Touched,
     /// Those an area covers whole: a table's border crossing an area stays, a box drawn inside
@@ -145,9 +146,16 @@ impl RedactOptions {
 /// area, and the texts standing for them. Annotations are left as they are: flatten them first
 /// to redact what they show.
 ///
+/// A shape painted with a tiling pattern that an area touches goes whole, whatever
+/// `options.paths` asks: the pattern draws content (images, text) that would show there. A
+/// pattern, image or form the page no longer paints leaves its resources.
+///
 /// A document that lost content is marked redacted ([`Document::mark_redacted`]): it refuses an
-/// incremental save, which would keep the bytes it was opened from. Follow with
-/// [`Document::rebuilt_for_redaction`] and a full save.
+/// incremental save, which would keep the bytes it was opened from. A full save alone still
+/// keeps what the rest of the document reaches: another page drawing the same image, the
+/// structure tree tying an image's original by an object reference. Follow with
+/// [`Document::rebuilt_for_redaction`] and a full save: it keeps the pages alone, and leaves the
+/// structure tree behind, so that a tagged document is no longer tagged.
 ///
 /// # Errors
 /// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or an area
@@ -337,6 +345,16 @@ struct Plan {
     images_removed: usize,
     /// The marked-content sequences met (`BDC`).
     sequences: Vec<Sequence>,
+    /// The patterns what was taken out painted with, and those what stays paints with, by the
+    /// content whose resources name them.
+    patterns_taken: HashMap<Source, HashSet<Vec<u8>>>,
+    patterns_kept: HashMap<Source, HashSet<Vec<u8>>>,
+    /// The operators making a pattern the colour (`scn`, `SCN`), by content: their range, the
+    /// pattern's name, and whether for strokes.
+    pattern_sets: HashMap<Source, Vec<PatternSet>>,
+    /// The `/StructParent` of the images and forms that lost content: the keys of the structure
+    /// elements an object reference ties them to.
+    struct_parents: Vec<i64>,
 }
 
 /// A marked-content sequence, and whether content of it was taken out.
@@ -359,6 +377,10 @@ enum Properties {
     /// Named in the resources' `/Properties`.
     Named(Vec<u8>),
 }
+
+/// An operator making a pattern the colour: its range, the pattern's name, and whether for
+/// strokes (`SCN`).
+type PatternSet = (Range<usize>, Vec<u8>, bool);
 
 /// Bytes of a content, and what is written in their place.
 type Replacement = (Range<usize>, Vec<u8>);
@@ -390,6 +412,9 @@ struct State<'a> {
     scale: f64,
     leading: f64,
     rise: f64,
+    /// The patterns the fill and the stroke colours are (`scn`, `SCN`), by name.
+    fill_pattern: Option<Vec<u8>>,
+    stroke_pattern: Option<Vec<u8>>,
 }
 
 impl Default for State<'_> {
@@ -405,6 +430,8 @@ impl Default for State<'_> {
             scale: 1.0,
             leading: 0.0,
             rise: 0.0,
+            fill_pattern: None,
+            stroke_pattern: None,
         }
     }
 }
@@ -427,6 +454,8 @@ struct Walker<'a, 'r> {
     /// The marked-content sequences open, through the forms drawn: indexes into the plan's
     /// sequences (`None` for a `BMC`, which has no properties).
     marked: Vec<Option<usize>>,
+    /// How many times something was taken out.
+    taken: usize,
 }
 
 fn object_id(id: ObjectIdentifier) -> ObjId {
@@ -460,6 +489,7 @@ fn plan(
         plan: Plan::default(),
         shown: HashMap::new(),
         marked: Vec::new(),
+        taken: 0,
     };
     walker.walk(Source::Page, content, page.resources(), State::default(), 0);
     let mut plan = walker.plan;
@@ -556,12 +586,29 @@ impl<'a> Walker<'a, '_> {
             match operator {
                 b"W" | b"W*" => clips = true,
                 b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
+                    let stroked = matches!(operator, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
+                    let filled = operator != b"n" && !matches!(operator, b"S" | b"s");
+                    let used: Vec<Vec<u8>> = [
+                        state.fill_pattern.clone().filter(|_| filled),
+                        state.stroke_pattern.clone().filter(|_| stroked),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    // A tiling pattern draws content, images and text: a shape it paints goes
+                    // under an area whatever `paths` asks, so that none of it shows there.
+                    let tiled = used.iter().any(|name| {
+                        resources
+                            .patterns
+                            .get::<HayroStream<'a>>(name.as_slice())
+                            .is_some()
+                    });
+                    let before = self.taken;
                     if let Some((built, bounds)) = path.take()
                         && operator != b"n"
-                        && self.options.paths != PathRedaction::Keep
+                        && (tiled || self.options.paths != PathRedaction::Keep)
                         && let Some(bounds) = bounds
                     {
-                        let stroked = matches!(operator, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
                         // Half the line's width in user space; a line of no width is drawn a
                         // device pixel wide.
                         let half = if stroked {
@@ -571,7 +618,7 @@ impl<'a> Walker<'a, '_> {
                         };
                         let painted = bounds.inflate(half, half);
                         let taken = self.areas.iter().any(|area| {
-                            if self.options.paths == PathRedaction::Covered {
+                            if !tiled && self.options.paths == PathRedaction::Covered {
                                 area.contains_rect(painted)
                             } else {
                                 let overlap = area.intersect(painted);
@@ -592,9 +639,33 @@ impl<'a> Walker<'a, '_> {
                             self.lose();
                         }
                     }
+                    if operator != b"n" {
+                        self.used_patterns(source, used, self.taken != before);
+                    }
                     path = None;
                     clips = false;
                 }
+                b"scn" | b"SCN" => {
+                    let name = match args.last() {
+                        Some(Operand::Name(name)) => Some(name.clone()),
+                        _ => None,
+                    };
+                    let stroke = operator == b"SCN";
+                    if let Some(name) = &name {
+                        self.plan.pattern_sets.entry(source).or_default().push((
+                            op.start..op.end,
+                            name.clone(),
+                            stroke,
+                        ));
+                    }
+                    if stroke {
+                        state.stroke_pattern = name;
+                    } else {
+                        state.fill_pattern = name;
+                    }
+                }
+                b"sc" | b"cs" | b"g" | b"rg" | b"k" => state.fill_pattern = None,
+                b"SC" | b"CS" | b"G" | b"RG" | b"K" => state.stroke_pattern = None,
                 b"w" => state.line_width = number(0).unwrap_or(state.line_width),
                 b"BMC" => self.marked.push(None),
                 b"BDC" => {
@@ -614,7 +685,12 @@ impl<'a> Walker<'a, '_> {
                         self.marked.pop();
                     }
                 }
-                b"BI" => self.image(source, op, &content[op.start..op.end], resources, &state),
+                b"BI" => {
+                    let before = self.taken;
+                    self.image(source, op, &content[op.start..op.end], resources, &state);
+                    let used = state.fill_pattern.clone().into_iter().collect();
+                    self.used_patterns(source, used, self.taken != before);
+                }
                 b"q" => stack.push(state.clone()),
                 b"Q" => {
                     if let Some(saved) = stack.pop() {
@@ -706,6 +782,30 @@ impl<'a> Walker<'a, '_> {
                         _ => Vec::new(),
                     };
                     self.show(source, index, op, prefix, &shown, &state, &mut tm);
+                    let used: Vec<Vec<u8>> =
+                        [state.fill_pattern.clone(), state.stroke_pattern.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                    if !used.is_empty() {
+                        // Painted with them while any of its glyphs stays.
+                        let whole = self
+                            .shown
+                            .get(&source)
+                            .and_then(|ops| ops.get(&index))
+                            .is_none_or(|(_, shown)| {
+                                let codes: usize = shown
+                                    .elements
+                                    .iter()
+                                    .map(|e| match e {
+                                        Element::Codes(codes) => codes.len(),
+                                        Element::Adjust(_) => 0,
+                                    })
+                                    .sum();
+                                shown.removed.len() >= codes
+                            });
+                        self.used_patterns(source, used, whole);
+                    }
                 }
                 b"Do" => {
                     if depth >= MAX_DEPTH {
@@ -721,8 +821,15 @@ impl<'a> Walker<'a, '_> {
                     let dict = stream.dict();
                     let subtype =
                         dict.get::<hayro_interpret::hayro_syntax::object::Name>(b"Subtype");
+                    let tied = dict.get::<i32>(b"StructParent").map(i64::from);
                     if subtype.as_ref().is_some_and(|s| s.as_ref() == b"Image") {
+                        let before = self.taken;
                         self.image(source, op, &content[op.start..op.end], resources, &state);
+                        let used = state.fill_pattern.clone().into_iter().collect();
+                        self.used_patterns(source, used, self.taken != before);
+                        if self.taken != before {
+                            self.plan.struct_parents.extend(tied);
+                        }
                         continue;
                     }
                     if subtype.is_none_or(|subtype| subtype.as_ref() != b"Form") {
@@ -749,7 +856,11 @@ impl<'a> Walker<'a, '_> {
                         own_resources: own.is_some(),
                     });
                     let resources = own.as_ref().unwrap_or(resources);
+                    let before = self.taken;
                     self.walk(Source::Draw(draw), &data, resources, inner, depth + 1);
+                    if self.taken != before {
+                        self.plan.struct_parents.extend(tied);
+                    }
                 }
                 _ => {}
             }
@@ -759,9 +870,24 @@ impl<'a> Walker<'a, '_> {
 
     /// Content of the sequences open was taken out.
     fn lose(&mut self) {
+        self.taken += 1;
         for index in self.marked.iter().flatten() {
             self.plan.sequences[*index].lost = true;
         }
+    }
+
+    /// The patterns `used` painted what `source` draws, which was taken out or stays.
+    fn used_patterns(&mut self, source: Source, used: Vec<Vec<u8>>, taken: bool) {
+        if used.is_empty() {
+            return;
+        }
+        let scope = resources_source(&self.plan, source);
+        let set = if taken {
+            &mut self.plan.patterns_taken
+        } else {
+            &mut self.plan.patterns_kept
+        };
+        set.entry(scope).or_default().extend(used);
     }
 
     /// An image drawn (`drawing` is its `Do`, or the inline image itself): under an area, its
@@ -1542,6 +1668,24 @@ fn rewrite_content(
     if let Some(cuts) = plan.cuts.get(&source) {
         replacements.extend(cuts.iter().cloned());
     }
+    // The patterns only what was taken out painted with leave the resources, and the operators
+    // making them the colour then make it black: nothing left paints with it.
+    let scope = resources_source(plan, source);
+    let kept = plan.patterns_kept.get(&scope);
+    let patterns_gone: HashSet<Vec<u8>> = plan
+        .patterns_taken
+        .get(&scope)
+        .into_iter()
+        .flatten()
+        .filter(|name| kept.is_none_or(|kept| !kept.contains(*name)))
+        .cloned()
+        .collect();
+    for (range, name, stroke) in plan.pattern_sets.get(&source).into_iter().flatten() {
+        if patterns_gone.contains(name) {
+            let black: &[u8] = if *stroke { b"0 G" } else { b"0 g" };
+            replacements.push((range.clone(), black.to_vec()));
+        }
+    }
     let mut added: Vec<(Vec<u8>, ObjId)> = Vec::new();
     for (range, image) in plan.images.get(&source).into_iter().flatten() {
         let id = image_object(doc, image)?;
@@ -1581,7 +1725,7 @@ fn rewrite_content(
         .into_iter()
         .filter(|name| !needed.contains(name))
         .collect();
-    if added.is_empty() && gone.is_empty() {
+    if added.is_empty() && gone.is_empty() && patterns_gone.is_empty() {
         return Ok((data, resources));
     }
     let mut dict = match &resources {
@@ -1610,6 +1754,20 @@ fn rewrite_content(
         xobjects.insert(Name::new(name), Object::Ref(copy));
     }
     dict.insert("XObject", Object::Dict(xobjects));
+    if !patterns_gone.is_empty() {
+        let mut patterns = match dict.get(b"Pattern") {
+            Some(Object::Ref(id)) => match doc.object(*id)? {
+                Some(Object::Dict(patterns)) => patterns,
+                _ => Dict::new(),
+            },
+            Some(Object::Dict(patterns)) => patterns.clone(),
+            _ => Dict::new(),
+        };
+        for name in &patterns_gone {
+            patterns.remove(name);
+        }
+        dict.insert("Pattern", Object::Dict(patterns));
+    }
     Ok((data, Some(Object::Dict(dict))))
 }
 
@@ -1646,7 +1804,8 @@ fn unmark(doc: &mut Document, page: ObjId, plan: &mut Plan) -> sealwax_core::Res
             }
         }
     }
-    Ok(count + untie(doc, plan, page, &tied)?)
+    let objects = plan.struct_parents.clone();
+    Ok(count + untie(doc, plan, page, &tied, &objects)?)
 }
 
 /// Take the texts standing for content off `dict`: whether it had some.
@@ -1744,15 +1903,17 @@ fn resources_holder(
 }
 
 /// Take the texts standing for content off the structure elements the sequences `tied` (their
-/// content, their `/MCID`) are tied to by the structure tree's `/ParentTree`, and off the
-/// elements above them, whose texts stand for their children's content too; how many lost some.
+/// content, their `/MCID`) and the objects whose `/StructParent` is in `objects` are tied to by
+/// the structure tree's `/ParentTree`, and off the elements above them, whose texts stand for
+/// their children's content too; how many lost some.
 fn untie(
     doc: &mut Document,
     plan: &Plan,
     page: ObjId,
     tied: &[(Source, i64)],
+    objects: &[i64],
 ) -> sealwax_core::Result<usize> {
-    if tied.is_empty() {
+    if tied.is_empty() && objects.is_empty() {
         return Ok(0);
     }
     let catalog = doc.object(doc.catalog_id())?;
@@ -1791,6 +1952,11 @@ fn untie(
         };
         if let Some(Object::Ref(element)) = usize::try_from(*mcid).ok().and_then(|i| items.get(i)) {
             elements.push(*element);
+        }
+    }
+    for key in objects {
+        if let Some(Object::Ref(element)) = number_tree_get(doc, &tree, *key)? {
+            elements.push(element);
         }
     }
     let mut seen = HashSet::new();

@@ -13,6 +13,9 @@ const MAX_TREE_NODES: usize = 4096;
 /// The longest numeral a label is written with: past it (a range starting at a huge number), the
 /// number is written in decimal.
 const MAX_NUMERAL: usize = 64;
+/// The most bytes the labels of a document's pages take together: a long prefix repeated on
+/// every page of a long document would otherwise fill the memory.
+const MAX_LABEL_BYTES: usize = 16 << 20;
 
 /// A link of a page: where it is clicked, and where it leads.
 #[derive(Debug, Clone, PartialEq)]
@@ -180,7 +183,8 @@ impl Document {
     /// the first range is labelled with its number.
     ///
     /// # Errors
-    /// [`Error::Timeout`] past the deadline.
+    /// [`Error::LimitExceeded`] when the labels would take more than 16 MiB together (a long
+    /// prefix on every page of a long document); [`Error::Timeout`] past the deadline.
     pub fn page_labels(&self) -> Result<Option<Vec<String>>> {
         let Some(catalog) = self.dict_at(self.catalog_id())? else {
             return Ok(None);
@@ -227,24 +231,39 @@ impl Document {
             return Ok(None);
         }
         ranges.sort_by_key(|(start, _)| *start);
+        // Each range read once: its first page, prefix, numbering and first number.
+        let mut read = Vec::with_capacity(ranges.len());
+        for (start, range) in &ranges {
+            read.push((*start, self.range(range)?));
+        }
         let mut labels = Vec::with_capacity(count);
+        let mut bytes = 0usize;
         let mut next = 0;
         for page in 0..count {
-            while ranges.get(next).is_some_and(|(start, _)| *start <= page) {
+            if page % 1024 == 1023 {
+                self.check_time()?;
+            }
+            while read.get(next).is_some_and(|(start, _)| *start <= page) {
                 next += 1;
             }
-            let label = match next.checked_sub(1).map(|at| &ranges[at]) {
-                Some((start, range)) => self.label(range, page - start)?,
+            let label = match next.checked_sub(1).map(|at| &read[at]) {
+                Some((start, range)) => range.label(page - start),
                 None => (page + 1).to_string(),
             };
+            bytes = bytes.saturating_add(label.len());
+            if bytes > MAX_LABEL_BYTES {
+                return Err(Error::LimitExceeded {
+                    what: "page label bytes",
+                });
+            }
             labels.push(label);
         }
         Ok(Some(labels))
     }
 
-    /// The label of the `offset`-th page (from 0) of the range `range` describes.
-    fn label(&self, range: &Dict, offset: usize) -> Result<String> {
-        let mut label = match self.resolved(range.get(b"P"))? {
+    /// The range of page labels `range` describes.
+    fn range(&self, range: &Dict) -> Result<LabelRange> {
+        let prefix = match self.resolved(range.get(b"P"))? {
             Some(Object::String(prefix)) => decode_text_string(&prefix),
             _ => String::new(),
         };
@@ -254,19 +273,43 @@ impl Document {
             .filter(|start| *start >= 1)
             .and_then(|start| u64::try_from(start).ok())
             .unwrap_or(1);
-        let number = first.saturating_add(offset as u64);
-        let numeral = match range.get(b"S").and_then(Object::as_name) {
-            Some(b"D") => Some(number.to_string()),
-            Some(b"R") => Some(roman(number)),
-            Some(b"r") => Some(roman(number).to_lowercase()),
-            Some(b"A") => Some(letters(number)),
-            Some(b"a") => Some(letters(number).to_lowercase()),
-            _ => None,
-        };
-        if let Some(numeral) = numeral {
-            label.push_str(&numeral);
+        let style = range
+            .get(b"S")
+            .and_then(Object::as_name)
+            .and_then(|style| match style {
+                b"D" | b"R" | b"r" | b"A" | b"a" => Some(style[0]),
+                _ => None,
+            });
+        Ok(LabelRange {
+            prefix,
+            style,
+            first,
+        })
+    }
+}
+
+/// A range of page labels (ISO 32000-1, 12.4.2).
+struct LabelRange {
+    prefix: String,
+    /// `D`, `R`, `r`, `A` or `a`; none for the prefix alone.
+    style: Option<u8>,
+    first: u64,
+}
+
+impl LabelRange {
+    /// The label of its `offset`-th page (from 0).
+    fn label(&self, offset: usize) -> String {
+        let number = self.first.saturating_add(offset as u64);
+        let mut label = self.prefix.clone();
+        match self.style {
+            Some(b'D') => label.push_str(&number.to_string()),
+            Some(b'R') => label.push_str(&roman(number)),
+            Some(b'r') => label.push_str(&roman(number).to_lowercase()),
+            Some(b'A') => label.push_str(&letters(number)),
+            Some(b'a') => label.push_str(&letters(number).to_lowercase()),
+            _ => {}
         }
-        Ok(label)
+        label
     }
 }
 

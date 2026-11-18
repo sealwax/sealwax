@@ -25,7 +25,8 @@ All notable changes to sealwax are recorded here. The format follows
   be followed, with its action's type. Never a guess.
 - The labels pages are shown with (`Document::page_labels`; `page_labels` in Python,
   `pageLabels` in WebAssembly): prefixes and numbers in decimal, roman numerals or letters, as
-  `/PageLabels` gives them; `None` when the document gives none.
+  `/PageLabels` gives them; `None` when the document gives none. Refused past 16 MiB of labels
+  together.
 - `sealwax-compose`: tagged documents. A composition may mark what its pages draw
   (`Item::BeginMarked`, `Item::EndMarked`: a structure element's content, by marked-content
   id, or an artifact, of pagination or another kind) and give the logical structure that ties
@@ -57,6 +58,21 @@ All notable changes to sealwax are recorded here. The format follows
 - `NewOutlineEntry` has a `top`: the height an entry leads to (`/XYZ`), or none for the whole
   page (`/Fit`, as before); it is no longer `Eq`. `Document::set_outline` takes time in
   proportion to the entries, not to their square.
+
+### Fixed
+
+- Redacting a second page of an encrypted document, or of one whose cross-reference was
+  repaired, failed with `Unsupported`, about an incremental save the caller never asked for. The
+  document is now read again with its objects written anew under their numbers.
+
+### Security
+
+- Redaction left tiling patterns in the file. A shape painted with one under an area went, or
+  stayed with `paths` covered or kept, while the pattern and the images and text it draws stayed
+  in the page's resources, after `rebuilt_for_redaction` too. Such a shape now goes whole,
+  whatever `paths` asks, and a pattern nothing left paints with leaves the resources.
+- The `/Alt`, `/ActualText` and `/E` of an image or a form tied to the structure by an object
+  reference (`/StructParent`) now go when it loses content.
 
 ## [0.6.1] - 2026-11-18
 

@@ -505,18 +505,25 @@ impl Document {
         Ok(Some(reopened))
     }
 
-    /// The document as it stands, its incremental save opened again: its objects keep their
-    /// numbers, for what reads its pages before changing them (`sealwax-text`'s redaction). Made
-    /// even when it is redacted: the copy is marked so as well. Not a stable interface.
+    /// The document as it stands, opened again with its objects under their numbers, for what
+    /// reads its pages before changing them (`sealwax-text`'s redaction): its incremental save,
+    /// or, when it cannot have one (encrypted, its cross-reference repaired), every object it
+    /// reaches written anew, decrypted. Made even when it is redacted: the copy is marked so as
+    /// well. Not a stable interface.
     ///
     /// # Errors
-    /// As [`Document::save_incremental`] and [`Document::open`].
+    /// As [`Document::save`] and [`Document::open`].
     #[doc(hidden)]
     pub fn reopened_keeping_numbers(&self) -> Result<Document> {
         let options = OpenOptions::default()
             .limits(self.limits)
             .max_file_bytes(usize::MAX);
-        let mut reopened = Document::open(save::incremental(self)?, &options)?;
+        let data = match save::incremental(self) {
+            Ok(data) => data,
+            Err(Error::Unsupported { .. }) => save::keeping_numbers(self)?,
+            Err(error) => return Err(error),
+        };
+        let mut reopened = Document::open(data, &options)?;
         reopened.redacted = self.redacted;
         Ok(reopened)
     }

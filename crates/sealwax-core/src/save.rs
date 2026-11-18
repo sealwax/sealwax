@@ -318,6 +318,47 @@ pub(crate) fn incremental(doc: &Document) -> Result<Vec<u8>> {
 ///
 /// The document's deadline holds for this reading too, and is checked once more before the save
 /// is returned.
+/// The document as it stands, every object it reaches written under its own number, decrypted,
+/// with a cross-reference table: for a process that reads it again and changes the document
+/// through those numbers (redaction) when an incremental save cannot be made (an encrypted
+/// input, a cross-reference repaired). Not a file to hand out: nothing is encrypted again.
+pub(crate) fn keeping_numbers(doc: &Document) -> Result<Vec<u8>> {
+    doc.check_time()?;
+    if doc.page_count() == 0 {
+        return Err(Error::Unsupported {
+            what: "saving a document without pages",
+        });
+    }
+    let mut source = Source::new(doc);
+    source.patches = page_patches(&source)?;
+    let catalog = doc.catalog_id();
+    let roots: Vec<ObjId> = [Some(catalog), doc.info_id()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut order = reachable(&source, &roots)?;
+    order.sort();
+    order.dedup_by_key(|id| id.number);
+    let mut out = HEADER.to_vec();
+    let mut entries: Vec<(u32, Entry)> = vec![(0, Entry::Free)];
+    for (index, id) in order.iter().enumerate() {
+        if index % 1024 == 1023 {
+            doc.check_time()?;
+        }
+        let object = source.load(*id)?.unwrap_or(Object::Null);
+        entries.push((id.number, Entry::InFile(out.len(), id.generation)));
+        serialize::indirect(&mut out, *id, &object, &SameRefs);
+    }
+    let mut trailer = Dict::new();
+    trailer.insert("Root", catalog);
+    if let Some(info) = doc.info_id() {
+        trailer.insert("Info", info);
+    }
+    trailer.insert("Size", order.last().map_or(1, |id| id.number + 1));
+    finish(&mut out, XrefKind::Table, entries, trailer, None);
+    Ok(out)
+}
+
 fn check(doc: &Document, out: &[u8], incremental: bool, password: Option<&str>) -> Result<()> {
     let mut options = OpenOptions::default().limits(Limits {
         deadline: doc.limits().deadline,
