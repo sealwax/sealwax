@@ -96,6 +96,11 @@ impl BaseTrailer {
         self.dict.contains_key(b"Encrypt")
     }
 
+    /// `/Encrypt`, as written: a reference, most often.
+    pub(crate) fn encrypt(&self) -> Option<&Object> {
+        self.dict.get(b"Encrypt")
+    }
+
     /// Whether every object the last section says is in use starts where it says. A section
     /// can be found and name the right catalog while its offsets are wrong: hayro then repairs
     /// silently, and an update appended to it would chain to a broken section.

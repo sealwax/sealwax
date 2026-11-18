@@ -287,6 +287,8 @@ export interface Applied {
 export interface Metadata {
   version: string;
   encrypted: boolean;
+  /** How, as PyMuPDF describes it ("Standard V5 R6 256-bit AES"); null when not encrypted. */
+  encryption: string | null;
   linearized: boolean;
   hasForms: boolean;
   hasSignatures: boolean;
@@ -1439,6 +1441,14 @@ impl Document {
         let object = Object::new();
         set(&object, "version", metadata.version.as_str());
         set(&object, "encrypted", metadata.encrypted);
+        set(
+            &object,
+            "encryption",
+            metadata
+                .encryption
+                .as_ref()
+                .map_or(JsValue::NULL, |e| JsValue::from(e.description())),
+        );
         set(&object, "linearized", metadata.linearized);
         set(&object, "hasForms", metadata.has_forms);
         set(&object, "hasSignatures", metadata.has_signatures);

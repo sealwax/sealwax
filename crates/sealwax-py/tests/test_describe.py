@@ -31,6 +31,7 @@ def test_metadata_of_an_archive_and_of_a_document_encrypted_without_password():
     assert metadata == {
         "version": "1.7",
         "encrypted": False,
+        "encryption": None,
         "linearized": False,
         "has_forms": False,
         "has_signatures": False,
@@ -39,6 +40,7 @@ def test_metadata_of_an_archive_and_of_a_document_encrypted_without_password():
     }
     locked = sealwax.Document.from_bytes(encrypted_form()).metadata()
     assert locked["encrypted"] and locked["has_forms"] and not locked["has_signatures"]
+    assert locked["encryption"] == "Standard V1 R2 40-bit RC4"
     assert locked["pdfa"] is None and locked["info"] == {}
 
 

@@ -1089,6 +1089,8 @@ impl Document {
 
     /// What the document says about itself, never failing (an entry that cannot be read is left
     /// out): `version` ("1.7"), `encrypted` (also when no password is needed to open it),
+    /// `encryption` (how, as PyMuPDF describes it: "Standard V5 R6 256-bit AES"; None when not
+    /// encrypted),
     /// `linearized`, `has_forms` (a field at least), `has_signatures` (a signature field, signed
     /// or not), `pdfa` (the part and conformance its XMP claims, "3A", or None), and `info`, the
     /// document information's text entries (`Title`, `Author`, `CreationDate` as written...).
@@ -1098,6 +1100,10 @@ impl Document {
         let dict = PyDict::new(py);
         dict.set_item("version", metadata.version)?;
         dict.set_item("encrypted", metadata.encrypted)?;
+        dict.set_item(
+            "encryption",
+            metadata.encryption.as_ref().map(|e| e.description()),
+        )?;
         dict.set_item("linearized", metadata.linearized)?;
         dict.set_item("has_forms", metadata.has_forms)?;
         dict.set_item("has_signatures", metadata.has_signatures)?;

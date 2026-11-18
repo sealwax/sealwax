@@ -101,3 +101,43 @@ fn an_encrypted_document_is_refused_when_asked_only() {
         Some(Object::Dict(_))
     ));
 }
+
+#[test]
+fn the_encryption_is_described_as_pymupdf_describes_it() {
+    // Documents PyMuPDF 1.27.2 encrypted, its user password empty, the owner's "owner".
+    let documents: [(&[u8], &str); 4] = [
+        (
+            include_bytes!("data/encrypted-rc4-40.pdf"),
+            "Standard V1 R2 40-bit RC4",
+        ),
+        (
+            include_bytes!("data/encrypted-rc4-128.pdf"),
+            "Standard V2 R3 128-bit RC4",
+        ),
+        (OWNER_PROTECTED, "Standard V4 R4 128-bit AES"),
+        (
+            include_bytes!("data/encrypted-aes-256.pdf"),
+            "Standard V5 R6 256-bit AES",
+        ),
+    ];
+    for (data, expected) in documents {
+        let metadata = Document::open(data, &OpenOptions::default())
+            .unwrap()
+            .metadata();
+        assert!(metadata.encrypted);
+        assert_eq!(
+            metadata.encryption.map(|e| e.description()).as_deref(),
+            Some(expected)
+        );
+    }
+    // Saved, it is no longer encrypted.
+    let saved = Document::open(OWNER_PROTECTED, &OpenOptions::default())
+        .unwrap()
+        .save(&SaveOptions::default())
+        .unwrap();
+    let metadata = Document::open(saved, &OpenOptions::default())
+        .unwrap()
+        .metadata();
+    assert!(!metadata.encrypted);
+    assert_eq!(metadata.encryption, None);
+}
