@@ -8,6 +8,9 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- A page's user unit set (`Document::set_user_unit`; `set_user_unit` in Python), on a document
+  built or opened: `/UserUnit` written on the page, 1 taking it away; `geometry` reports it at
+  once.
 - A page's links and where they lead (`Document::links`; `links` in Python and WebAssembly):
   each link's rectangle, and a page of the document (destinations, named ones resolved, `GoTo`,
   `FirstPage` and `LastPage`), a URI, another file and its page, a named action, or what cannot
