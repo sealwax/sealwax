@@ -1,4 +1,6 @@
-//! Text drawn by the content of PDF pages, glyph by glyph.
+//! Extract page text in PDF content order. [`glyphs`] reports individual painted glyphs,
+//! [`words`] and [`text_blocks`] group the visible page area into a reading sequence,
+//! and [`search`] returns oriented highlights in default PDF user space.
 //!
 //! PDF/A levels a and u require that every glyph drawn maps to Unicode (ISO 19005-3, clause
 //! 6.2.11.7.2), and that a glyph mapped to the Private Use Area is covered by an `/ActualText`
@@ -8,7 +10,7 @@
 //! hayro-interpret: fonts, encodings, `ToUnicode` and predefined CMaps, Type 3 glyphs, annotation
 //! appearances, invisible text.
 //!
-//! No text from the document is kept: only counts, and font names.
+//! The census retains counts and font names.
 
 mod actual;
 mod cache;
@@ -16,6 +18,7 @@ mod drawings;
 mod drawn;
 mod glyphs;
 mod images;
+mod layout;
 mod metrics;
 mod redact;
 mod scan;
@@ -25,6 +28,7 @@ pub use drawings::{Drawings, Painted, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
 pub use images::{ExtractedImage, ImageFormat, PageImage, extract_image, images};
+pub use layout::{TextBlock, TextLine, TextQuad, Word, search, text_blocks, words};
 pub use redact::{ImageRedaction, PathRedaction, RedactOptions, Redacted, redact};
 
 use std::collections::{BTreeSet, HashMap, HashSet};

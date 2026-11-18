@@ -452,6 +452,29 @@ export interface Drawings {
   quads: DrawnQuad[];
 }
 
+/** A word in unrotated PDF user space. Indices start at zero within the page, block and line. */
+export interface Word {
+  text: string;
+  bbox: Box;
+  block: number;
+  line: number;
+  word: number;
+}
+
+export interface TextLine {
+  bbox: Box;
+  direction: [number, number];
+  words: Word[];
+}
+
+export interface TextBlock {
+  bbox: Box;
+  lines: TextLine[];
+}
+
+/** Top-left, top-right, bottom-left and bottom-right, relative to the writing direction. */
+export type TextQuad = [[number, number], [number, number], [number, number], [number, number]];
+
 /** A glyph a page draws, in its default user space (unrotated, y up). */
 export interface Glyph {
   /** What it means (`ToUnicode`, its encoding or its name), a ligature's letters included. */
@@ -603,6 +626,21 @@ fn set(target: &Object, key: &str, value: impl Into<JsValue>) {
 
 fn numbers(values: &[f64]) -> Array {
     values.iter().map(|v| JsValue::from_f64(*v)).collect()
+}
+
+fn word_objects(words: Vec<sealwax_text::Word>) -> Array {
+    words
+        .into_iter()
+        .map(|word| {
+            let item = Object::new();
+            set(&item, "text", word.text);
+            set(&item, "bbox", numbers(&word.bbox));
+            set(&item, "block", count(word.block));
+            set(&item, "line", count(word.line));
+            set(&item, "word", count(word.word));
+            item
+        })
+        .collect()
 }
 
 fn rect(rect: Rect) -> Array {
@@ -1865,6 +1903,80 @@ impl Document {
         set(&object, "rectangles", rectangles);
         set(&object, "quads", quads);
         Ok(object)
+    }
+
+    /// Words in page content order, including annotation appearances when requested.
+    ///
+    /// # Errors
+    /// A page or limit error as for `glyphs`.
+    #[wasm_bindgen(unchecked_return_type = "Word[]")]
+    pub fn words(&self, page_index: usize, annotations: Option<bool>) -> Result<Array, JsValue> {
+        let words = sealwax_text::words(&self.inner, page_index, annotations.unwrap_or(false))
+            .map_err(|error| core_error(&error))?;
+        Ok(word_objects(words))
+    }
+
+    /// Text blocks containing lines, their directions and their words.
+    ///
+    /// # Errors
+    /// A page or limit error as for `glyphs`.
+    #[wasm_bindgen(js_name = textBlocks, unchecked_return_type = "TextBlock[]")]
+    pub fn text_blocks(
+        &self,
+        page_index: usize,
+        annotations: Option<bool>,
+    ) -> Result<Array, JsValue> {
+        let blocks =
+            sealwax_text::text_blocks(&self.inner, page_index, annotations.unwrap_or(false))
+                .map_err(|error| core_error(&error))?;
+        Ok(blocks
+            .into_iter()
+            .map(|block| {
+                let lines: Array = block
+                    .lines
+                    .into_iter()
+                    .map(|line| {
+                        let item = Object::new();
+                        set(&item, "bbox", numbers(&line.bbox));
+                        set(&item, "direction", numbers(&line.direction));
+                        set(&item, "words", word_objects(line.words));
+                        item
+                    })
+                    .collect();
+                let item = Object::new();
+                set(&item, "bbox", numbers(&block.bbox));
+                set(&item, "lines", lines);
+                item
+            })
+            .collect())
+    }
+
+    /// Case-insensitive substring search. Each occurrence contains its line quadrilaterals.
+    ///
+    /// # Errors
+    /// A page or limit error as for `glyphs`.
+    #[wasm_bindgen(unchecked_return_type = "TextQuad[][]")]
+    pub fn search(
+        &self,
+        page_index: usize,
+        needle: &str,
+        annotations: Option<bool>,
+    ) -> Result<Array, JsValue> {
+        let hits = sealwax_text::search(
+            &self.inner,
+            page_index,
+            needle,
+            annotations.unwrap_or(false),
+        )
+        .map_err(|error| core_error(&error))?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| {
+                hit.into_iter()
+                    .map(|quad| quad.iter().map(|point| numbers(point)).collect::<Array>())
+                    .collect::<Array>()
+            })
+            .collect())
     }
 
     /// The glyphs page `pageIndex` (from 0) draws, in the order of its content (forms and Type 3

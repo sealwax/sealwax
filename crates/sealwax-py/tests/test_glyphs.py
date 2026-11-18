@@ -1,6 +1,7 @@
 """The glyphs a page draws, read in Python: text, place, advance, size, font, and what the
 document says a reader reads instead."""
 
+import pytest
 from conftest import build, stream
 
 import sealwax
@@ -100,6 +101,33 @@ def test_annotations_are_read_only_when_asked_and_an_empty_page_has_no_glyph():
         pass
     else:
         raise AssertionError("a missing page is refused")
+
+
+def test_word_indices_blocks_and_search_highlights():
+    doc = sealwax.Document.from_bytes(page(
+        b"BT /F1 20 Tf 40 500 Td (a multi-) Tj 0 -24 Td (line test) Tj ET",
+        annots="[10 0 R]",
+    ))
+    words = doc.words(0)
+    assert [(w["text"], w["block"], w["line"], w["word"]) for w in words] == [
+        ("a", 0, 0, 0), ("multi-", 0, 0, 1), ("line", 0, 1, 0), ("test", 0, 1, 1)
+    ]
+    block, = doc.text_blocks(0)
+    first, second = block["lines"]
+    assert first["direction"] == (1, 0)
+    assert first["words"] + second["words"] == words
+    assert block["bbox"][3] == first["bbox"][3]
+    hit, = doc.search(0, "MULTILINE")
+    assert len(hit) == 2
+    assert hit[0][0][1] > hit[1][0][1]
+    assert hit[0][0][0] == words[1]["bbox"][0]
+    assert hit[1][3] == (words[2]["bbox"][2], words[2]["bbox"][1])
+    assert doc.search(0, "Alice") == []
+    assert doc.words(0, annotations=True)[-1]["text"] == "Alice"
+    assert doc.search(0, "Alice", annotations=True)
+    for method, args in [(doc.words, (1,)), (doc.text_blocks, (1,)), (doc.search, (1, "x"))]:
+        with pytest.raises(ValueError):
+            method(*args)
 
 
 def one_font(base_font: str, text: bytes) -> bytes:

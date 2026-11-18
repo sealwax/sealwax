@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sealwax_core::{Document, OpenOptions};
-use sealwax_text::{TextGlyph, glyphs};
+use sealwax_text::{TextGlyph, glyphs, search, text_blocks, words};
 
 fn stream(dict: &str, data: &str) -> String {
     format!(
@@ -22,6 +22,17 @@ fn page(content: &str, page: &str) -> Document {
 /// The same, `catalog` added to the catalog, `form` to the form's dictionary, and `extra` objects
 /// from number 12 on.
 fn document(content: &str, page: &str, catalog: &str, form: &str, extra: &[&str]) -> Document {
+    with_fonts(content, page, catalog, form, "", extra)
+}
+
+fn with_fonts(
+    content: &str,
+    page: &str,
+    catalog: &str,
+    form: &str,
+    fonts: &str,
+    extra: &[&str],
+) -> Document {
     let to_unicode = stream(
         "",
         "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
@@ -35,7 +46,7 @@ fn document(content: &str, page: &str, catalog: &str, form: &str, extra: &[&str]
             3,
             format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R \
-                 /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /T3 9 0 R >> \
+                 /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /T3 9 0 R {fonts} >> \
                  /XObject << /Fm 11 0 R >> >> {page} >>"
             ),
         ),
@@ -241,6 +252,9 @@ fn annotations_appearances_are_read_when_asked_for_and_marked() {
     assert_eq!(text(&glyphs(&doc, 0, false).unwrap()), "Name");
     let found = glyphs(&doc, 0, true).unwrap();
     assert_eq!(text(&found), "NameAlice");
+    assert!(search(&doc, 0, "Alice", false).unwrap().is_empty());
+    assert_eq!(search(&doc, 0, "Alice", true).unwrap().len(), 1);
+    assert_eq!(words(&doc, 0, true).unwrap().len(), 2);
     assert!(found[..4].iter().all(|g| !g.annotation));
     assert!(found[4..].iter().all(|g| g.annotation));
     // Placed by the annotation's rectangle.
@@ -313,4 +327,249 @@ fn a_page_without_text_has_no_glyph_and_a_missing_page_is_refused() {
     let doc = page("0 0 10 10 re f", "");
     assert!(glyphs(&doc, 0, false).unwrap().is_empty());
     assert!(glyphs(&doc, 1, false).is_err());
+}
+
+#[test]
+fn words_and_lines_use_the_unpainted_advance_and_baseline_offset() {
+    for (points, expected_words, expected_lines) in [
+        (0, 1, 1),
+        (2, 1, 1),
+        (4, 2, 1),
+        (6, 2, 1),
+        (10, 2, 1),
+        (15, 2, 1),
+        (20, 2, 2),
+        (40, 2, 2),
+    ] {
+        let doc = page(
+            &format!("BT /F2 20 Tf 50 700 Td [(ab) {} (cd)] TJ ET", -50 * points),
+            "",
+        );
+        let blocks = text_blocks(&doc, 0, false).unwrap();
+        let found = words(&doc, 0, false).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].lines.len(), expected_lines, "{points}");
+        assert_eq!(found.len(), expected_words, "{points}");
+        assert_eq!(
+            found.iter().map(|w| w.text.as_str()).collect::<String>(),
+            "abcd"
+        );
+        for (line_index, line) in blocks[0].lines.iter().enumerate() {
+            assert_eq!(line.direction, [1.0, 0.0]);
+            for (word_index, word) in line.words.iter().enumerate() {
+                assert_eq!(
+                    (word.block, word.line, word.word),
+                    (0, line_index, word_index)
+                );
+            }
+        }
+        assert!(close(found[0].bbox[0], 50.0));
+        assert!(close(
+            found[0].bbox[2],
+            if expected_words == 1 {
+                98.0 + f64::from(points)
+            } else {
+                74.0
+            }
+        ));
+    }
+
+    for (drop, blocks) in [(18, 1), (24, 1), (30, 1), (34, 2), (42, 2)] {
+        let doc = page(
+            &format!("BT /F2 20 Tf 50 700 Td (first) Tj 0 -{drop} Td (second) Tj ET"),
+            "",
+        );
+        assert_eq!(text_blocks(&doc, 0, false).unwrap().len(), blocks, "{drop}");
+    }
+}
+
+#[test]
+fn content_order_ocr_overdraw_and_actual_text_survive_word_grouping() {
+    let doc = page(
+        "BT /F2 20 Tf 3 Tr 50 100 Td (OCR) Tj ET \
+        BT /F2 20 Tf 50 700 Td (B) Tj ET BT /F2 20 Tf 50 700 Td (B) Tj ET \
+        BT /F2 20 Tf 50 600 Td /Span << /ActualText (lake shore) >> BDC (xxxxx) Tj EMC (.) Tj ET",
+        "",
+    );
+    let w = words(&doc, 0, false).unwrap();
+    assert_eq!(
+        w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(),
+        ["OCR", "B", "lake", "shore."]
+    );
+    assert!(close(w[2].bbox[0], 50.0) && close(w[2].bbox[2], 74.0));
+    assert!(close(w[3].bbox[0], 80.0) && close(w[3].bbox[2], 122.0));
+    assert!(search(&doc, 0, "xxxxx", false).unwrap().is_empty());
+    let partial = search(&doc, 0, "ak", false).unwrap();
+    assert!(close(partial[0][0][0][0], 56.0) && close(partial[0][0][1][0], 68.0));
+}
+
+#[test]
+fn search_finds_parts_of_words_phrases_and_dehyphenated_lines() {
+    let doc = page(
+        "BT /F2 20 Tf 50 700 Td (first) Tj 0 -24 Td (second) Tj \
+        0 -24 Td (multi-) Tj 0 -24 Td (line Red-fox red-Fox) Tj ET",
+        "",
+    );
+    let phrase = search(&doc, 0, "sT   SE", false).unwrap();
+    assert_eq!(phrase.len(), 1);
+    assert_eq!(phrase[0].len(), 2);
+    assert!(close(phrase[0][0][0][0], 86.0) && close(phrase[0][0][1][0], 110.0));
+    assert!(close(phrase[0][1][0][0], 50.0) && close(phrase[0][1][1][0], 74.0));
+    assert!(search(&doc, 0, "stse", false).unwrap().is_empty());
+    let hyphenated = search(&doc, 0, "multiline", false).unwrap();
+    assert_eq!(hyphenated.len(), 1);
+    assert_eq!(hyphenated[0].len(), 2);
+    assert!(close(hyphenated[0][0][1][0], 110.0));
+    assert_eq!(search(&doc, 0, "red-FOX", false).unwrap().len(), 2);
+    assert!(search(&doc, 0, "   ", false).unwrap().is_empty());
+}
+
+#[test]
+fn folded_unicode_and_ligatures_keep_their_source_positions() {
+    let doc = page(
+        "BT /F3 20 Tf 50 700 Td <01> Tj ET \
+        BT /F1 20 Tf 50 650 Td (Stra\\337e) Tj ET",
+        "",
+    );
+    let whole = search(&doc, 0, "FI", false).unwrap()[0][0];
+    let second = search(&doc, 0, "i", false).unwrap()[0][0];
+    assert!(close(second[0][0], (whole[0][0] + whole[1][0]) / 2.0));
+    assert!(close(second[1][0], whole[1][0]));
+    assert_eq!(search(&doc, 0, "STRASSE", false).unwrap().len(), 1);
+    assert_eq!(search(&doc, 0, "s", false).unwrap().len(), 2);
+}
+
+#[test]
+fn rotated_and_sheared_highlights_follow_the_text_matrix() {
+    let doc = page(
+        "BT /F2 20 Tf 0.8 0.6 -0.3 1 100 120 Tm (abc) Tj ET",
+        "/Rotate 90 /CropBox [50 60 400 450]",
+    );
+    let line = &text_blocks(&doc, 0, false).unwrap()[0].lines[0];
+    assert!(close(line.direction[0], 0.8) && close(line.direction[1], 0.6));
+    let [tl, tr, bl, br] = search(&doc, 0, "b", false).unwrap()[0][0];
+    assert!(close(tr[0] - tl[0], 0.8 * 12.0) && close(tr[1] - tl[1], 0.6 * 12.0));
+    assert!(close(br[0] - bl[0], tr[0] - tl[0]));
+    assert!(close(tl[0] - bl[0], -0.3 * (tl[1] - bl[1])));
+    let b = &glyphs(&doc, 0, false).unwrap()[1];
+    assert!(close(tl[0].min(bl[0]), b.bbox[0]) && close(tr[1].max(br[1]), b.bbox[3]));
+}
+
+#[test]
+fn vertical_cid_advances_and_columns_are_measured_in_writing_order() {
+    let cmap = stream(
+        "",
+        "begincmap 1 begincodespacerange <0000> <ffff> endcodespacerange \
+        2 beginbfchar <0001> <0041> <0002> <0042> endbfchar endcmap",
+    );
+    let doc = with_fonts(
+        "BT /V 20 Tf 200 700 Td <00010002> Tj -24 0 Td <0002> Tj ET",
+        "",
+        "",
+        "",
+        "/V 12 0 R",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /Sans /Encoding /Identity-V /DescendantFonts [13 0 R] /ToUnicode 14 0 R >>",
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 600 /DW2 [880 -1000] /W2 [1 [-800 300 860]] >>",
+            &cmap,
+        ],
+    );
+    let glyph = &glyphs(&doc, 0, false).unwrap()[0];
+    assert_eq!(glyph.direction, [0.0, -1.0]);
+    assert!(close(glyph.origin[0], 200.0) && close(glyph.origin[1], 700.0));
+    assert!(close(glyph.end[0], 200.0) && close(glyph.end[1], 684.0));
+    for (v, expected) in glyph.bbox.iter().zip([194.0, 684.0, 206.0, 700.0]) {
+        assert!(close(*v, expected));
+    }
+    let w = words(&doc, 0, false).unwrap();
+    assert_eq!(
+        w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(),
+        ["AB", "B"]
+    );
+    assert_eq!((w[1].block, w[1].line), (0, 1));
+    let lines = &text_blocks(&doc, 0, false).unwrap()[0].lines;
+    assert_eq!(lines[0].direction, [0.0, -1.0]);
+    let q = search(&doc, 0, "AB", false).unwrap()[0][0];
+    for (corner, expected) in q.iter().zip([
+        [206.0, 700.0],
+        [206.0, 664.0],
+        [194.0, 700.0],
+        [194.0, 664.0],
+    ]) {
+        assert!(
+            close(corner[0], expected[0]) && close(corner[1], expected[1]),
+            "{q:?}"
+        );
+    }
+}
+
+#[test]
+fn layout_obeys_crop_without_changing_glyph_visibility_or_coordinates() {
+    let doc = page(
+        "BT /F2 12 Tf 50 700 Td (outside) Tj ET BT /F2 12 Tf 80 200 Td (inside) Tj ET",
+        "/CropBox [70 80 250 300] /Rotate 270",
+    );
+    assert_eq!(text(&glyphs(&doc, 0, false).unwrap()), "outsideinside");
+    let w = words(&doc, 0, false).unwrap();
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].text, "inside");
+    assert!(close(w[0].bbox[0], 80.0));
+    assert!(search(&doc, 0, "outside", false).unwrap().is_empty());
+    assert!(search(&doc, 1, "", false).is_err());
+}
+
+#[test]
+fn expansion_by_replacement_is_charged_to_the_document_limit() {
+    use sealwax_core::{Error, Limits, SaveOptions};
+    let doc = page(
+        &format!(
+            "BT /F2 12 Tf /Span << /ActualText ({}) >> BDC (x) Tj EMC ET",
+            "w".repeat(201)
+        ),
+        "",
+    );
+    let mut limits = Limits::default();
+    limits.max_page_cost = 200;
+    let doc = Document::open(
+        doc.save(&SaveOptions::default()).unwrap(),
+        &OpenOptions::default().limits(limits),
+    )
+    .unwrap();
+    assert!(matches!(
+        words(&doc, 0, false),
+        Err(Error::LimitExceeded {
+            what: "max_page_cost"
+        })
+    ));
+    assert!(matches!(
+        search(&doc, 0, "w", false),
+        Err(Error::LimitExceeded {
+            what: "max_page_cost"
+        })
+    ));
+}
+
+#[test]
+fn paragraphs_and_column_restarts_compare_the_starts_of_consecutive_lines() {
+    let doc = page(
+        "BT /F2 20 Tf 50 700 Td (long first line) Tj 0 -24 Td (short) Tj \
+        18 -24 Td (indented) Tj 0 -24 Td (continued) Tj 170 26 Td (next column) Tj ET",
+        "",
+    );
+    let blocks = text_blocks(&doc, 0, false).unwrap();
+    assert_eq!(
+        blocks.iter().map(|b| b.lines.len()).collect::<Vec<_>>(),
+        [2, 2, 1]
+    );
+    assert_eq!(blocks[1].lines[0].words[0].text, "indented");
+    assert_eq!(blocks[2].lines[0].words[0].text, "next");
+}
+
+#[test]
+fn stroked_text_is_extracted_and_fill_then_stroke_appears_once() {
+    let doc = page(
+        "BT /F2 20 Tf 50 700 Td (A) Tj 1 Tr (B) Tj (C) Tj 2 Tr (D) Tj ET",
+        "",
+    );
+    assert_eq!(words(&doc, 0, false).unwrap()[0].text, "ABCD");
 }

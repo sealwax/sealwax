@@ -117,6 +117,13 @@ const outlined = rectangles.filter((r) => r.stroked).map((r) => r.box);
 const text = doc.glyphs(pageIndex).map((g) => g.text ?? "").join("");
 ```
 
+`words(pageIndex)` returns words with their boxes and zero-based block, line and
+word indices. `textBlocks(pageIndex)` returns the same words grouped into lines
+and blocks. `search(pageIndex, needle)` returns an array per occurrence, with
+one quad per matched line. Its four points are top-left, top-right, bottom-left
+and bottom-right relative to the writing direction. All three methods accept a
+final boolean to include annotation appearances (default `false`).
+
 ## Limits and panics
 
 Every operation runs within bounds (operators, image pixels, decoded bytes, annotations, rendered
