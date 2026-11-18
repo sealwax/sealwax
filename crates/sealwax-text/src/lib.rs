@@ -19,6 +19,7 @@ mod images;
 mod metrics;
 mod redact;
 mod scan;
+mod words;
 
 pub use cache::release_cache;
 pub use drawings::{Drawings, Painted, drawings};
@@ -26,6 +27,7 @@ pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
 pub use images::{ExtractedImage, ImageFormat, PageImage, extract_image, images};
 pub use redact::{ImageRedaction, PathRedaction, RedactOptions, Redacted, redact};
+pub use words::{TextWord, words};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};

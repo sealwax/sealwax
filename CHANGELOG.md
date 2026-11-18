@@ -8,6 +8,15 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- A page's words (`sealwax_text::words`; `words` in Python and WebAssembly), as PyMuPDF's
+  `get_text("words")` gives them: the glyphs in the order of the content, in lines and blocks
+  by MuPDF's rules (a space where glyphs leave a gap of 0.15 to 0.8 em, a step back taken as
+  glyphs overlapping, a new line past 0.8 em off the baseline or across a column, a new block
+  past 1.5 em or at an indent), bold faked by drawing twice read once, glyphs wholly outside the
+  clip or the media box left out, cut at white space. Each with its text (`/ActualText` in
+  place), box, and block, line and word numbers. On a corpus of 98 documents (458 pages),
+  99.88% of PyMuPDF's words come in its order, with their boxes within 1 pt; 397 pages read the
+  same, word for word. A glyph without Unicode reads as U+FFFD, where PyMuPDF puts its code.
 - The files a document embeds (`Document::attachments`; `attachments` in Python and
   WebAssembly): those of its `/EmbeddedFiles`, in the order of their keys, then those of its
   pages' file attachment annotations, each with its name, key, description, MIME type, size,

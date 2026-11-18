@@ -1800,6 +1800,31 @@ impl Document {
         Ok(dict)
     }
 
+    /// The words of page `page_index` (from 0), as PyMuPDF's `get_text("words")` gives them:
+    /// block by block, line by line, in the order of the content, cut at white space, a space
+    /// counted where glyphs leave a gap. Each a dict with `text` (an `/ActualText` in place of
+    /// the glyphs it covers), `bbox` (x1, y1, x2, y2, in the page's default user space, y up),
+    /// and `block`, `line` (in its block) and `word` (in its line), from 0. Glyphs drawn twice in
+    /// the same place count once, glyphs outside the media box not at all, annotations are left
+    /// out.
+    fn words<'py>(&self, py: Python<'py>, page_index: usize) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let inner = &self.inner;
+        let found = run(py, || Ok(pdf::text::words(inner, page_index)?))?;
+        found
+            .into_iter()
+            .map(|word| {
+                let dict = PyDict::new(py);
+                dict.set_item(intern!(py, "text"), word.text)?;
+                let [x1, y1, x2, y2] = word.bbox;
+                dict.set_item(intern!(py, "bbox"), (x1, y1, x2, y2))?;
+                dict.set_item(intern!(py, "block"), word.block)?;
+                dict.set_item(intern!(py, "line"), word.line)?;
+                dict.set_item(intern!(py, "word"), word.word)?;
+                Ok(dict)
+            })
+            .collect()
+    }
+
     /// The glyphs page `page_index` (from 0) draws, in the order of its content (forms and
     /// Type 3 glyphs included), then with `annotations` those its annotations' appearances draw
     /// (as MuPDF's text includes them), each a dict in the page's default user space

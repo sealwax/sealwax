@@ -109,6 +109,16 @@ pub fn glyphs(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Vec<TextGlyph>> {
+    glyphs_and_clips(doc, page_index, annotations).map(|(glyphs, _)| glyphs)
+}
+
+/// The glyphs of [`glyphs`], and the box of the clipping paths in effect when each was drawn
+/// (`None` when none clips), in the page's default user space.
+pub(crate) fn glyphs_and_clips(
+    doc: &Document,
+    page_index: usize,
+    annotations: bool,
+) -> sealwax_core::Result<(Vec<TextGlyph>, Vec<Option<Bounds>>)> {
     if page_index >= doc.hayro().pages().len() {
         return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
     }
@@ -116,7 +126,7 @@ pub fn glyphs(
     let glyphs = with_cache(doc, |pdf, cache| {
         let pages = pdf.pages();
         let Some(page) = pages.get(page_index) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let content = page.page_stream().unwrap_or_default();
         let resources = page.resources();
@@ -134,6 +144,8 @@ pub fn glyphs(
             annotation: false,
             programs: HashMap::new(),
             found_in: HashMap::new(),
+            clips: Vec::new(),
+            glyph_clips: Vec::new(),
         };
         // What was read before the interpreter failed, if it did, is kept, as a reader keeps it.
         let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -166,7 +178,7 @@ pub fn glyphs(
                 }
             }
         }));
-        collector.glyphs
+        (collector.glyphs, collector.glyph_clips)
     });
     doc.check_time()?;
     Ok(glyphs)
@@ -583,6 +595,10 @@ struct Collector<'a> {
     programs: HashMap<u128, Metrics>,
     /// The font among a form's several each glyph drawn there was found in.
     found_in: HashMap<GlyphIdentifier, Option<usize>>,
+    /// The box of the clipping paths in effect, one for each pushed (`None`: none clips).
+    clips: Vec<Option<Bounds>>,
+    /// The clip in effect when each glyph was drawn, beside `glyphs`.
+    glyph_clips: Vec<Option<Bounds>>,
 }
 
 impl<'f> Collector<'f> {
@@ -656,7 +672,20 @@ fn text(unicode: BfString) -> String {
 impl<'a> Device<'a> for Collector<'_> {
     fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
 
-    fn push_clip_path(&mut self, _: &ClipPath) {}
+    fn push_clip_path(&mut self, clip: &ClipPath) {
+        let b = clip.path.bounding_box();
+        let own = [b.x0, b.y0, b.x1, b.y1];
+        let inner = match self.clips.last().copied().flatten() {
+            Some(outer) => [
+                own[0].max(outer[0]),
+                own[1].max(outer[1]),
+                own[2].min(outer[2]),
+                own[3].min(outer[3]),
+            ],
+            None => own,
+        };
+        self.clips.push(Some(inner));
+    }
 
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
 
@@ -761,6 +790,7 @@ impl<'a> Device<'a> for Collector<'_> {
             if !overdrawn {
                 self.shown = Some(self.glyphs.len());
             }
+            self.glyph_clips.push(self.clips.last().copied().flatten());
             self.glyphs.push(TextGlyph {
                 text,
                 origin: [origin.x, origin.y],
@@ -780,7 +810,9 @@ impl<'a> Device<'a> for Collector<'_> {
 
     fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
 
-    fn pop_clip(&mut self) {}
+    fn pop_clip(&mut self) {
+        self.clips.pop();
+    }
 
     fn pop_transparency_group(&mut self) {}
 
