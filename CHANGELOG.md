@@ -70,7 +70,9 @@ All notable changes to sealwax are recorded here. The format follows
 - Redaction left tiling patterns in the file. A shape painted with one under an area went, or
   stayed with `paths` covered or kept, while the pattern and the images and text it draws stayed
   in the page's resources, after `rebuilt_for_redaction` too. Such a shape now goes whole,
-  whatever `paths` asks, and a pattern nothing left paints with leaves the resources.
+  whatever `paths` asks, and a pattern nothing left paints with leaves the resources. That
+  holds for a form painting with the pattern its content inherits, which is looked up where the
+  colour was set (`scn`).
 - The `/Alt`, `/ActualText` and `/E` of an image or a form tied to the structure by an object
   reference (`/StructParent`) now go when it loses content.
 

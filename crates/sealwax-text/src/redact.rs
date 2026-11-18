@@ -412,9 +412,19 @@ struct State<'a> {
     scale: f64,
     leading: f64,
     rise: f64,
-    /// The patterns the fill and the stroke colours are (`scn`, `SCN`), by name.
-    fill_pattern: Option<Vec<u8>>,
-    stroke_pattern: Option<Vec<u8>>,
+    /// The patterns the fill and the stroke colours are (`scn`, `SCN`): a form inherits them.
+    fill_pattern: Option<PatternColour>,
+    stroke_pattern: Option<PatternColour>,
+}
+
+/// A pattern made the colour, as the content that did it named it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PatternColour {
+    name: Vec<u8>,
+    /// The content whose resources name it.
+    scope: Source,
+    /// A tiling pattern, which draws content.
+    tiled: bool,
 }
 
 impl Default for State<'_> {
@@ -588,7 +598,7 @@ impl<'a> Walker<'a, '_> {
                 b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
                     let stroked = matches!(operator, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
                     let filled = operator != b"n" && !matches!(operator, b"S" | b"s");
-                    let used: Vec<Vec<u8>> = [
+                    let used: Vec<PatternColour> = [
                         state.fill_pattern.clone().filter(|_| filled),
                         state.stroke_pattern.clone().filter(|_| stroked),
                     ]
@@ -597,12 +607,7 @@ impl<'a> Walker<'a, '_> {
                     .collect();
                     // A tiling pattern draws content, images and text: a shape it paints goes
                     // under an area whatever `paths` asks, so that none of it shows there.
-                    let tiled = used.iter().any(|name| {
-                        resources
-                            .patterns
-                            .get::<HayroStream<'a>>(name.as_slice())
-                            .is_some()
-                    });
+                    let tiled = used.iter().any(|colour| colour.tiled);
                     let before = self.taken;
                     if let Some((built, bounds)) = path.take()
                         && operator != b"n"
@@ -640,7 +645,7 @@ impl<'a> Walker<'a, '_> {
                         }
                     }
                     if operator != b"n" {
-                        self.used_patterns(source, used, self.taken != before);
+                        self.used_patterns(used, self.taken != before);
                     }
                     path = None;
                     clips = false;
@@ -658,10 +663,20 @@ impl<'a> Walker<'a, '_> {
                             stroke,
                         ));
                     }
+                    // Looked up here, in the resources of the content that names it: a form
+                    // drawn next paints with it from resources of its own.
+                    let colour = name.map(|name| PatternColour {
+                        tiled: resources
+                            .patterns
+                            .get::<HayroStream<'a>>(name.as_slice())
+                            .is_some(),
+                        name,
+                        scope: resources_source(&self.plan, source),
+                    });
                     if stroke {
-                        state.stroke_pattern = name;
+                        state.stroke_pattern = colour;
                     } else {
-                        state.fill_pattern = name;
+                        state.fill_pattern = colour;
                     }
                 }
                 b"sc" | b"cs" | b"g" | b"rg" | b"k" => state.fill_pattern = None,
@@ -689,7 +704,7 @@ impl<'a> Walker<'a, '_> {
                     let before = self.taken;
                     self.image(source, op, &content[op.start..op.end], resources, &state);
                     let used = state.fill_pattern.clone().into_iter().collect();
-                    self.used_patterns(source, used, self.taken != before);
+                    self.used_patterns(used, self.taken != before);
                 }
                 b"q" => stack.push(state.clone()),
                 b"Q" => {
@@ -782,7 +797,7 @@ impl<'a> Walker<'a, '_> {
                         _ => Vec::new(),
                     };
                     self.show(source, index, op, prefix, &shown, &state, &mut tm);
-                    let used: Vec<Vec<u8>> =
+                    let used: Vec<PatternColour> =
                         [state.fill_pattern.clone(), state.stroke_pattern.clone()]
                             .into_iter()
                             .flatten()
@@ -804,7 +819,7 @@ impl<'a> Walker<'a, '_> {
                                     .sum();
                                 shown.removed.len() >= codes
                             });
-                        self.used_patterns(source, used, whole);
+                        self.used_patterns(used, whole);
                     }
                 }
                 b"Do" => {
@@ -826,7 +841,7 @@ impl<'a> Walker<'a, '_> {
                         let before = self.taken;
                         self.image(source, op, &content[op.start..op.end], resources, &state);
                         let used = state.fill_pattern.clone().into_iter().collect();
-                        self.used_patterns(source, used, self.taken != before);
+                        self.used_patterns(used, self.taken != before);
                         if self.taken != before {
                             self.plan.struct_parents.extend(tied);
                         }
@@ -876,18 +891,17 @@ impl<'a> Walker<'a, '_> {
         }
     }
 
-    /// The patterns `used` painted what `source` draws, which was taken out or stays.
-    fn used_patterns(&mut self, source: Source, used: Vec<Vec<u8>>, taken: bool) {
-        if used.is_empty() {
-            return;
-        }
-        let scope = resources_source(&self.plan, source);
+    /// The patterns `used` painted what was drawn, which was taken out or stays: noted for the
+    /// content whose resources name each.
+    fn used_patterns(&mut self, used: Vec<PatternColour>, taken: bool) {
         let set = if taken {
             &mut self.plan.patterns_taken
         } else {
             &mut self.plan.patterns_kept
         };
-        set.entry(scope).or_default().extend(used);
+        for colour in used {
+            set.entry(colour.scope).or_default().insert(colour.name);
+        }
     }
 
     /// An image drawn (`drawing` is its `Do`, or the inline image itself): under an area, its

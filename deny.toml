@@ -7,9 +7,11 @@ all-features = true
 [advisories]
 version = 2
 ignore = [
-    # ttf-parser is unmaintained (no vulnerability). Only docxide-pdf uses it, for
-    # sealwax-convert, which is not published.
-    { id = "RUSTSEC-2026-0192", reason = "unmaintained; docxide-pdf only, for sealwax-convert (not published)" },
+    # ttf-parser is unmaintained (no known vulnerability). Only docxide-pdf uses it, for
+    # sealwax-convert, which the Python package ships (`docx_to_pdf`): it reads the fonts of the
+    # DOCX files converted, untrusted ones included. Kept until docxide-pdf moves to a maintained
+    # parser; the README asks to convert untrusted documents in a process of their own.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, no known vulnerability; docxide-pdf only, for sealwax-convert in the Python package (docx_to_pdf)" },
 ]
 
 [licenses]

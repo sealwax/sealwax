@@ -308,16 +308,6 @@ pub(crate) fn incremental(doc: &Document) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// A save is read back before it is returned: it must open and, when nothing was modified, have
-/// the input's pages and geometry. On a damaged input a broken output would otherwise go
-/// unnoticed until a reader, or a signature, fails on it.
-///
-/// An incremental update never changes the page count either: the revisions sealwax appends
-/// (signatures, validation data, annotations) do not touch the page tree, and DocMDP would not
-/// allow it after a certification.
-///
-/// The document's deadline holds for this reading too, and is checked once more before the save
-/// is returned.
 /// The document as it stands, every object it reaches written under its own number, decrypted,
 /// with a cross-reference table: for a process that reads it again and changes the document
 /// through those numbers (redaction) when an incremental save cannot be made (an encrypted
@@ -359,6 +349,16 @@ pub(crate) fn keeping_numbers(doc: &Document) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// A save is read back before it is returned: it must open and, when nothing was modified, have
+/// the input's pages and geometry. On a damaged input a broken output would otherwise go
+/// unnoticed until a reader, or a signature, fails on it.
+///
+/// An incremental update never changes the page count either: the revisions sealwax appends
+/// (signatures, validation data, annotations) do not touch the page tree, and DocMDP would not
+/// allow it after a certification.
+///
+/// The document's deadline holds for this reading too, and is checked once more before the save
+/// is returned.
 fn check(doc: &Document, out: &[u8], incremental: bool, password: Option<&str>) -> Result<()> {
     let mut options = OpenOptions::default().limits(Limits {
         deadline: doc.limits().deadline,
