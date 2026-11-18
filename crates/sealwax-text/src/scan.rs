@@ -476,6 +476,8 @@ fn hex(raw: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::{Operand, dict_entries, object_end, operands};
 
     #[test]
