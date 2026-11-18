@@ -84,6 +84,21 @@ def test_positions_are_on_the_page_as_it_shows_and_text_reads_upright(turns):
     assert (round(glyph["direction"][0], 6) + 0.0, round(glyph["direction"][1], 6) + 0.0) == expected[1]
 
 
+def test_a_page_given_a_user_unit_reads_it_back():
+    document = sealwax.Document.new()
+    page = document.add_page(300, 400)
+    document.set_user_unit(page, 2)
+    built = sealwax.Document.from_bytes(document.save())
+    assert built.geometry()[0].user_unit == 2
+    # Its boxes stay in units of its space.
+    assert built.geometry()[0].media_box == (0.0, 0.0, 300.0, 400.0)
+    for unit in (0, -1, float("nan")):
+        with pytest.raises(ValueError):
+            document.set_user_unit(page, unit)
+    with pytest.raises(ValueError):
+        document.set_user_unit(1, 2)
+
+
 def test_what_cannot_be_built_is_refused():
     document = sealwax.Document.new()
     with pytest.raises(sealwax.PdfError):

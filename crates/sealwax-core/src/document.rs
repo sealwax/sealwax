@@ -119,6 +119,8 @@ pub struct Document {
     rotations: HashMap<usize, Rotation>,
     /// The crop box of input pages given one since ([`Document::set_crop_box`]), by index.
     crop_boxes: HashMap<usize, Rect>,
+    /// The user unit of input pages given one since ([`Document::set_user_unit`]), by index.
+    user_units: HashMap<usize, f64>,
     info: Option<ObjId>,
     next_number: u32,
     /// The highest object number the file defines, read from its bytes when first needed.
@@ -183,6 +185,7 @@ impl Document {
             appended: Vec::new(),
             rotations: HashMap::new(),
             crop_boxes: HashMap::new(),
+            user_units: HashMap::new(),
             highest_defined: OnceLock::new(),
             geometry: OnceLock::new(),
             checked: Mutex::new(HashSet::new()),
@@ -743,6 +746,11 @@ impl Document {
                 page.crop_box = *crop_box;
             }
         }
+        for (index, unit) in &self.user_units {
+            if let Some(page) = geometry.get_mut(*index) {
+                page.user_unit = *unit;
+            }
+        }
         let first = geometry.len();
         geometry.extend(
             self.appended
@@ -845,6 +853,43 @@ impl Document {
         Ok(())
     }
 
+    /// Give page `page_index` (from 0) the user unit `unit` (`/UserUnit`, PDF 1.6): the size of
+    /// a unit of its space, in multiples of 1/72 inch. Its boxes, and the positions given to draw
+    /// on it, stay in units of its space: a reader shows it `unit` times as large. A unit of 1,
+    /// the default, takes the entry away.
+    ///
+    /// # Errors
+    /// [`Error::InvalidArgument`] for a page the document does not have, or a unit that is not
+    /// a finite number above 0.
+    pub fn set_user_unit(&mut self, page_index: usize, unit: f64) -> Result<()> {
+        let Some(Some(id)) = self.page_ids().get(page_index).copied() else {
+            return Err(Error::InvalidArgument { what: "page index" });
+        };
+        if !(unit.is_finite() && unit > 0.0) {
+            return Err(Error::InvalidArgument { what: "user unit" });
+        }
+        let Some(Object::Dict(mut dict)) = self.object(id)? else {
+            return Err(Error::InvalidArgument { what: "page index" });
+        };
+        if (unit - 1.0).abs() < f64::EPSILON {
+            dict.remove(b"UserUnit");
+        } else {
+            dict.insert("UserUnit", unit);
+        }
+        self.set_object(id, Object::Dict(dict));
+        match self.page_index.get(&id) {
+            Some(input) => {
+                self.user_units.insert(*input, unit);
+            }
+            None => {
+                if let Some((_, appended)) = self.appended.iter_mut().find(|(p, _)| *p == id) {
+                    appended.user_unit = unit;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The geometry of the page whose object is `id`, as [`Document::geometry`] reports it,
     /// without measuring every page: `None` when `id` is no page of the document.
     pub fn page_geometry(&self, id: ObjId) -> Option<PageGeometry> {
@@ -853,6 +898,11 @@ impl Document {
             return input.get(*index).map(|page| PageGeometry {
                 rotation: self.rotations.get(index).copied().unwrap_or(page.rotation),
                 crop_box: self.crop_boxes.get(index).copied().unwrap_or(page.crop_box),
+                user_unit: self
+                    .user_units
+                    .get(index)
+                    .copied()
+                    .unwrap_or(page.user_unit),
                 ..*page
             });
         }

@@ -1141,6 +1141,16 @@ impl Document {
         run(py, || Ok(inner.set_crop_box(page_index, user)?))
     }
 
+    /// Give page `page_index` (from 0) the user unit `unit` (`/UserUnit`): the size of a unit of
+    /// its space, in multiples of 1/72 inch, as `geometry()` reads it back. Positions given to
+    /// the other methods stay in units of its space, as its boxes: a reader shows the page `unit`
+    /// times as large. 1, the default, takes the entry away. `ValueError` for a page the document
+    /// does not have, or a unit that is not a finite number above 0.
+    fn set_user_unit(&mut self, py: Python<'_>, page_index: usize, unit: f64) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.set_user_unit(page_index, unit)?))
+    }
+
     /// Draw `text` on page `page_index` (from 0), the first line's baseline starting at `point`
     /// (x, y) on the page as it shows (turned by its rotation, from the top-left corner of its
     /// crop box, y down, in points), upright; `\n` starts the next line, the font's height

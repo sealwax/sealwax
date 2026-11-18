@@ -85,6 +85,49 @@ fn sizes_and_crop_boxes_out_of_reach_are_refused() {
 }
 
 #[test]
+fn a_page_given_a_user_unit_keeps_it_built_or_opened() {
+    let mut doc = Document::empty().unwrap();
+    doc.add_page(300.0, 400.0).unwrap();
+    doc.add_page(300.0, 400.0).unwrap();
+    doc.set_user_unit(0, 2.0).unwrap();
+    assert_eq!(doc.geometry()[0].user_unit, 2.0);
+    let mut doc = reopened(&doc);
+    let units: Vec<f64> = doc.geometry().iter().map(|page| page.user_unit).collect();
+    assert_eq!(units, [2.0, 1.0]);
+    // Its boxes stay in units of its space.
+    assert_eq!(
+        doc.geometry()[0].media_box,
+        Rect::from_corners(0.0, 0.0, 300.0, 400.0)
+    );
+    // On a page of the input, at once; back to 1, the entry goes.
+    doc.set_user_unit(1, 0.5).unwrap();
+    doc.set_user_unit(0, 1.0).unwrap();
+    let units: Vec<f64> = doc.geometry().iter().map(|page| page.user_unit).collect();
+    assert_eq!(units, [1.0, 0.5]);
+    let doc = reopened(&doc);
+    let units: Vec<f64> = doc.geometry().iter().map(|page| page.user_unit).collect();
+    assert_eq!(units, [1.0, 0.5]);
+    let first = doc.object(doc.page_ids()[0].unwrap()).unwrap().unwrap();
+    assert!(first.as_dict().unwrap().get(b"UserUnit").is_none());
+}
+
+#[test]
+fn user_units_out_of_reach_are_refused() {
+    let mut doc = Document::empty().unwrap();
+    doc.add_page(100.0, 100.0).unwrap();
+    for unit in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            doc.set_user_unit(0, unit),
+            Err(Error::InvalidArgument { what: "user unit" })
+        ));
+    }
+    assert!(matches!(
+        doc.set_user_unit(1, 2.0),
+        Err(Error::InvalidArgument { what: "page index" })
+    ));
+}
+
+#[test]
 fn the_outline_reads_back_as_written() {
     let mut doc = Document::empty().unwrap();
     for _ in 0..3 {
