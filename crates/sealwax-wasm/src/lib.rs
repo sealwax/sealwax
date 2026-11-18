@@ -340,18 +340,6 @@ export type LinkTarget =
   | { kind: "named"; name: string }
   | { kind: "unknown"; name: string | null };
 
-/** A word of a page, as PyMuPDF's `get_text("words")` gives it. */
-export interface TextWord {
-  /** Its text: an `/ActualText` in place of the glyphs it covers. */
-  text: string;
-  /** The box of its glyphs, in the page's default user space (y up). */
-  bbox: Box;
-  /** Its block, its line in the block and its place in the line, from 0. */
-  block: number;
-  line: number;
-  word: number;
-}
-
 /** A file a document embeds. */
 export interface Attachment {
   /** Its file name. */
@@ -1746,53 +1734,6 @@ impl Document {
         set(&object, "width", image.width);
         set(&object, "height", image.height);
         Ok(object)
-    }
-
-    /// Where `text` reads on page `pageIndex` (from 0), as PyMuPDF's `search_for` finds it: case
-    /// ignored, white space one space, a line break a space, a hyphen ending a line joining it to
-    /// the next. Each occurrence its boxes, one for each line it spans. As `search` in Python.
-    ///
-    /// # Errors
-    /// A `RangeError` for a page the document does not have or a text over 1,024 characters; a
-    /// `PdfError`.
-    #[wasm_bindgen(unchecked_return_type = "Box[][]")]
-    pub fn search(&self, page_index: usize, text: &str) -> Result<Array, JsValue> {
-        let hits = sealwax_text::search(&self.inner, page_index, text)
-            .map_err(|error| core_error(&error))?;
-        Ok(hits
-            .into_iter()
-            .map(|boxes| {
-                JsValue::from(
-                    boxes
-                        .iter()
-                        .map(|b| JsValue::from(numbers(b)))
-                        .collect::<Array>(),
-                )
-            })
-            .collect())
-    }
-
-    /// The words of page `pageIndex` (from 0), block by block and line by line, in the order of
-    /// its content, as PyMuPDF's `get_text("words")` gives them. As `words` in Python.
-    ///
-    /// # Errors
-    /// A `RangeError` for a page the document does not have; a `PdfError`.
-    #[wasm_bindgen(unchecked_return_type = "TextWord[]")]
-    pub fn words(&self, page_index: usize) -> Result<Array, JsValue> {
-        let found =
-            sealwax_text::words(&self.inner, page_index).map_err(|error| core_error(&error))?;
-        Ok(found
-            .into_iter()
-            .map(|word| {
-                let object = Object::new();
-                set(&object, "text", word.text);
-                set(&object, "bbox", numbers(&word.bbox));
-                set(&object, "block", count(word.block));
-                set(&object, "line", count(word.line));
-                set(&object, "word", count(word.word));
-                JsValue::from(object)
-            })
-            .collect())
     }
 
     /// The links of page `pageIndex` (from 0), in the order of its annotations: each its
