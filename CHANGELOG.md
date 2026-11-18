@@ -30,6 +30,16 @@ All notable changes to sealwax are recorded here. The format follows
 - `sealwax-compose`: an XMP packet with what the document information says, and
   `/DisplayDocTitle` in the viewer preferences, as PDF/UA asks. A layout that knows its document
   meets PDF/UA-1 claims it (`Info::pdf_ua`); the claim is written only when nothing was left out.
+- `Limits::max_unpacked_bytes` (512 MiB by default): what a packaged document (a DOCX) may
+  unpack to, all its parts together, as its archive declares them. A DOCX converted is checked
+  against it before its layout, so a ZIP that expands without end is refused rather than
+  exhausting the memory.
+- In Python, `docx_to_pdf(docx_content, font_dirs=None, limits=None)`: a Word document converted
+  to PDF, laid out by docxide-pdf, tagged with its structure and bookmarks, and what the
+  conversion left out (`skipped`, `not_described`). ValueError when it cannot be laid out;
+  `Limits(max_unpacked_bytes=...)` bounds what it unpacks to. The layout's time is not bounded:
+  convert documents you do not trust with `sealwax.isolated`. Building the Python package now
+  needs Rust 1.97.
 
 ### Changed
 

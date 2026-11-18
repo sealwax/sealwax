@@ -17,7 +17,8 @@ capabilities are all welcome.
 You need:
 
 - Rust 1.97 or later (`rustup` installs it), with `clippy` and `rustfmt`. The published crates
-  build with 1.92; `sealwax-convert` needs 1.97, for docxide-pdf;
+  build with 1.92; `sealwax-convert` needs 1.97, for docxide-pdf, and so do the Python bindings,
+  which convert DOCX with it;
 - for the fuzz targets, a nightly toolchain and `cargo-fuzz`;
 - for the Python bindings, Python 3.12 or later and [uv](https://docs.astral.sh/uv/) (or pip and
   maturin).

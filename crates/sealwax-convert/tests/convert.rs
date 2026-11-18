@@ -133,9 +133,55 @@ fn what_is_not_a_docx_is_refused() {
         Err(Error::Layout)
     ));
     assert!(matches!(
-        layout_docx(&TWO_PAGES[..TWO_PAGES.len() / 2], &options),
+        layout_docx(
+            &TWO_PAGES[..TWO_PAGES.len() / 2],
+            &options,
+            &Limits::default()
+        ),
         Err(Error::Layout)
     ));
+}
+
+/// `docx` with the first part its central directory lists declared `size` bytes unpacked.
+fn declaring(docx: &[u8], size: u32) -> Vec<u8> {
+    let mut docx = docx.to_vec();
+    let header = docx
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("a central directory");
+    docx[header + 24..header + 28].copy_from_slice(&size.to_le_bytes());
+    docx
+}
+
+fn unpacked_too_large(result: Result<impl std::fmt::Debug, Error>) -> bool {
+    matches!(
+        result,
+        Err(Error::Compose(sealwax_compose::Error::Pdf(
+            sealwax_core::Error::LimitExceeded {
+                what: "max_unpacked_bytes"
+            }
+        )))
+    )
+}
+
+#[test]
+fn a_document_that_unpacks_past_the_bound_is_refused_before_the_layout() {
+    // A part declared at 4 GB, as a ZIP bomb declares its parts: refused on the declaration.
+    let bomb = declaring(TWO_PAGES, u32::MAX);
+    assert!(unpacked_too_large(docx_to_pdf(
+        &bomb,
+        &DocxOptions::default(),
+        &Limits::default()
+    )));
+    // The parts of a real document, past a bound set below them.
+    let mut limits = Limits::default();
+    limits.max_unpacked_bytes = 1_000;
+    assert!(unpacked_too_large(layout_docx(
+        TWO_PAGES,
+        &DocxOptions::default(),
+        &limits
+    )));
+    assert!(layout_docx(TWO_PAGES, &DocxOptions::default(), &Limits::default()).is_ok());
 }
 
 #[test]

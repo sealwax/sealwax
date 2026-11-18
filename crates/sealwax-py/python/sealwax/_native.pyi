@@ -111,6 +111,10 @@ class Metadata(TypedDict):
     pdfa: str | None
     info: dict[str, str]
 
+class DocxReport(TypedDict):
+    skipped: dict[str, int]
+    not_described: dict[str, int]
+
 class PhotoPages(TypedDict):
     added: int
     unreadable: list[int]
@@ -182,6 +186,7 @@ class Limits:
         min_dash_period: float | None = None,
         max_annotations: int | None = None,
         max_render_pixels: int | None = None,
+        max_unpacked_bytes: int | None = None,
     ) -> None: ...
     @staticmethod
     def unbounded(*, timeout: float | None = None) -> Limits: ...
@@ -207,6 +212,8 @@ class Limits:
     def max_annotations(self) -> int: ...
     @property
     def max_render_pixels(self) -> int: ...
+    @property
+    def max_unpacked_bytes(self) -> int: ...
 
 @final
 class PageGeometry:
@@ -458,6 +465,12 @@ def xfdf_for(
     marks: list[StampMark | FreeTextMark | InkMark], *, deleted: list[tuple[int, str]] | None = None
 ) -> str: ...
 def photos_to_pdf(photos: list[bytes], *, limits: Limits | None = None) -> tuple[bytes, list[int]]: ...
+def docx_to_pdf(
+    docx_content: bytes,
+    *,
+    font_dirs: list[str | PathLike[str]] | None = None,
+    limits: Limits | None = None,
+) -> tuple[bytes, DocxReport]: ...
 def pdfa_convert(
     pdf_content: bytes, *, level: str = "3a", language: str | None = None, limits: Limits | None = None
 ) -> tuple[bytes, PdfAReport]: ...

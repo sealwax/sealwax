@@ -65,6 +65,10 @@ pub struct Limits {
     /// Pixels of one page rendered to an image: the renderer holds four bytes for each. An A0
     /// poster at 150 pixels per inch has 35 million.
     pub max_render_pixels: u64,
+    /// Bytes a packaged document (a DOCX) may unpack to, all its parts together, as its archive
+    /// declares them: a layout reads its parts whole, and a few kilobytes of ZIP can unpack to
+    /// gigabytes. The largest of 1,246 test documents unpacks to 29 MB.
+    pub max_unpacked_bytes: u64,
     /// When to give up: an operation still running then fails with [`Error::Timeout`].
     pub deadline: Option<Instant>,
 }
@@ -82,6 +86,7 @@ impl Default for Limits {
             min_dash_period: 1e-3,
             max_annotations: 50_000,
             max_render_pixels: 50_000_000,
+            max_unpacked_bytes: 512 << 20,
             deadline: None,
         }
     }
@@ -101,6 +106,7 @@ impl Limits {
             min_dash_period: 0.0,
             max_annotations: u64::MAX,
             max_render_pixels: u64::MAX,
+            max_unpacked_bytes: u64::MAX,
             deadline: None,
         }
     }
