@@ -9,6 +9,7 @@ members = [
     "crates/sealwax-raster",
     "crates/sealwax-sign",
     "crates/sealwax-compose",
+    "crates/sealwax-convert",
     "crates/sealwax-cli",
     "crates/sealwax-py",
     "crates/sealwax-wasm",

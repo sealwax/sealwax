@@ -1,0 +1,28 @@
+[package]
+name = "sealwax-convert"
+description = "Other formats converted to PDF: laid out by an engine of their own, written by sealwax-compose."
+version.workspace = true
+edition.workspace = true
+# docxide-pdf needs a newer compiler than the rest of the workspace (if-let guards).
+rust-version = "1.97"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Depends on docxide-pdf from git until it publishes its display list: crates.io refuses that.
+publish = false
+
+[dependencies]
+sealwax-core.workspace = true
+sealwax-compose.workspace = true
+# DOCX laid out to a display list (Apache-2.0), proposed upstream in sverrejb/docxide-pdf#168.
+# Branch `sealwax-crate` of the fork holds the files docxide-pdf publishes on crates.io, taken from
+# its branch `sealwax`, without the repository's history (1.4 GB with its fixtures).
+docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "e8f35ddcda6d61be62c38eaa239b77a5b50869d2", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+sealwax-raster.workspace = true
+sealwax-text.workspace = true
+
+[lints]
+workspace = true
