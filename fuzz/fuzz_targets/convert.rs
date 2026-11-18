@@ -27,8 +27,9 @@ fn tolerate_layout_panics() {
 
 fuzz_target!(init: tolerate_layout_panics(), |data: &[u8]| {
     LAYING_OUT.store(true, Ordering::SeqCst);
-    let laid_out = layout_docx(data, &DocxOptions::default());
+    let laid_out = layout_docx(data, &DocxOptions::default(), &Limits::default());
     LAYING_OUT.store(false, Ordering::SeqCst);
+    // A document refused, or past a bound of the limits: no failure.
     let Ok(laid_out) = laid_out else {
         return;
     };

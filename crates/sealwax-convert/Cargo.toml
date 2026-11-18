@@ -20,6 +20,9 @@ sealwax-compose.workspace = true
 # branch `sealwax`, without the repository's history (1.4 GB with its fixtures).
 docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "c7ab58b16605b3f4a3678e3b0588e9aa6d00686b", default-features = false }
 thiserror.workspace = true
+# The archive's parts and their sizes, read before the layout: the same crate docxide-pdf reads
+# them with, so both see the same parts.
+zip = { version = "9.4", default-features = false }
 
 [dev-dependencies]
 sealwax-raster.workspace = true

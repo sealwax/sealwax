@@ -23,6 +23,10 @@ All notable changes to sealwax are recorded here. The format follows
 - `sealwax-compose`: an XMP packet with what the document information says, and
   `/DisplayDocTitle` in the viewer preferences, as PDF/UA asks. A layout that knows its document
   meets PDF/UA-1 claims it (`Info::pdf_ua`); the claim is written only when nothing was left out.
+- `Limits::max_unpacked_bytes` (512 MiB by default): what a packaged document (a DOCX) may
+  unpack to, all its parts together, as its archive declares them. A DOCX converted is checked
+  against it before its layout, so a ZIP that expands without end is refused rather than
+  exhausting the memory.
 
 ### Changed
 
