@@ -1,6 +1,6 @@
 [package]
 name = "sealwax-annots"
-description = "XFDF applied to PDF documents, annotations flattened into their pages."
+description = "Forms and annotations of PDF documents: fields read, filled and added, annotations added and flattened, XFDF, redaction marks, photos made pages."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

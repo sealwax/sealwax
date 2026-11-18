@@ -1,6 +1,6 @@
 [package]
 name = "sealwax-raster"
-description = "PDF pages rendered to images: the grayscale PDF of a fax."
+description = "PDF pages rendered to images, and documents to grayscale PDF, as a fax sends them."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

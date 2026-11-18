@@ -623,7 +623,8 @@ impl Document {
     ///
     /// `xref` is "stream" (cross-reference stream and object streams, the default) or "table".
     /// With `encryption` ("rc4-128", "aes-128" or "aes-256"), it is saved encrypted with the
-    /// standard security handler: `owner_password` (required, not empty) grants everything;
+    /// standard security handler (prefer "aes-256": PDF 2.0 deprecates the other two, kept for
+    /// older readers): `owner_password` (required, not empty) grants everything;
     /// `user_password` is asked to open it (empty, the default: it opens without one), and
     /// grants `permissions`, PyMuPDF's and the PDF's bits (4 print, 8 modify, 16 copy, 32
     /// annotate, 256 fill forms, 512 extract for accessibility, 1024 assemble, 2048 print in
