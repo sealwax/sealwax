@@ -23,6 +23,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Changed
 
+- A glyph's `size` and `bbox` (`glyphs`) are now those MuPDF gives. The size is the side of a
+  square as large as an em square after the text and current transformation matrices, so an em
+  stretched or squeezed (`Tz`, a text matrix `0.8 0 0 1`) is drawn at less than the font size.
+  The box reaches from the font's descent to its ascent rather than from 0.2 to 0.8 em, at least
+  an em tall: the font descriptor's, else the font's TrueType program's, else those of the font
+  a standard font is drawn with, else 0.2 and 0.8 em, as measured against PyMuPDF. On a corpus
+  of 98 documents (1.3 million glyphs), the box is PyMuPDF's to 1 point for all glyphs but 15,
+  and the size to 0.5% for all but 20, against 25% and 96% of them before.
 - A page rendered again (at another scale, in parts, after another page of the same document)
   reuses the fonts parsed and the glyphs drawn by the renders before it. Natively, pages of text
   render again 1.3 to 4 times faster; in Chrome, where filling the pixels weighs more, up to twice
@@ -37,6 +45,11 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
+- `glyphs()`: a glyph of a font not embedded that is drawn with a font of other widths ends
+  where the font's width puts it; it ended where the other font's glyph, stretched to that
+  width, was scaled to end. A glyph an annotation draws names its font as written, as those
+  of the page do, and a glyph drawn in a form that draws with several fonts gets the font it
+  is drawn in.
 - `drawings()` leaves out a line that goes nowhere (an `l`, or a curve made a line, ending where
   it starts, as written), as MuPDF does, unless it comes right after a move, where it stays a line
   of no length. Since 0.2.0 made degenerate curves lines, the outlines of letters drawn as paths

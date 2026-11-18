@@ -6,39 +6,48 @@
 //! it was drawn with. So the content is first read operator by operator, following `q`/`Q` and
 //! `Tf`, and each text-showing operator is enclosed in a marked-content sequence naming its font:
 //! the interpreter hands the sequence to the device with the glyphs. A form XObject is enclosed in
-//! one too, naming its font when it draws with one only (or inherits the one in effect); a glyph
-//! of a form drawing with several gets the PostScript name hayro reads from the font, when there
-//! is one. The sequence around a form also carries its `/StructParents`, so that the `/MCID`s
-//! inside are looked up where the form's structure is (see [`crate::actual`]).
+//! one too, naming its font when it draws with one only (or inherits the one in effect), and its
+//! fonts when it draws with several: a glyph drawn there gets the one whose program draws it. The
+//! sequence around a form also carries its `/StructParents`, so that the `/MCID`s inside are
+//! looked up where the form's structure is (see [`crate::actual`]). Annotations' appearances are
+//! read the same way, each placed on the page as hayro places it.
+//!
+//! The font gives the box of its glyphs (see [`crate::metrics`]), and the size of a glyph is
+//! MuPDF's: that of its em, stretched or squeezed, as a square. hayro stretches the glyphs of the
+//! font it draws a font not embedded with to that font's widths: the em is taken before.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use hayro_font::{FontCache, FontGlyph, GlyphIdentifier};
 use hayro_interpret::font::{Glyph as HayroGlyph, GlyphRun};
 use hayro_interpret::hayro_cmap::{BfString, WritingMode};
 use hayro_interpret::hayro_syntax::content::TypedIter;
-use hayro_interpret::hayro_syntax::object::{Dict, Name as HayroName, Stream};
+use hayro_interpret::hayro_syntax::object::{
+    Array, Dict, Name as HayroName, ObjectIdentifier, Rect as PdfRect, Stream,
+};
 use hayro_interpret::hayro_syntax::page::Resources;
+use hayro_interpret::hayro_syntax::xref::XRef;
 use hayro_interpret::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 use hayro_interpret::{
-    BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-    InterpreterSettings, RenderContent, SoftMask, interpret, interpret_page,
+    BlendMode, CacheKey as _, ClipPath, Context, Device, DrawMode, DrawProps, Image,
+    ImageDrawProps, InterpreterCache, InterpreterSettings, SoftMask, interpret,
 };
 use sealwax_core::Document;
 
 use crate::actual::{Key, Replacement, Structure};
 use crate::cache::with_cache;
 use crate::drawn::Bounds;
+use crate::metrics::{self, Metrics};
 use crate::scan::{name_operand, operators};
 
 /// The units per em of glyph space in hayro's glyph transforms.
 const UNITS_PER_EM: f64 = 1000.0;
 /// The tag of the sequences naming fonts.
 const TAG: &[u8] = b"SwFont";
-/// How far below and above the baseline a glyph's box reaches, in em: the usual descent and
-/// ascent, where the font's own are not read.
-const DESCENT: f64 = 0.2;
-const ASCENT: f64 = 0.8;
+/// Annotation flags: hidden, not to be viewed.
+const HIDDEN: u32 = 2;
+const NO_VIEW: u32 = 32;
 /// How close to the glyph shown before it, in em, a glyph with the same text repeats it.
 const OVERDRAWN: f64 = 0.1;
 /// How deep forms inside forms are looked into for their fonts.
@@ -55,12 +64,17 @@ pub struct TextGlyph {
     /// Where the next glyph's origin would land without spacing (its advance): between two
     /// glyphs, the gap a word space or a `TJ` adjustment leaves.
     pub end: [f64; 2],
-    /// The box from its origin to its end, from the descent to the ascent of a usual font.
+    /// The box from its origin to its end, from its font's descent to its ascent, at least an
+    /// em tall, as MuPDF reads them: the font descriptor's, else the font's TrueType program's,
+    /// else those of the font a standard font is drawn with, else 0.2 and 0.8 em (see
+    /// `metrics.rs` for the whole of it).
     pub bbox: Bounds,
     /// The box of its outline, when it has one (a space has none, nor a Type 3 glyph here).
     pub ink: Option<Bounds>,
-    /// The size it is drawn at: the length of one em upward, after the text and the current
-    /// transformation matrices (zero when they flatten it to its baseline).
+    /// The size it is drawn at, as MuPDF gives it: the side of a square as large as an em
+    /// square after the text and the current transformation matrices (zero when they flatten
+    /// it). An em stretched or squeezed along one axis (`Tz`, a text matrix `0.8 0 0 1`) is
+    /// drawn at less than the font size.
     pub size: f64,
     /// The direction of its baseline, a unit vector.
     pub direction: [f64; 2],
@@ -85,7 +99,6 @@ pub struct TextGlyph {
 /// The glyphs page `page_index` (from 0) draws, in the order of its content, forms and Type 3
 /// glyphs included; then, with `annotations`, those its annotations' appearances draw (shown
 /// ones, in the order of `/Annots`), as a viewer shows them and as MuPDF's text includes them.
-/// A glyph an annotation draws names its font only when the font names itself.
 ///
 /// # Errors
 /// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have; what
@@ -107,9 +120,10 @@ pub fn glyphs(
         };
         let content = page.page_stream().unwrap_or_default();
         let resources = page.resources();
-        let (instrumented, fonts) = instrument(content, resources);
+        let reader = FontReader::new();
+        let (instrumented, fonts) = instrument(content, resources, &reader);
         let mut collector = Collector {
-            fonts: &fonts,
+            fonts,
             open: Vec::new(),
             glyphs: Vec::new(),
             last_run: None,
@@ -118,13 +132,14 @@ pub fn glyphs(
             page_parents: page.raw().get::<i64>(b"StructParents"),
             replaced: HashSet::new(),
             annotation: false,
+            programs: HashMap::new(),
+            found_in: HashMap::new(),
         };
-        let everywhere = Rect::new(-1e9, -1e9, 1e9, 1e9);
         // What was read before the interpreter failed, if it did, is kept, as a reader keeps it.
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let mut context = Context::new(
                 Affine::IDENTITY,
-                everywhere,
+                EVERYWHERE,
                 cache,
                 pdf.xref(),
                 InterpreterSettings::default(),
@@ -135,26 +150,237 @@ pub fn glyphs(
                 &mut context,
                 &mut collector,
             );
-            if annotations {
+            if annotations && let Some(list) = page.raw().get::<Array<'_>>(b"Annots") {
                 collector.annotation = true;
-                collector.open.clear();
-                let mut context = Context::new(
-                    Affine::IDENTITY,
-                    everywhere,
-                    cache,
-                    pdf.xref(),
-                    InterpreterSettings {
-                        render_content: RenderContent::ANNOTATIONS,
-                        ..InterpreterSettings::default()
-                    },
-                );
-                interpret_page(page, &mut context, &mut collector);
+                let off = groups_off(pdf.xref());
+                for annotation in list.iter::<Dict<'_>>() {
+                    draw_annotation(
+                        &annotation,
+                        resources,
+                        cache,
+                        pdf.xref(),
+                        &off,
+                        &reader,
+                        &mut collector,
+                    );
+                }
             }
         }));
         collector.glyphs
     });
     doc.check_time()?;
     Ok(glyphs)
+}
+
+/// Where the glyphs of a page are looked for: anywhere.
+const EVERYWHERE: Rect = Rect::new(-1e9, -1e9, 1e9, 1e9);
+
+/// The appearance annotation `annotation` shows, as hayro picks it: its normal appearance, in
+/// its state (`/AS`) when it has several, else `/Off`.
+fn appearance<'a>(annotation: &Dict<'a>) -> Option<Stream<'a>> {
+    let normal = annotation.get::<Dict<'_>>(b"AP")?;
+    if let Some(stream) = normal.get::<Stream<'_>>(b"N") {
+        return Some(stream);
+    }
+    let states = normal.get::<Dict<'_>>(b"N")?;
+    annotation
+        .get::<HayroName<'_>>(b"AS")
+        .and_then(|state| states.get::<Stream<'_>>(state.as_ref()))
+        .or_else(|| states.get::<Stream<'_>>(b"Off"))
+}
+
+/// The optional content groups off in the document's default configuration, as hayro reads
+/// them.
+fn groups_off(xref: &XRef) -> HashSet<ObjectIdentifier> {
+    let mut off = HashSet::new();
+    let Some(properties) = xref
+        .get::<Dict<'_>>(xref.root_id())
+        .and_then(|catalog| catalog.get::<Dict<'_>>(b"OCProperties"))
+    else {
+        return off;
+    };
+    let Some(config) = properties.get::<Dict<'_>>(b"D") else {
+        return off;
+    };
+    let ids = |list: Option<Array<'_>>| -> Vec<ObjectIdentifier> {
+        list.map(|list| {
+            list.raw_iter()
+                .filter_map(|item| item.as_obj_ref())
+                .map(Into::into)
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    if config.get::<HayroName<'_>>(b"BaseState").as_deref() == Some(&b"OFF"[..]) {
+        off.extend(ids(properties.get::<Array<'_>>(b"OCGs")));
+    }
+    for id in ids(config.get::<Array<'_>>(b"ON")) {
+        off.remove(&id);
+    }
+    off.extend(ids(config.get::<Array<'_>>(b"OFF")));
+    off
+}
+
+/// Whether the optional content an appearance is tied to (its `/OC`) shows it, `off` being the
+/// groups off, as hayro decides it for a form.
+fn shown_by_optional_content(dict: &Dict<'_>, off: &HashSet<ObjectIdentifier>) -> bool {
+    let Some(content) = dict.get::<Dict<'_>>(b"OC") else {
+        return true;
+    };
+    let reference = dict.get_ref(b"OC");
+    let membership = content.get::<HayroName<'_>>(b"Type").as_deref() == Some(&b"OCMD"[..]);
+    if let (Some(reference), false) = (reference, membership) {
+        return !off.contains(&reference.into());
+    }
+    let groups: Vec<ObjectIdentifier> = match content.get::<Array<'_>>(b"OCGs") {
+        Some(list) => list
+            .raw_iter()
+            .filter_map(|item| item.as_obj_ref())
+            .map(Into::into)
+            .collect(),
+        None => content
+            .get_ref(b"OCGs")
+            .map(Into::into)
+            .into_iter()
+            .collect(),
+    };
+    if groups.is_empty() {
+        return true;
+    }
+    let on = |id: &ObjectIdentifier| !off.contains(id);
+    match content.get::<HayroName<'_>>(b"P").as_deref() {
+        Some(b"AllOn") => groups.iter().all(on),
+        Some(b"AnyOff") => !groups.iter().all(on),
+        Some(b"AllOff") => !groups.iter().any(on),
+        _ => groups.iter().any(on),
+    }
+}
+
+/// The glyphs `annotation`'s appearance draws, placed as a viewer places them (ISO 32000-1,
+/// 12.5.5) and as hayro does, its text-showing operators marked with their fonts as the page's
+/// are.
+fn draw_annotation<'a>(
+    annotation: &Dict<'a>,
+    page_resources: &Resources<'a>,
+    cache: &InterpreterCache<'a>,
+    xref: &'a XRef,
+    off: &HashSet<ObjectIdentifier>,
+    reader: &FontReader<'a>,
+    collector: &mut Collector<'a>,
+) {
+    if annotation.get::<u32>(b"F").unwrap_or(0) & (HIDDEN | NO_VIEW) != 0 {
+        return;
+    }
+    let Some(appearance) = appearance(annotation) else {
+        return;
+    };
+    let dict = appearance.dict();
+    let (Some(rect), Some(bbox), Ok(data)) = (
+        annotation.get::<PdfRect>(b"Rect"),
+        dict.get::<[f32; 4]>(b"BBox"),
+        appearance.decoded_data(),
+    ) else {
+        return;
+    };
+    if !shown_by_optional_content(dict, off) {
+        return;
+    }
+    let matrix = Affine::new(
+        dict.get::<[f64; 6]>(b"Matrix")
+            .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+    );
+    // The appearance's box through its matrix, fitted to the annotation's rectangle.
+    let boxed = (matrix
+        * Rect::new(
+            f64::from(bbox[0]),
+            f64::from(bbox[1]),
+            f64::from(bbox[2]),
+            f64::from(bbox[3]),
+        )
+        .to_path(0.1))
+    .bounding_box();
+    let target = Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
+    let (sx, sy) = (
+        target.width() / boxed.width(),
+        target.height() / boxed.height(),
+    );
+    let fit = Affine::new([
+        sx,
+        0.0,
+        0.0,
+        sy,
+        target.x0 - sx * boxed.x0,
+        target.y0 - sy * boxed.y0,
+    ]);
+    let own = dict.get::<Dict<'_>>(b"Resources").map(Resources::new);
+    let resources = own.as_ref().unwrap_or(page_resources);
+    let (instrumented, fonts) = instrument(&data, resources, reader);
+    // The indexes the page's content gave its fonts mean nothing in the appearance.
+    collector.fonts = fonts;
+    collector.found_in.clear();
+    collector.open.clear();
+    let mut context = Context::new(
+        fit * matrix,
+        EVERYWHERE,
+        cache,
+        xref,
+        InterpreterSettings::default(),
+    );
+    interpret(
+        TypedIter::new(&instrumented),
+        resources,
+        &mut context,
+        collector,
+    );
+}
+
+/// A font text is shown in.
+#[derive(Debug, Clone)]
+struct Font<'a> {
+    /// What tells its dictionary from another.
+    key: u128,
+    /// Its `/BaseFont` as written.
+    name: Option<String>,
+    /// How far its glyphs' boxes reach.
+    metrics: Metrics,
+    /// hayro's reading of it, for a font not embedded (hayro stretches each glyph of the font
+    /// it draws it with to the width the font gives it) and for one of several a form draws
+    /// with (to tell which a glyph is drawn in).
+    hayro: Option<hayro_font::Font<'a>>,
+}
+
+/// Reads the fonts text is shown in.
+struct FontReader<'a> {
+    cache: FontCache<'a>,
+    settings: InterpreterSettings,
+}
+
+impl<'a> FontReader<'a> {
+    fn new() -> Self {
+        Self {
+            cache: FontCache::new(),
+            settings: InterpreterSettings::default(),
+        }
+    }
+
+    fn read(&self, dict: &Dict<'a>) -> Font<'a> {
+        Font {
+            key: dict.cache_key(),
+            name: base_font(dict),
+            metrics: metrics::of_font(dict),
+            hayro: metrics::is_substituted(dict)
+                .then(|| self.hayro(dict))
+                .flatten(),
+        }
+    }
+
+    fn hayro(&self, dict: &Dict<'a>) -> Option<hayro_font::Font<'a>> {
+        self.cache.font(
+            dict,
+            &self.settings.font_resolver,
+            &self.settings.cmap_resolver,
+        )
+    }
 }
 
 fn base_font(font: &Dict<'_>) -> Option<String> {
@@ -166,13 +392,13 @@ fn base_font(font: &Dict<'_>) -> Option<String> {
     })
 }
 
-/// The fonts a form draws with, itself and the forms it draws, as `Tf` names them: their
-/// `/BaseFont` (None for one that names none).
-fn form_fonts(
-    form: &Stream<'_>,
-    parent: &Resources<'_>,
+/// The fonts a form draws with, itself and the forms it draws, as `Tf` names them (None for a
+/// name its resources lack).
+fn form_fonts<'a>(
+    form: &Stream<'a>,
+    parent: &Resources<'a>,
     depth: usize,
-    found: &mut Vec<Option<String>>,
+    found: &mut Vec<Option<Dict<'a>>>,
 ) {
     if depth > MAX_FORM_DEPTH || found.len() > 16 {
         return;
@@ -188,10 +414,13 @@ fn form_fonts(
     for op in operators(&data) {
         match &data[op.operator.clone()] {
             b"Tf" => {
-                let font = name_operand(&data, &op)
-                    .and_then(|name| resources.fonts.get::<Dict<'_>>(name))
-                    .and_then(|font| base_font(&font));
-                if !found.contains(&font) {
+                let font =
+                    name_operand(&data, &op).and_then(|name| resources.fonts.get::<Dict<'_>>(name));
+                let key = font.as_ref().map(Dict::cache_key);
+                if !found
+                    .iter()
+                    .any(|known| known.as_ref().map(Dict::cache_key) == key)
+                {
                     found.push(font);
                 }
             }
@@ -212,29 +441,43 @@ fn form_fonts(
 }
 
 /// `content` with each text-showing operator and each `Do` of a form enclosed in a sequence naming
-/// its font (`/F`: an index into the fonts returned; -1 for none known), with the form's
-/// `/StructParents` (`/SP`) or `/StructParent` (`/SE`); and those fonts.
-fn instrument(content: &[u8], resources: &Resources<'_>) -> (Vec<u8>, Vec<Option<String>>) {
-    let mut fonts: Vec<Option<String>> = Vec::new();
-    let index_of = |font: Option<String>, fonts: &mut Vec<Option<String>>| -> i64 {
-        match fonts.iter().position(|known| *known == font) {
-            Some(index) => i64::try_from(index).unwrap_or(-1),
+/// its font (`/F`: an index into the fonts returned; -1 for none known, then `/FS`, the fonts of
+/// a form drawing with several), with the form's `/StructParents` (`/SP`) or `/StructParent`
+/// (`/SE`); and those fonts, read by `reader`.
+fn instrument<'a>(
+    content: &[u8],
+    resources: &Resources<'a>,
+    reader: &FontReader<'a>,
+) -> (Vec<u8>, Vec<Font<'a>>) {
+    let mut fonts: Vec<Font<'a>> = Vec::new();
+    let mut index_of = |dict: &Dict<'a>, read_by_hayro: bool| -> usize {
+        let key = dict.cache_key();
+        let index = match fonts.iter().position(|known| known.key == key) {
+            Some(index) => index,
             None => {
-                fonts.push(font);
-                i64::try_from(fonts.len() - 1).unwrap_or(-1)
+                fonts.push(reader.read(dict));
+                fonts.len() - 1
             }
+        };
+        if read_by_hayro
+            && let Some(font) = fonts.get_mut(index)
+            && font.hayro.is_none()
+        {
+            font.hayro = reader.hayro(dict);
         }
+        index
     };
     let mut out = Vec::with_capacity(content.len() + content.len() / 4);
     let mut copied = 0;
-    // The font in effect, saved and restored with the graphics state.
-    let mut stack: Vec<Option<String>> = vec![None];
+    // The font in effect, by index, saved and restored with the graphics state.
+    let mut stack: Vec<Option<usize>> = vec![None];
     for op in operators(content) {
         let operator = &content[op.operator.clone()];
         let mut structure = String::new();
+        let mut candidates = String::new();
         let marked = match operator {
             b"q" => {
-                let top = stack.last().cloned().flatten();
+                let top = stack.last().copied().flatten();
                 stack.push(top);
                 None
             }
@@ -247,13 +490,13 @@ fn instrument(content: &[u8], resources: &Resources<'_>) -> (Vec<u8>, Vec<Option
             b"Tf" => {
                 let font = name_operand(content, &op)
                     .and_then(|name| resources.fonts.get::<Dict<'_>>(name))
-                    .and_then(|font| base_font(&font));
+                    .map(|font| index_of(&font, false));
                 if let Some(top) = stack.last_mut() {
                     *top = font;
                 }
                 None
             }
-            b"Tj" | b"TJ" | b"'" | b"\"" => Some(stack.last().cloned().flatten()),
+            b"Tj" | b"TJ" | b"'" | b"\"" => Some(stack.last().copied().flatten()),
             b"Do" => {
                 let form = name_operand(content, &op)
                     .and_then(|name| resources.x_objects.get::<Stream<'_>>(name))
@@ -270,9 +513,17 @@ fn instrument(content: &[u8], resources: &Resources<'_>) -> (Vec<u8>, Vec<Option
                     let mut found = Vec::new();
                     form_fonts(&form, resources, 0, &mut found);
                     match found.as_slice() {
-                        [] => stack.last().cloned().flatten(),
-                        [only] => only.clone(),
-                        _ => None,
+                        [] => stack.last().copied().flatten(),
+                        [Some(only)] => Some(index_of(only, false)),
+                        several => {
+                            let indexes: Vec<String> = several
+                                .iter()
+                                .flatten()
+                                .map(|font| index_of(font, true).to_string())
+                                .collect();
+                            candidates = format!(" /FS [{}]", indexes.join(" "));
+                            None
+                        }
                     }
                 })
             }
@@ -281,15 +532,13 @@ fn instrument(content: &[u8], resources: &Resources<'_>) -> (Vec<u8>, Vec<Option
         let Some(font) = marked else {
             continue;
         };
-        let index = if font.is_none() && operator == b"Do" {
-            -1
-        } else {
-            index_of(font, &mut fonts)
-        };
+        let index = font
+            .and_then(|index| i64::try_from(index).ok())
+            .unwrap_or(-1);
         out.extend_from_slice(&content[copied..op.start]);
         out.extend_from_slice(
             format!(
-                " /{} <</F {index}{structure}>> BDC ",
+                " /{} <</F {index}{candidates}{structure}>> BDC ",
                 String::from_utf8_lossy(TAG)
             )
             .as_bytes(),
@@ -304,34 +553,73 @@ fn instrument(content: &[u8], resources: &Resources<'_>) -> (Vec<u8>, Vec<Option
 
 /// A marked-content sequence open.
 struct Open {
-    /// The font it names, if it is one of ours.
-    font: Option<Option<String>>,
+    /// The font it names (by index, None when not known), if it is one of ours.
+    font: Option<Option<usize>>,
+    /// When its font is not known, the fonts of the form it encloses, which draws with several.
+    candidates: Vec<usize>,
     /// The `/StructParents` of the form it encloses, if it is one of ours around one.
     parents: Option<i64>,
     /// What the content inside reads as, when the document says.
     replacement: Option<Replacement>,
 }
 
-struct Collector<'f, 's> {
-    fonts: &'f [Option<String>],
+struct Collector<'a> {
+    /// The fonts the sequences of the content read name.
+    fonts: Vec<Font<'a>>,
     open: Vec<Open>,
     glyphs: Vec<TextGlyph>,
     /// The glyphs of the last run, to skip the stroke run of a text both filled and stroked.
     last_run: Option<usize>,
     /// The last glyph not overdrawn, by index.
     shown: Option<usize>,
-    structure: Structure<'s>,
+    structure: Structure<'a>,
     /// The page's `/StructParents`.
     page_parents: Option<i64>,
     /// The replacements already read, on an earlier glyph.
     replaced: HashSet<Key>,
     /// Reading the annotations' appearances.
     annotation: bool,
+    /// The metrics of the programs glyphs were drawn from without a known font, by their key.
+    programs: HashMap<u128, Metrics>,
+    /// The font among a form's several each glyph drawn there was found in.
+    found_in: HashMap<GlyphIdentifier, Option<usize>>,
 }
 
-impl Collector<'_, '_> {
-    fn font(&self) -> Option<Option<String>> {
-        self.open.iter().rev().find_map(|open| open.font.clone())
+impl<'f> Collector<'f> {
+    /// The font the innermost of our sequences names, when it is known; else the fonts of the
+    /// form it encloses, when that draws with several.
+    fn font(&self) -> (Option<Font<'f>>, Vec<usize>) {
+        let Some(open) = self.open.iter().rev().find(|open| open.font.is_some()) else {
+            return (None, Vec::new());
+        };
+        match open.font.flatten() {
+            Some(index) => (self.fonts.get(index).cloned(), Vec::new()),
+            None => (None, open.candidates.clone()),
+        }
+    }
+
+    /// Which of `candidates` the glyph `outline` is drawn in: the one whose program it is.
+    fn drawn_in(
+        &mut self,
+        candidates: &[usize],
+        outline: &hayro_font::OutlineGlyph,
+    ) -> Option<Font<'f>> {
+        let identifier = outline.identifier();
+        let fonts = &self.fonts;
+        let index = *self.found_in.entry(identifier.clone()).or_insert_with(|| {
+            candidates.iter().copied().find(|index| {
+                fonts
+                    .get(*index)
+                    .and_then(|font| font.hayro.as_ref())
+                    .is_some_and(|font| {
+                        matches!(
+                            font.glyph(outline.glyph_id(), outline.char_code()),
+                            FontGlyph::Outline(own) if own.identifier() == identifier
+                        )
+                    })
+            })
+        });
+        self.fonts.get(index?).cloned()
     }
 
     /// What the next glyph reads as, when an `/ActualText` covers it: the outermost one.
@@ -365,7 +653,7 @@ fn text(unicode: BfString) -> String {
     }
 }
 
-impl<'a> Device<'a> for Collector<'_, '_> {
+impl<'a> Device<'a> for Collector<'_> {
     fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
 
     fn push_clip_path(&mut self, _: &ClipPath) {}
@@ -380,12 +668,36 @@ impl<'a> Device<'a> for Collector<'_, '_> {
         }
         self.last_run = Some(identity);
         let invisible = matches!(mode, DrawMode::Invisible);
-        let marked = self.font();
+        let (named_font, candidates) = self.font();
         let vertical = matches!(run.writing_mode(), WritingMode::Vertical);
         for glyph in run.glyphs() {
-            let transform = props.transform * glyph.transform();
+            let marked = match (&named_font, &**glyph) {
+                (Some(font), _) => Some(font.clone()),
+                (None, HayroGlyph::Outline(outline)) if !candidates.is_empty() => {
+                    self.drawn_in(&candidates, outline)
+                }
+                _ => None,
+            };
+            let drawn = props.transform * glyph.transform();
+            // hayro stretches the glyph a font not embedded is drawn with to the width the font
+            // gives it: its outline, not its em.
+            let stretch = match (
+                &**glyph,
+                marked.as_ref().and_then(|font| font.hayro.as_ref()),
+            ) {
+                (HayroGlyph::Outline(outline), Some(font)) => {
+                    font.glyph_stretch(outline.glyph_id(), outline.char_code())
+                }
+                _ => 1.0,
+            };
+            let transform = if stretch.is_finite() && stretch > 0.0 {
+                drawn * Affine::scale_non_uniform(1.0 / stretch, 1.0)
+            } else {
+                drawn
+            };
             let origin = transform * Point::ZERO;
             let up = transform * Point::new(0.0, UNITS_PER_EM) - origin;
+            let mut program = None;
             let (advance, ink, named) = match &**glyph {
                 HayroGlyph::Outline(outline) => {
                     let path = outline.outline();
@@ -393,13 +705,15 @@ impl<'a> Device<'a> for Collector<'_, '_> {
                         .then(|| path.bounding_box())
                         .and_then(|rect| {
                             bounds(&[
-                                transform * Point::new(rect.x0, rect.y0),
-                                transform * Point::new(rect.x1, rect.y0),
-                                transform * Point::new(rect.x0, rect.y1),
-                                transform * Point::new(rect.x1, rect.y1),
+                                drawn * Point::new(rect.x0, rect.y0),
+                                drawn * Point::new(rect.x1, rect.y0),
+                                drawn * Point::new(rect.x0, rect.y1),
+                                drawn * Point::new(rect.x1, rect.y1),
                             ])
                         });
-                    let named = outline.font_data().and_then(|data| data.postscript_name);
+                    let data = outline.font_data();
+                    let named = data.as_ref().and_then(|data| data.postscript_name.clone());
+                    program = data;
                     (outline.advance_width().map(f64::from), ink, named)
                 }
                 HayroGlyph::Type3(type3) => (type3.advance_width().map(f64::from), None, None),
@@ -412,19 +726,27 @@ impl<'a> Device<'a> for Collector<'_, '_> {
             };
             let baseline = transform * Point::new(UNITS_PER_EM, 0.0) - origin;
             let length = baseline.hypot();
-            let size = up.hypot();
+            let [a, b, c, d, _, _] = transform.as_coeffs();
+            let size = (a * d - b * c).abs().sqrt() * UNITS_PER_EM;
             if !(origin.x.is_finite() && origin.y.is_finite() && size.is_finite() && length > 0.0) {
                 continue;
             }
             let direction = [baseline.x / length, baseline.y / length];
-            let (down, top) = (up * -DESCENT, up * ASCENT);
+            // The font's metrics, else those of the program the glyph was drawn from.
+            let metrics = match (&marked, &program) {
+                (Some(font), _) => font.metrics,
+                (None, Some(program)) => *self
+                    .programs
+                    .entry(program.cache_key)
+                    .or_insert_with(|| metrics::of_program(program.data.as_ref().as_ref())),
+                (None, None) => Metrics::USUAL,
+            };
+            let (below, above) = metrics.span();
+            let (down, top) = (up * below, up * above);
             let Some(bbox) = bounds(&[origin + down, origin + top, end + down, end + top]) else {
                 continue;
             };
-            let font = match &marked {
-                Some(Some(name)) => Some(name.clone()),
-                _ => named,
-            };
+            let font = marked.as_ref().and_then(|font| font.name.clone()).or(named);
             let text = glyph.as_unicode().map(text);
             let actual_text = self.actual_text();
             let overdrawn = self
@@ -465,15 +787,22 @@ impl<'a> Device<'a> for Collector<'_, '_> {
     fn begin_marked_content(&mut self, tag: &[u8], properties: Option<&Dict<'_>>) {
         let mut open = Open {
             font: None,
+            candidates: Vec::new(),
             parents: None,
             replacement: None,
         };
         if tag == TAG {
-            open.font = properties.and_then(|p| p.get::<i64>(b"F")).map(|index| {
-                usize::try_from(index)
-                    .ok()
-                    .and_then(|index| self.fonts.get(index).cloned().flatten())
-            });
+            open.font = properties
+                .and_then(|p| p.get::<i64>(b"F"))
+                .map(|index| usize::try_from(index).ok());
+            open.candidates = properties
+                .and_then(|p| p.get::<Array<'_>>(b"FS"))
+                .map(|list| {
+                    list.iter::<i64>()
+                        .filter_map(|index| usize::try_from(index).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
             open.parents = properties.and_then(|p| p.get::<i64>(b"SP"));
             open.replacement = properties
                 .and_then(|p| p.get::<i64>(b"SE"))

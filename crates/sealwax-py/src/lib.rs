@@ -1284,9 +1284,11 @@ impl Document {
     /// (as MuPDF's text includes them), each a dict in the page's default user space
     /// (unrotated, y up; read the crop box from `geometry`): `text` (None when the font does not
     /// say), `origin` and `end` (where its advance ends: the gap to the next glyph's origin is
-    /// the space a word space or a `TJ` adjustment leaves), `bbox` (from the usual descent to
-    /// the usual ascent), `ink` (its outline's box, or None), `size` (after the text and current
-    /// transformation matrices), `direction` (unit vector of the baseline), `font` (`/BaseFont`
+    /// the space a word space or a `TJ` adjustment leaves), `bbox` (from the font's descent to
+    /// its ascent, at least an em tall, as PyMuPDF gives it), `ink` (its outline's box, or None),
+    /// `size` (as PyMuPDF gives it: the side of a square as large as an em square after the text
+    /// and current transformation matrices, so less than the font size for an em stretched or
+    /// squeezed), `direction` (unit vector of the baseline), `font` (`/BaseFont`
     /// as written, or None), `invisible` (the text layer of a scan, usually), `overdrawn` (repeats
     /// the glyph shown before it, less than a tenth of an em away: bold faked by drawing twice,
     /// leaders drawn over one another; leave those out to read the page's text), `actual_text`

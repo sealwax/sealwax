@@ -15,6 +15,7 @@ mod cache;
 mod drawings;
 mod drawn;
 mod glyphs;
+mod metrics;
 mod redact;
 mod scan;
 
