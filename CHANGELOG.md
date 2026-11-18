@@ -6,22 +6,16 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-18
+
+0.7.0 was tagged but not published. Its changes are released in 0.8.0.
+
 ### Added
 
 - Page text extraction in Rust, Python and WebAssembly. `words` returns each word
   with its box and position within its block and line. `text_blocks` (`textBlocks`
   in JavaScript) returns the hierarchy. `search` returns oriented highlight
   quadrilaterals grouped by occurrence, including matches that span lines.
-
-### Fixed
-
-- For vertical CID fonts, `glyphs` now reports the vertical writing origin,
-  direction and advance in page coordinates.
-
-## [0.7.0] - 2026-11-18
-
-### Added
-
 - The files a document embeds (`Document::attachments`; `attachments` in Python and
   WebAssembly): those of its `/EmbeddedFiles`, in the order of their keys, then those of its
   pages' file attachment annotations, each with its name, key, description, MIME type, size,
@@ -87,6 +81,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
+- For vertical CID fonts, `glyphs` now reports the vertical writing origin,
+  direction and advance in page coordinates.
 - Redacting a second page of an encrypted document, or of one whose cross-reference was
   repaired, failed with `Unsupported`, about an incremental save the caller never asked for. The
   document is now read again with its objects written anew under their numbers.
@@ -474,8 +470,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.7.0...HEAD
-[0.7.0]: https://github.com/sealwax/sealwax/compare/v0.6.1...v0.7.0
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/sealwax/sealwax/compare/v0.6.1...v0.8.0
 [0.6.1]: https://github.com/sealwax/sealwax/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sealwax/sealwax/compare/v0.4.0...v0.5.0
