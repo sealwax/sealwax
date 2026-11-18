@@ -26,7 +26,7 @@ past a bound or a deadline they fail with an explicit error, rather than exhaust
 | **Rendering** | One page to a colour PNG at any scale, as a reader shows it (annotations and field values included; JPEG, JPEG 2000, JBIG2 and CCITT images decoded). Every page to a grayscale PDF, as a fax sends them |
 | **Optimization** | Lossless size reduction: unfiltered streams compressed, unreachable objects dropped |
 | **Building** | A new document from nothing, as test fixtures are: pages of a given size and crop box, text in the standard fonts, lines, rectangles, links, fields, outline, information and XMP |
-| **Composition** | A new document written from pages another engine laid out: glyphs placed one by one, paths, clips, gradients, pictures, links; fonts (TrueType or CFF, from a file or a collection) embedded as subsets whose text reads back |
+| **Composition** | A new document written from pages another engine laid out: glyphs placed one by one, paths, clips, gradients, pictures, links; fonts (TrueType or CFF, from a file or a collection) embedded as subsets whose text reads back; tagged content and its structure tree, bookmarks |
 | **Python** | Bindings for all of the above (Python 3.12+, `abi3`). The interpreter lock is released while sealwax works. An `isolated` helper runs an operation in a process of its own |
 
 ## Design

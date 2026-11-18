@@ -1,7 +1,7 @@
 //! Converts every fixture of docxide-pdf's corpus twice, with docxide's own PDF export and laid
 //! out by docxide then written by sealwax-compose, and compares the two documents page by page:
 //! page counts, ink at 150 dpi (Jaccard of the pixels darker than luma 200, docxide's metric)
-//! and the text read back.
+//! and the text read back; then document by document, the structure tree and the outline.
 //!
 //! Usage: `corpus <fixtures-root> <out-dir> [name-filter]`; writes `cases.csv`, `pages.csv` and
 //! `summary.md` to `<out-dir>`, and both PDFs of every page under 98 to `<out-dir>/pdfs`.
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use sealwax_convert::DocxOptions;
-use sealwax_core::{Document, Limits, OpenOptions, SaveOptions};
+use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, SaveOptions};
 
 const SCALE: f64 = 150.0 / 72.0;
 
@@ -38,6 +38,10 @@ struct CaseResult {
     not_described: BTreeMap<String, usize>,
     skipped: BTreeMap<String, usize>,
     error: Option<String>,
+    /// Elements in both structure trees (`structure`), and whether the trees are the same.
+    elements: (usize, usize),
+    structure_equal: bool,
+    outline_equal: bool,
 }
 
 fn cases(root: &Path, filter: Option<&str>) -> Vec<(String, String, PathBuf)> {
@@ -98,6 +102,81 @@ fn text(doc: &Document, page: usize) -> String {
         .unwrap_or_default()
 }
 
+fn dict(doc: &Document, object: Option<&Object>) -> Option<Dict> {
+    match object? {
+        Object::Dict(dict) => Some(dict.clone()),
+        Object::Ref(id) => match doc.object(*id).ok()?? {
+            Object::Dict(dict) => Some(dict),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The structure tree in reading order, an element a line: its depth, type, how many marked
+/// sequences and annotations it holds, its alternate and actual text and language.
+fn structure(doc: &Document) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(catalog) = dict(doc, Some(&Object::Ref(doc.catalog_id()))) else {
+        return lines;
+    };
+    let Some(root) = dict(doc, catalog.get(b"StructTreeRoot")) else {
+        return lines;
+    };
+    let mut stack: Vec<(usize, Object)> = kids(root.get(b"K"))
+        .into_iter()
+        .rev()
+        .map(|k| (0, k))
+        .collect();
+    while let Some((depth, kid)) = stack.pop() {
+        if lines.len() > 1_000_000 {
+            break;
+        }
+        let Some(element) = dict(doc, Some(&kid)) else {
+            continue;
+        };
+        let kids = kids(element.get(b"K"));
+        let (mut content, mut objects) = (0, 0);
+        let mut children = Vec::new();
+        for kid in kids {
+            match &kid {
+                Object::Integer(_) => content += 1,
+                Object::Dict(d) if d.get(b"Type") == Some(&Object::Name("MCR".into())) => {
+                    content += 1;
+                }
+                Object::Dict(d) if d.get(b"Type") == Some(&Object::Name("OBJR".into())) => {
+                    objects += 1;
+                }
+                _ => children.push(kid),
+            }
+        }
+        let text = |key: &[u8]| match element.get(key) {
+            Some(Object::String(s)) => sealwax_core::decode_text_string(s),
+            _ => String::new(),
+        };
+        let kind = match element.get(b"S") {
+            Some(Object::Name(n)) => String::from_utf8_lossy(n.as_bytes()).into_owned(),
+            _ => String::new(),
+        };
+        lines.push(format!(
+            "{depth} {kind} {content} {objects} {:?} {:?} {:?}",
+            text(b"Alt"),
+            text(b"ActualText"),
+            text(b"Lang")
+        ));
+        stack.extend(children.into_iter().rev().map(|k| (depth + 1, k)));
+    }
+    lines
+}
+
+fn kids(k: Option<&Object>) -> Vec<Object> {
+    match k {
+        Some(Object::Array(items)) => items.clone(),
+        Some(other) => vec![other.clone()],
+        None => Vec::new(),
+    }
+}
+
 fn run_case(group: &str, name: &str, input: &Path, out: &Path) -> CaseResult {
     let mut result = CaseResult {
         group: group.to_owned(),
@@ -144,6 +223,10 @@ fn run_case(group: &str, name: &str, input: &Path, out: &Path) -> CaseResult {
         .collect();
 
     let (native_doc, sealwax_doc) = (open(native.clone()), open(composed.clone()));
+    let (native_tree, sealwax_tree) = (structure(&native_doc), structure(&sealwax_doc));
+    result.elements = (native_tree.len(), sealwax_tree.len());
+    result.structure_equal = native_tree == sealwax_tree;
+    result.outline_equal = native_doc.outline().ok() == sealwax_doc.outline().ok();
     result.native_pages = native_doc.page_count();
     result.sealwax_pages = sealwax_doc.page_count();
     let mut keep = false;
@@ -161,6 +244,7 @@ fn run_case(group: &str, name: &str, input: &Path, out: &Path) -> CaseResult {
             text_equal_without_spaces: squeeze(&a) == squeeze(&b),
         });
     }
+    keep |= !(result.structure_equal && result.outline_equal);
     if keep || result.native_pages != result.sealwax_pages {
         let dir = out.join("pdfs").join(group).join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -201,6 +285,17 @@ fn summary(results: &[CaseResult]) -> String {
             pages.iter().filter(|p| p.text_equal_without_spaces).count(),
             pages.len(),
         );
+        let converted: Vec<&&CaseResult> = cases.iter().filter(|r| r.error.is_none()).collect();
+        let tagged = converted.iter().filter(|r| r.elements.0 > 0).count();
+        let elements: usize = converted.iter().map(|r| r.elements.0).sum();
+        let structure = percent(
+            converted.iter().filter(|r| r.structure_equal).count(),
+            converted.len(),
+        );
+        let outline = percent(
+            converted.iter().filter(|r| r.outline_equal).count(),
+            converted.len(),
+        );
         let native_ms: f64 = cases.iter().map(|r| r.native_ms).sum();
         let sealwax_ms: f64 = cases.iter().map(|r| r.sealwax_ms).sum();
         let _ = writeln!(out, "## {group}\n");
@@ -215,6 +310,12 @@ fn summary(results: &[CaseResult]) -> String {
         let _ = writeln!(out, "| Pages ≥ 90 | {:.1}% |", at_least(90.0));
         let _ = writeln!(out, "| Text identical | {text:.1}% |");
         let _ = writeln!(out, "| Text identical, whitespace aside | {text_ns:.1}% |");
+        let _ = writeln!(
+            out,
+            "| Tagged documents (native), structure elements | {tagged}, {elements} |"
+        );
+        let _ = writeln!(out, "| Structure tree identical | {structure:.1}% |");
+        let _ = writeln!(out, "| Outline identical | {outline:.1}% |");
         let _ = writeln!(
             out,
             "| Time native / sealwax (layout + compose + save) | {:.0} ms / {:.0} ms |\n",
@@ -265,6 +366,23 @@ fn summary(results: &[CaseResult]) -> String {
             page + 1,
             left.join(", ")
         );
+    }
+    let differ: Vec<&CaseResult> = results
+        .iter()
+        .filter(|r| r.error.is_none() && !(r.structure_equal && r.outline_equal))
+        .collect();
+    if !differ.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n## Structure or outline differs\n\n| Case | Elements native / sealwax | Structure | Outline |\n|---|---|---|---|"
+        );
+        for r in differ {
+            let _ = writeln!(
+                out,
+                "| {}/{} | {} / {} | {} | {} |",
+                r.group, r.name, r.elements.0, r.elements.1, r.structure_equal, r.outline_equal
+            );
+        }
     }
     let errors: Vec<&CaseResult> = results.iter().filter(|r| r.error.is_some()).collect();
     if !errors.is_empty() {
@@ -319,7 +437,8 @@ fn main() {
     results.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
 
     let mut cases_csv = String::from(
-        "group,case,native_pages,sealwax_pages,min_jaccard,native_ms,sealwax_ms,left_out,error\n",
+        "group,case,native_pages,sealwax_pages,min_jaccard,native_ms,sealwax_ms,native_elements,\
+         sealwax_elements,structure_equal,outline_equal,left_out,error\n",
     );
     let mut pages_csv =
         String::from("group,case,page,jaccard,text_equal,text_equal_without_spaces\n");
@@ -337,7 +456,7 @@ fn main() {
             .collect();
         let _ = writeln!(
             cases_csv,
-            "{},{},{},{},{:.2},{:.1},{:.1},\"{}\",\"{}\"",
+            "{},{},{},{},{:.2},{:.1},{:.1},{},{},{},{},\"{}\",\"{}\"",
             r.group,
             r.name,
             r.native_pages,
@@ -345,6 +464,10 @@ fn main() {
             if min.is_finite() { min } else { 0.0 },
             r.native_ms,
             r.sealwax_ms,
+            r.elements.0,
+            r.elements.1,
+            r.structure_equal,
+            r.outline_equal,
             left.join("; "),
             r.error.as_deref().unwrap_or("")
         );

@@ -1,8 +1,10 @@
 //! PDF documents composed from laid-out pages.
 //!
 //! A [`Composition`] describes what each page draws, already laid out: glyph runs with the
-//! position of every glyph, paths, pictures, link areas. [`compose`] writes it as a new
-//! [`sealwax_core::Document`], which the rest of sealwax then archives, fills or signs.
+//! position of every glyph, paths, pictures, link areas; and, for a tagged document, the marked
+//! content its logical [`Structure`] ties together, and its bookmarks. [`compose`] writes it as
+//! a new [`sealwax_core::Document`], which the rest of sealwax then archives, fills or signs:
+//! PDF/A level a keeps the structure it is given.
 //!
 //! Whatever lays the pages out (a word processor's layout, an HTML engine) stays outside: this
 //! crate only writes PDF. Font programs (TrueType or CFF outlines, [`font`]) are embedded as
@@ -16,16 +18,19 @@
 mod content;
 pub mod font;
 mod fonts;
+mod metadata;
 mod model;
+mod structure;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sealwax_core::{Dict, Document, Limits, Name, ObjId, Object, Rect, Stream};
 
 pub use model::{
-    Color, Composition, FillRule, Font, Glyph, GradientStop, Image, ImageColorSpace, ImageFilter,
-    Info, Item, LineCap, LineJoin, LinearGradient, Link, LinkTarget, Matrix, Page, Paint, Path,
-    Segment, Stroke, TextMode, TextRun,
+    ArtifactKind, Color, Composition, Element, FillRule, Font, Glyph, GradientStop, HeaderScope,
+    Image, ImageColorSpace, ImageFilter, Info, Item, Kid, LineCap, LineJoin, LinearGradient, Link,
+    LinkTarget, ListNumbering, Mark, Matrix, OutlineEntry, Page, Paint, Path, Segment, Stroke,
+    Structure, TableCell, TextMode, TextRun,
 };
 
 use content::{Used, Writer, gradient_key};
@@ -116,18 +121,20 @@ fn write(
     let mut shared = Shared::default();
     let mut skipped = Skipped::default();
     let mut page_ids = Vec::with_capacity(composition.pages.len());
+    let mut page_mcids = Vec::with_capacity(composition.pages.len());
     for page in &composition.pages {
         limits.check_time()?;
         let valid = |side: f64| side.is_finite() && side > 0.0;
         if !(valid(page.width) && valid(page.height)) {
             return Err(sealwax_core::Error::InvalidArgument { what: "page size" }.into());
         }
-        let (content, used) = {
+        let (content, mut used) = {
             let mut writer = Writer::new(&mut doc, composition, &mut fonts, &mut skipped, limits);
             writer.items(&page.items, 0)?;
             writer.finish()
         };
         let resources = shared.resources(&mut doc, composition, &fonts, &used)?;
+        page_mcids.push(std::mem::take(&mut used.mcids));
         let contents = doc.add_object(flate(Dict::new(), &content))?;
         let mut dict = Dict::new();
         dict.insert("Resources", resources);
@@ -135,14 +142,30 @@ fn write(
         let media_box = Rect::from_corners(0.0, 0.0, page.width, page.height);
         page_ids.push(doc.push_page(dict, media_box)?);
     }
+    let mut page_links = Vec::with_capacity(page_ids.len());
     for (page, id) in composition.pages.iter().zip(&page_ids) {
-        add_links(&mut doc, &page.links, *id, &page_ids, &mut skipped)?;
+        page_links.push(add_links(
+            &mut doc,
+            &page.links,
+            *id,
+            &page_ids,
+            &mut skipped,
+        )?);
     }
+    if let Some(tree) = &composition.structure {
+        let pages = structure::Pages {
+            ids: &page_ids,
+            mcids: &page_mcids,
+            links: &page_links,
+        };
+        structure::write(&mut doc, tree, &pages, &mut skipped, limits)?;
+    }
+    structure::write_outline(&mut doc, &composition.outline, page_ids.len(), &mut skipped)?;
     let unwritten = fonts.write(&mut doc)?;
     if !unwritten.is_empty() {
         return Ok(Written::Refused(unwritten));
     }
-    add_info(&mut doc, &composition.info)?;
+    metadata::write(&mut doc, &composition.info, skipped.is_empty())?;
     Ok(Written::Composed(Box::new(Composed {
         document: doc,
         skipped,
@@ -459,15 +482,16 @@ fn image_object(doc: &mut Document, image: &Image, mask: Option<ObjId>) -> Resul
     }))?)
 }
 
-/// The link annotations of the page at `page`.
+/// The link annotations of the page at `page`: for each link, its annotation, if written.
 fn add_links(
     doc: &mut Document,
     links: &[Link],
     page: ObjId,
     pages: &[ObjId],
     skipped: &mut Skipped,
-) -> Result<(), Error> {
+) -> Result<Vec<Option<ObjId>>, Error> {
     let mut annotations = Vec::new();
+    let mut written = Vec::with_capacity(links.len());
     for link in links {
         let mut annotation = Dict::new();
         annotation.insert("Type", Name::from("Annot"));
@@ -502,6 +526,7 @@ fn add_links(
             LinkTarget::Page { index, top } => {
                 let Some(target) = pages.get(*index) else {
                     skipped.count("links to pages out of range", 1);
+                    written.push(None);
                     continue;
                 };
                 annotation.insert(
@@ -516,44 +541,16 @@ fn add_links(
                 );
             }
         }
-        annotations.push(Object::Ref(doc.add_object(Object::Dict(annotation))?));
+        let id = doc.add_object(Object::Dict(annotation))?;
+        annotations.push(Object::Ref(id));
+        written.push(Some(id));
     }
     if annotations.is_empty() {
-        return Ok(());
+        return Ok(written);
     }
     if let Some(Object::Dict(mut dict)) = doc.object(page)? {
         dict.insert("Annots", Object::Array(annotations));
         doc.set_object(page, Object::Dict(dict));
     }
-    Ok(())
-}
-
-/// The document information dictionary and the catalog's language.
-fn add_info(doc: &mut Document, info: &Info) -> Result<(), Error> {
-    let mut dict = Dict::new();
-    for (key, value) in [
-        ("Title", &info.title),
-        ("Author", &info.author),
-        ("Subject", &info.subject),
-        ("Keywords", &info.keywords),
-    ] {
-        if let Some(value) = value {
-            dict.insert(key, Object::String(sealwax_core::encode_text_string(value)));
-        }
-    }
-    if !dict.is_empty() {
-        let id = doc.add_object(Object::Dict(dict))?;
-        doc.set_info_id(Some(id));
-    }
-    if let Some(language) = &info.language {
-        let catalog = doc.catalog_id();
-        if let Some(Object::Dict(mut dict)) = doc.object(catalog)? {
-            dict.insert(
-                "Lang",
-                Object::String(sealwax_core::encode_text_string(language)),
-            );
-            doc.set_object(catalog, Object::Dict(dict));
-        }
-    }
-    Ok(())
+    Ok(written)
 }

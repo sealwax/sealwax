@@ -16,6 +16,11 @@ pub struct Composition {
     /// The pictures [`Item::Image`] indexes.
     pub images: Vec<Image>,
     pub info: Info,
+    /// The logical structure (tagged PDF), tying the pages' marked content
+    /// ([`Item::BeginMarked`]) and links to what they are.
+    pub structure: Option<Structure>,
+    /// The bookmarks, in reading order.
+    pub outline: Vec<OutlineEntry>,
 }
 
 /// What a document says about itself.
@@ -27,6 +32,9 @@ pub struct Info {
     pub keywords: Option<String>,
     /// BCP 47 language tag of the text (the catalog's `/Lang`).
     pub language: Option<String>,
+    /// Claim PDF/UA-1 (ISO 14289-1) in the XMP packet, for a composition its layout knows to
+    /// meet it. The claim is written only when nothing was left out of the document.
+    pub pdf_ua: bool,
 }
 
 /// One page.
@@ -71,6 +79,115 @@ pub enum Item {
     /// A picture of [`Composition::images`], drawn into the unit square of the current
     /// transform.
     Image(usize),
+    /// What is drawn from here to the matching [`Item::EndMarked`] is marked: content of a
+    /// structure element, or an artifact. Marked sequences nest, and may begin and end in
+    /// different groups; one left open ends with its page.
+    BeginMarked(Mark),
+    EndMarked,
+}
+
+/// What a marked sequence of a page is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mark {
+    /// Content of a structure element of type `tag`, which lists it as [`Kid::Content`] by
+    /// `mcid`, unique on its page.
+    Element { tag: String, mcid: u32 },
+    /// Not part of the document's content: page furniture, of a kind if known.
+    Artifact(Option<ArtifactKind>),
+}
+
+/// The kinds of artifacts (ISO 32000-1, 14.8.2.2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactKind {
+    /// Running heads, page numbers.
+    Pagination,
+    /// Rules and other layout marks.
+    Layout,
+    /// Cut marks, colour bars.
+    Page,
+    /// A background picture or colour.
+    Background,
+}
+
+/// The logical structure: its elements, the first the root, each listing what it holds in
+/// reading order.
+#[derive(Debug, Clone, Default)]
+pub struct Structure {
+    pub elements: Vec<Element>,
+}
+
+/// An element of the structure.
+#[derive(Debug, Clone, Default)]
+pub struct Element {
+    /// Its structure type, written as given: a standard one (`Document`, `P`, `H1`, `L`, `LI`,
+    /// `Table`, `TD`, `Figure`, `Link`...), since no role map is written.
+    pub kind: String,
+    pub kids: Vec<Kid>,
+    /// Alternate text (a figure's, a formula's).
+    pub alt: Option<String>,
+    /// The text the element's content stands for.
+    pub actual_text: Option<String>,
+    /// BCP 47 tag of the element's language, when not the document's.
+    pub lang: Option<String>,
+    /// The element's identifier.
+    pub id: Option<String>,
+    pub table_cell: Option<TableCell>,
+    pub list_numbering: Option<ListNumbering>,
+}
+
+/// What an element holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kid {
+    /// An element of [`Structure::elements`], by index: each but the root is the kid of one.
+    Element(usize),
+    /// The sequence of page `page` marked [`Mark::Element`] with `mcid`.
+    Content { page: usize, mcid: u32 },
+    /// A link area: the index in [`Page::links`] of page `page`.
+    Link { page: usize, link: usize },
+}
+
+/// A table cell's attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableCell {
+    /// For a header cell, the cells it heads.
+    pub header_scope: Option<HeaderScope>,
+    /// Columns the cell spans.
+    pub col_span: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderScope {
+    Row,
+    Column,
+    Both,
+}
+
+/// How a list's items are numbered, as PDF names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListNumbering {
+    Unordered,
+    Ordered,
+    Description,
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+    LowerRoman,
+    UpperRoman,
+    LowerAlpha,
+    UpperAlpha,
+}
+
+/// A bookmark.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineEntry {
+    /// Its level: an entry nests under the nearest entry before it of a smaller level.
+    pub level: u32,
+    pub title: String,
+    /// The page of the composition it leads to.
+    pub page: usize,
+    /// The y shown at the top of the window; none shows the whole page.
+    pub top: Option<f64>,
 }
 
 /// A path in the current user space.

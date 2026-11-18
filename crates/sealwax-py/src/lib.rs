@@ -1245,6 +1245,7 @@ impl Document {
                 level,
                 title,
                 page_index,
+                top: None,
             });
         }
         let inner = &mut self.inner;

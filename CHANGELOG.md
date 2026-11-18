@@ -6,6 +6,30 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sealwax-compose`: tagged documents. A composition may mark what its pages draw
+  (`Item::BeginMarked`, `Item::EndMarked`: a structure element's content, by marked-content
+  id, or an artifact, of pagination or another kind) and give the logical structure that ties
+  it together (`Composition::structure`): elements of any standard type, each holding elements,
+  marked content by page and id, and link areas, with alternate and actual text, language, ID,
+  and table cell and list attributes. It is written as PDF tags it: the structure tree and its
+  parent tree, `/StructParents` and `/Tabs /S` on the pages, `/StructParent` on the links,
+  `/MarkInfo`. Marked sequences are balanced on each page and their ids renumbered from 0; what
+  does not tie to the pages (an element listed twice or outside the tree, content not drawn, a
+  link not written) is left out and counted. PDF/A level a keeps the tree.
+- `sealwax-compose`: bookmarks (`Composition::outline`), each nested under the nearest one before
+  it of a smaller level and leading to a height of its page; the document opens with them shown.
+- `sealwax-compose`: an XMP packet with what the document information says, and
+  `/DisplayDocTitle` in the viewer preferences, as PDF/UA asks. A layout that knows its document
+  meets PDF/UA-1 claims it (`Info::pdf_ua`); the claim is written only when nothing was left out.
+
+### Changed
+
+- `NewOutlineEntry` has a `top`: the height an entry leads to (`/XYZ`), or none for the whole
+  page (`/Fit`, as before); it is no longer `Eq`. `Document::set_outline` takes time in
+  proportion to the entries, not to their square.
+
 ## [0.6.0] - 2026-11-18
 
 ### Added

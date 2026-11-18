@@ -1,9 +1,10 @@
 //! Other formats converted to PDF: laid out by an engine of their own, written by
 //! [`sealwax_compose`]. DOCX first, laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf).
 //!
-//! The engine hands over laid-out pages (docxide's [`display`] module); this crate translates
-//! them into a [`sealwax_compose::Composition`] and composes it. Font files the layout names on
-//! disk are read here, at the boundary.
+//! The engine hands over laid-out pages (docxide's [`display`] module), with the marked content
+//! and structure that tag them and the bookmarks of the headings; this crate translates them
+//! into a [`sealwax_compose::Composition`] and composes it. Font files the layout names on disk
+//! are read here, at the boundary.
 //!
 //! What [`Limits`] bound: the deadline, checked before the layout and as pages are composed, and
 //! what [`sealwax_compose::compose`] bounds. The layout itself is docxide-pdf's: neither its time
@@ -21,9 +22,10 @@ use std::sync::Arc;
 
 pub use docxide_pdf::display;
 use sealwax_compose::{
-    Color, Composed, Composition, FillRule, Font, Glyph, GradientStop, Image, ImageColorSpace,
-    ImageFilter, Info, Item, LineCap, LineJoin, LinearGradient, Link, LinkTarget, Page, Paint,
-    Path, Segment, Stroke, TextMode, TextRun,
+    ArtifactKind, Color, Composed, Composition, Element, FillRule, Font, Glyph, GradientStop,
+    HeaderScope, Image, ImageColorSpace, ImageFilter, Info, Item, Kid, LineCap, LineJoin,
+    LinearGradient, Link, LinkTarget, ListNumbering, Mark, OutlineEntry, Page, Paint, Path,
+    Segment, Stroke, Structure, TableCell, TextMode, TextRun,
 };
 use sealwax_core::Limits;
 
@@ -126,7 +128,70 @@ pub fn composition(doc: &display::DisplayDocument) -> Composition {
             subject: doc.info.subject.clone(),
             keywords: doc.info.keywords.clone(),
             language: doc.info.language.clone(),
+            pdf_ua: doc.info.pdf_ua,
         },
+        structure: doc.structure.as_ref().map(structure),
+        outline: doc
+            .outline
+            .iter()
+            .map(|entry| OutlineEntry {
+                level: u32::from(entry.level),
+                title: entry.title.clone(),
+                page: entry.page,
+                top: Some(f64::from(entry.y)),
+            })
+            .collect(),
+    }
+}
+
+fn structure(structure: &display::Structure) -> Structure {
+    Structure {
+        elements: structure.elements.iter().map(element).collect(),
+    }
+}
+
+fn element(element: &display::Element) -> Element {
+    Element {
+        kind: element.kind.clone(),
+        kids: element
+            .kids
+            .iter()
+            .map(|kid| match *kid {
+                display::Kid::Element(index) => Kid::Element(index),
+                display::Kid::Content { page, mcid } => Kid::Content { page, mcid },
+                display::Kid::Link { page, link } => Kid::Link { page, link },
+            })
+            .collect(),
+        alt: element.alt.clone(),
+        actual_text: element.actual_text.clone(),
+        lang: element.lang.clone(),
+        id: element.id.clone(),
+        table_cell: element.table_cell.map(|cell| TableCell {
+            header_scope: cell.header_scope.map(|scope| match scope {
+                display::HeaderScope::Row => HeaderScope::Row,
+                display::HeaderScope::Column => HeaderScope::Column,
+                display::HeaderScope::Both => HeaderScope::Both,
+            }),
+            col_span: cell.col_span,
+        }),
+        list_numbering: element.list_numbering.map(list_numbering),
+    }
+}
+
+fn list_numbering(numbering: display::ListNumbering) -> ListNumbering {
+    use display::ListNumbering as N;
+    match numbering {
+        N::Unordered => ListNumbering::Unordered,
+        N::Ordered => ListNumbering::Ordered,
+        N::Description => ListNumbering::Description,
+        N::Disc => ListNumbering::Disc,
+        N::Circle => ListNumbering::Circle,
+        N::Square => ListNumbering::Square,
+        N::Decimal => ListNumbering::Decimal,
+        N::LowerRoman => ListNumbering::LowerRoman,
+        N::UpperRoman => ListNumbering::UpperRoman,
+        N::LowerAlpha => ListNumbering::LowerAlpha,
+        N::UpperAlpha => ListNumbering::UpperAlpha,
     }
 }
 
@@ -190,6 +255,16 @@ fn item(item: &display::Item) -> Item {
         },
         display::Item::Text(run) => Item::Text(text(run)),
         display::Item::Image(index) => Item::Image(*index),
+        display::Item::BeginMarked(display::Mark::Element { tag, mcid }) => {
+            Item::BeginMarked(Mark::Element {
+                tag: tag.clone(),
+                mcid: *mcid,
+            })
+        }
+        display::Item::BeginMarked(display::Mark::Artifact { pagination }) => Item::BeginMarked(
+            Mark::Artifact(pagination.then_some(ArtifactKind::Pagination)),
+        ),
+        display::Item::EndMarked => Item::EndMarked,
     }
 }
 

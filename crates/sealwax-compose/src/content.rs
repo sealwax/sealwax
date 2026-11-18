@@ -1,15 +1,15 @@
 //! A page's content stream, written from its items: the graphics state is tracked so that only
 //! what changes is written, and each glyph is placed by `TJ` where the layout put it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::fmt::Write as _;
 
 use sealwax_core::Document;
 
 use crate::fonts::{Fonts, Placed};
 use crate::model::{
-    Color, Composition, FillRule, Image, ImageColorSpace, Item, LineCap, LineJoin, LinearGradient,
-    Paint, Path, Segment, Stroke, TextMode, TextRun,
+    ArtifactKind, Color, Composition, FillRule, Image, ImageColorSpace, Item, LineCap, LineJoin,
+    LinearGradient, Mark, Paint, Path, Segment, Stroke, TextMode, TextRun,
 };
 use crate::{Error, Skipped};
 
@@ -61,6 +61,9 @@ pub(crate) struct Used {
     pub(crate) gradients: Vec<LinearGradient>,
     /// The index of each gradient, by [`gradient_key`].
     gradient_indexes: BTreeMap<Vec<u64>, usize>,
+    /// The marked-content ids of structure elements' content, as the composition gives them,
+    /// with the ids written: from 0, in the order the page draws them.
+    pub(crate) mcids: BTreeMap<u32, u32>,
 }
 
 /// What tells a gradient from another: the bits of its numbers, in order.
@@ -158,6 +161,8 @@ pub(crate) struct Writer<'a, 'f> {
     skipped: &'a mut Skipped,
     limits: &'a sealwax_core::Limits,
     items: usize,
+    /// Marked sequences begun and not ended.
+    open_marks: usize,
 }
 
 impl<'a, 'f> Writer<'a, 'f> {
@@ -179,10 +184,15 @@ impl<'a, 'f> Writer<'a, 'f> {
             skipped,
             limits,
             items: 0,
+            open_marks: 0,
         }
     }
 
-    pub(crate) fn finish(self) -> (Vec<u8>, Used) {
+    /// The page's content, the marked sequences left open ended.
+    pub(crate) fn finish(mut self) -> (Vec<u8>, Used) {
+        for _ in 0..self.open_marks {
+            self.out.push_str("EMC\n");
+        }
         (self.out.into_bytes(), self.used)
     }
 
@@ -287,8 +297,50 @@ impl<'a, 'f> Writer<'a, 'f> {
                 },
                 None => self.skipped.count("picture indexes out of range", 1),
             },
+            Item::BeginMarked(mark) => self.begin_marked(mark),
+            // An end without its beginning is left out, as viewers ignore it.
+            Item::EndMarked => {
+                if self.open_marks > 0 {
+                    self.out.push_str("EMC\n");
+                    self.open_marks -= 1;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// `BMC`, or `BDC` with the properties of `mark`. An element's content gets its id
+    /// renumbered (see [`Used::mcids`]); content that repeats an id already drawn on the page
+    /// is marked without one, tied to no element.
+    fn begin_marked(&mut self, mark: &Mark) {
+        match mark {
+            Mark::Element { tag, mcid } => {
+                let tag = name(if tag.is_empty() { "Span" } else { tag });
+                let next = u32::try_from(self.used.mcids.len()).unwrap_or(u32::MAX);
+                match self.used.mcids.entry(*mcid) {
+                    btree_map::Entry::Vacant(entry) => {
+                        entry.insert(next);
+                        let _ = writeln!(self.out, "{tag} <</MCID {next}>> BDC");
+                    }
+                    btree_map::Entry::Occupied(_) => {
+                        self.skipped
+                            .count("marked content ids repeated on a page", 1);
+                        let _ = writeln!(self.out, "{tag} BMC");
+                    }
+                }
+            }
+            Mark::Artifact(None) => self.out.push_str("/Artifact BMC\n"),
+            Mark::Artifact(Some(kind)) => {
+                let kind = match kind {
+                    ArtifactKind::Pagination => "Pagination",
+                    ArtifactKind::Layout => "Layout",
+                    ArtifactKind::Page => "Page",
+                    ArtifactKind::Background => "Background",
+                };
+                let _ = writeln!(self.out, "/Artifact <</Type /{kind}>> BDC");
+            }
+        }
+        self.open_marks += 1;
     }
 
     fn path(&mut self, path: &Path) {
@@ -448,9 +500,30 @@ impl<'a, 'f> Writer<'a, 'f> {
     }
 }
 
+/// `text` as a PDF name: a byte other than a regular printable character is written `#XX`,
+/// and a NUL, which no name may hold, is left out.
+fn name(text: &str) -> String {
+    let mut out = String::from("/");
+    for byte in text.bytes().filter(|byte| *byte != 0) {
+        let regular = (0x21..=0x7e).contains(&byte) && !b"#()<>[]{}/%".contains(&byte);
+        if regular {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "#{byte:02X}");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::number;
+    use super::{name, number};
+
+    #[test]
+    fn names_escape_what_is_not_regular() {
+        assert_eq!(name("H1"), "/H1");
+        assert_eq!(name("A B/(é)\0"), "/A#20B#2F#28#C3#A9#29");
+    }
 
     #[test]
     fn numbers_are_short() {
