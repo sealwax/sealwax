@@ -98,7 +98,8 @@ fn everything(doc: &Document) -> Vec<u8> {
         {
             all.extend_from_slice(&inflated);
         }
-        at = end;
+        // Past `endstream`, whose own "stream\n" would otherwise be taken for the next stream's.
+        at = (end + b"endstream".len()).min(saved.len());
     }
     all
 }

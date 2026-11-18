@@ -90,7 +90,8 @@ fn everything(doc: &Document) -> Vec<u8> {
         {
             all.extend_from_slice(&inflated);
         }
-        at = end;
+        // Past `endstream`, whose own "stream\n" would otherwise be taken for the next stream's.
+        at = (end + b"endstream".len()).min(saved.len());
     }
     all
 }
@@ -735,4 +736,118 @@ fn what_the_page_drew_before_is_no_longer_reached() {
             assert!(find(&all, b"/St ").is_some(), "{images:?}");
         }
     }
+}
+
+/// A tiling pattern drawing an image and text (as office suites export a shape filled with a
+/// photo), and the font it uses: objects 5 to 7.
+fn pattern_objects() -> Vec<String> {
+    vec![
+        stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 200 200] \
+             /XStep 200 /YStep 200 /Matrix [1 0 0 1 100 100] \
+             /Resources << /XObject << /Im 6 0 R >> /Font << /F1 7 0 R >> >>",
+            "q 200 0 0 200 0 0 cm /Im Do Q BT /F1 12 Tf 10 10 Td (LEAK-PATTERN) Tj ET",
+        ),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 11 /Height 1 /ColorSpace /DeviceGray \
+             /BitsPerComponent 8",
+            "LEAK-PIXELS",
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    ]
+}
+
+#[test]
+fn a_shape_filled_with_a_pattern_goes_whole_and_its_pattern_with_it() {
+    let content = "q /Pattern cs /P0 scn 100 100 200 200 re f Q 0 0 1 rg 400 600 50 50 re f";
+    let resources = "/Pattern << /P0 5 0 R >>";
+    // Half the shape under the area: what the pattern draws is content, whatever `paths` asks.
+    let area = Rect::from_corners(90.0, 90.0, 200.0, 320.0);
+    for paths in [
+        PathRedaction::Touched,
+        PathRedaction::Covered,
+        PathRedaction::Keep,
+    ] {
+        let mut doc = page(content, resources, &pattern_objects());
+        let done = redact(&mut doc, 0, &[area], &RedactOptions::default().paths(paths)).unwrap();
+        assert_eq!(done.paths, 1, "{paths:?}");
+        let after = decoded_content(&doc);
+        assert!(!after.contains("200 200 re"), "{paths:?}: {after}");
+        assert!(after.contains("400 600 50 50 re f"), "{paths:?}: {after}");
+        for saved in [&doc, &doc.rebuilt_for_redaction().unwrap()] {
+            let all = everything(saved);
+            assert!(find(&all, b"LEAK-").is_none(), "{paths:?}");
+        }
+    }
+    // Painted again away from the area, the pattern stays for that shape.
+    let twice = "/Pattern cs /P0 scn 100 100 200 200 re f 400 400 100 100 re f";
+    let mut doc = page(twice, resources, &pattern_objects());
+    redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    let after = decoded_content(&doc);
+    assert!(after.contains("400 400 100 100 re f") && !after.contains("200 200 re"));
+    assert!(find(&everything(&doc), b"LEAK-PATTERN").is_some());
+}
+
+#[test]
+fn a_second_page_is_redacted_in_an_encrypted_or_repaired_document_too() {
+    let plain = document(
+        "BT /F1 12 Tf 72 700 Td (Hello secret world) Tj ET",
+        "BT /F1 12 Tf 72 700 Td (Other private words) Tj ET",
+    );
+    let encrypted = plain
+        .save(&SaveOptions::default().encrypt(sealwax_core::Encrypt {
+            cipher: sealwax_core::Cipher::Aes256,
+            owner_password: "owner".to_owned(),
+            user_password: String::new(),
+            permissions: sealwax_core::PERMISSIONS,
+            seed: [7; 32],
+        }))
+        .unwrap();
+    // A cross-reference that points nowhere: the reader repairs it.
+    let mut repaired = plain
+        .save(&SaveOptions::default().xref(XrefFormat::Table))
+        .unwrap();
+    let at = find(&repaired, b"startxref\n").unwrap() + b"startxref\n".len();
+    repaired.splice(at..at + 1, b"9".iter().copied());
+    for data in [encrypted, repaired] {
+        let mut doc = Document::open(data, &OpenOptions::default()).unwrap();
+        for (page, word) in [(0, "secret"), (1, "private")] {
+            let area = area_over(&doc, page, word);
+            let done = redact(&mut doc, page, &[area], &RedactOptions::default()).unwrap();
+            assert!(done.glyphs > 0);
+        }
+        let doc = reopened(&doc);
+        assert!(!text(&glyphs(&doc, 0, false).unwrap()).contains("secret"));
+        assert!(!text(&glyphs(&doc, 1, false).unwrap()).contains("private"));
+        let all = everything(&doc);
+        assert!(find(&all, b"secret").is_none() && find(&all, b"private words").is_none());
+    }
+}
+
+#[test]
+fn a_figure_tied_by_an_object_reference_loses_its_texts() {
+    // An image tied to its element by /StructParent (an object reference, no MCID).
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R \
+         /Resources << /XObject << /Im 5 0 R >> >> >>"
+            .to_owned(),
+        stream("", "q 80 0 0 20 100 100 cm /Im Do Q"),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray \
+             /BitsPerComponent 8 /StructParent 1 /Filter /ASCIIHexDecode",
+            &format!("{}>", "80".repeat(8)),
+        ),
+        "<< /Type /StructTreeRoot /K 7 0 R /ParentTree << /Nums [1 7 0 R] >> >>".to_owned(),
+        "<< /Type /StructElem /S /Figure /P 6 0 R /Pg 3 0 R \
+         /K << /Type /OBJR /Obj 5 0 R >> /Alt (SECRET-FIGURE) >>"
+            .to_owned(),
+    ];
+    let mut doc = build(&objects);
+    let area = Rect::from_corners(90.0, 90.0, 300.0, 200.0);
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    assert_eq!((done.images, done.replacement_texts), (1, 1));
+    assert!(find(&everything(&doc), b"SECRET").is_none());
 }

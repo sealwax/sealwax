@@ -160,7 +160,8 @@ impl Document {
     ///   page, and nothing only they reach is copied.
     /// - The optional content (`/OCProperties`) is kept, so that a layer turned off stays off.
     /// - The rest stays behind: the form, the document information, the XMP metadata, the
-    ///   outline, the embedded files, and the streams the pages no longer draw.
+    ///   outline, the embedded files, the structure tree (a tagged document is no longer
+    ///   tagged), and the streams the pages no longer draw.
     ///
     /// # Errors
     /// As [`Document::compose`].

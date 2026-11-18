@@ -136,3 +136,33 @@ fn pages_are_labelled_as_their_ranges_say() {
     );
     assert_eq!(open(plain).page_labels().unwrap(), None);
 }
+
+#[test]
+fn labels_too_large_for_the_memory_are_refused() {
+    // 200 pages, each labelled with a prefix of 100 kB: 20 MB of labels.
+    let kids: String = (0..200).map(|n| format!("{} 0 R ", n + 3)).collect();
+    let prefix = "x".repeat(100_000);
+    let mut objects = vec![
+        (
+            1,
+            format!(
+                "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /P ({prefix}) /S /D >>] >> >>"
+            ),
+        ),
+        (2, format!("<< /Type /Pages /Kids [{kids}] /Count 200 >>")),
+    ];
+    for n in 0..200 {
+        objects.push((
+            n + 3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>".to_owned(),
+        ));
+    }
+    let objects: Vec<(u32, &str)> = objects.iter().map(|(n, b)| (*n, b.as_str())).collect();
+    let doc = open(common::pdf(&objects, false));
+    assert!(matches!(
+        doc.page_labels(),
+        Err(Error::LimitExceeded {
+            what: "page label bytes"
+        })
+    ));
+}

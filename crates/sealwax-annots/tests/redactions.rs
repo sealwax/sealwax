@@ -71,7 +71,8 @@ fn everything(doc: &Document) -> Vec<u8> {
         {
             all.extend_from_slice(&inflated);
         }
-        at = end;
+        // Past `endstream`, whose own "stream\n" would otherwise be taken for the next stream's.
+        at = (end + b"endstream".len()).min(saved.len());
     }
     all
 }
@@ -195,6 +196,7 @@ fn nothing_of_what_was_redacted_is_left_anywhere() {
                    /P <</MCID 0>> BDC BT /F1 12 Tf 100 620 Td (y) Tj ET EMC \
                    /Span /P0 BDC BT /F1 12 Tf 100 600 Td (z) Tj ET EMC \
                    /Fm Do q 110 0 0 10 100 560 cm /Im Do Q \
+                   q /Pattern cs /Pt scn 100 495 40 4 re f Q \
                    BT /F1 12 Tf 100 300 Td (KEEP) Tj ET";
     let objects = vec![
         "<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /Metadata 14 0 R \
@@ -205,7 +207,8 @@ fn nothing_of_what_was_redacted_is_left_anywhere() {
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R \
          /Resources << /Font << /F1 5 0 R >> /XObject << /Fm 6 0 R /Im 18 0 R >> \
-         /Properties << /P0 17 0 R >> >> /Annots [7 0 R 8 0 R 9 0 R] /StructParents 0 \
+         /Properties << /P0 17 0 R >> /Pattern << /Pt 21 0 R >> >> \
+         /Annots [7 0 R 8 0 R 9 0 R] /StructParents 0 \
          /PieceInfo << /App << /Private (LEAK-PIECE) >> >> /Thumb 20 0 R >>"
             .to_owned(),
         stream("", content),
@@ -238,12 +241,20 @@ fn nothing_of_what_was_redacted_is_left_anywhere() {
             "/Width 10 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8",
             "LEAK-THUMB",
         ),
+        // A shape's fill drawing text, as office suites fill a shape with a picture.
+        stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 40 4] \
+             /XStep 40 /YStep 4 /Resources << /Font << /F1 5 0 R >> >>",
+            "BT /F1 3 Tf 0 0 Td (LEAK-PATTERN) Tj ET",
+        ),
     ];
     let mut doc = build(&objects, "/Info 19 0 R");
     let applied = apply_redactions(&mut doc, &RedactOptions::default()).unwrap();
     assert_eq!(applied.marks, 1);
     let rebuilt = doc.rebuilt_for_redaction().unwrap();
     let all = everything(&rebuilt);
+    // The search reads every stream: what stays is found.
+    assert!(find(&all, b"(KEEP)").is_some());
     let text = String::from_utf8_lossy(&all);
     let left: Vec<&str> = text
         .match_indices("LEAK-")
