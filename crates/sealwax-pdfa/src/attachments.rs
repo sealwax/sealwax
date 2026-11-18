@@ -10,7 +10,9 @@
 
 use std::collections::HashSet;
 
-use sealwax_core::{Dict, Document, Name, ObjId, Object, Result, encode_text_string};
+use sealwax_core::{
+    Dict, Document, Name, ObjId, Object, Result, encode_text_string, is_mime_type, mime_type_for,
+};
 
 use crate::Report;
 use crate::edit::{self, Location};
@@ -20,34 +22,6 @@ use crate::scan::Scan;
 /// How deep the name tree is followed, and how many of its nodes are read.
 const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 100_000;
-
-/// MIME types by file extension, lower case.
-const MIME_TYPES: [(&str, &str); 18] = [
-    ("csv", "text/csv"),
-    ("doc", "application/msword"),
-    (
-        "docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ),
-    ("gif", "image/gif"),
-    ("htm", "text/html"),
-    ("html", "text/html"),
-    ("jpeg", "image/jpeg"),
-    ("jpg", "image/jpeg"),
-    ("json", "application/json"),
-    ("p7s", "application/pkcs7-signature"),
-    ("pdf", "application/pdf"),
-    ("png", "image/png"),
-    ("tif", "image/tiff"),
-    ("tiff", "image/tiff"),
-    ("txt", "text/plain"),
-    (
-        "xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ),
-    ("xml", "text/xml"),
-    ("zip", "application/zip"),
-];
 
 /// A file specification and what it is associated with.
 struct Found {
@@ -399,7 +373,7 @@ fn describe(
     }
     let mut typed = false;
     if let Some(Object::Dict(files)) = files {
-        let mime = mime_type(&name);
+        let mime = mime_type_for(&name);
         for key in [&b"F"[..], b"UF"] {
             let Some(Object::Ref(stream)) = files.get(key) else {
                 continue;
@@ -409,7 +383,7 @@ fn describe(
                 let valid = dict
                     .get(b"Subtype")
                     .and_then(Object::as_name)
-                    .is_some_and(valid_mime);
+                    .is_some_and(is_mime_type);
                 if !valid {
                     dict.insert("Subtype", Name::from(mime));
                     set = true;
@@ -456,45 +430,18 @@ fn associate(doc: &mut Document, location: &Location, id: ObjId) -> Result<bool>
     Ok(added)
 }
 
-/// A MIME type as veraPDF reads one: a type and a subtype of letters, digits and `-_+.`.
-fn valid_mime(name: &[u8]) -> bool {
-    let part = |part: &[u8]| {
-        !part.is_empty()
-            && part
-                .iter()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_+.".contains(b))
-    };
-    let mut parts = name.splitn(2, |b| *b == b'/');
-    matches!((parts.next(), parts.next()), (Some(kind), Some(sub)) if part(kind) && part(sub))
-}
-
-/// The MIME type of a file named `name`, by its extension.
-fn mime_type(name: &str) -> &'static str {
-    let extension = name
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase());
-    extension
-        .and_then(|extension| {
-            MIME_TYPES
-                .iter()
-                .find(|(known, _)| *known == extension)
-                .map(|(_, mime)| *mime)
-        })
-        .unwrap_or("application/octet-stream")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{mime_type, valid_mime};
+    use sealwax_core::{is_mime_type, mime_type_for};
 
     #[test]
     fn mime_types_and_names() {
-        assert!(valid_mime(b"text/plain"));
-        assert!(valid_mime(b"application/vnd.ms-excel"));
-        assert!(!valid_mime(b"text"));
-        assert!(!valid_mime(b"text/plain; charset=utf-8"));
-        assert!(!valid_mime(b"/plain"));
-        assert_eq!(mime_type("Facture.XML"), "text/xml");
-        assert_eq!(mime_type("note"), "application/octet-stream");
+        assert!(is_mime_type(b"text/plain"));
+        assert!(is_mime_type(b"application/vnd.ms-excel"));
+        assert!(!is_mime_type(b"text"));
+        assert!(!is_mime_type(b"text/plain; charset=utf-8"));
+        assert!(!is_mime_type(b"/plain"));
+        assert_eq!(mime_type_for("Facture.XML"), "text/xml");
+        assert_eq!(mime_type_for("note"), "application/octet-stream");
     }
 }

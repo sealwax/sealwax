@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod attachments;
 mod build;
 mod census;
 mod decode;
@@ -35,6 +36,7 @@ mod serialize;
 mod text;
 mod trailer;
 
+pub use attachments::{Attachment, NewAttachment, is_mime_type, mime_type_for};
 pub use build::NewOutlineEntry;
 pub use census::{Census, Font, Form, PageFacts, Tagging};
 pub use document::{Document, MAX_OBJECT_NUMBER, OpenOptions};

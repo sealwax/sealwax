@@ -111,6 +111,18 @@ class ExtractedImage(TypedDict):
     width: int
     height: int
 
+class Attachment(TypedDict):
+    name: str
+    key: str | None
+    description: str | None
+    mime_type: str | None
+    size: int | None
+    created: str | None
+    modified: str | None
+    relationship: str | None
+    page_number: int | None
+    rect: tuple[float, float, float, float] | None
+
 class Link(TypedDict):
     rect: tuple[float, float, float, float]
     kind: Literal["page", "uri", "file", "named", "unknown"]
@@ -329,6 +341,18 @@ class Document:
     def add_page(self, width: float = 595.0, height: float = 842.0) -> int: ...
     def set_crop_box(self, page_index: int, rect: tuple[float, float, float, float]) -> None: ...
     def set_user_unit(self, page_index: int, unit: float) -> None: ...
+    def attachments(self) -> list[Attachment]: ...
+    def attachment_data(self, index: int) -> bytes: ...
+    def add_attachment(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        description: str | None = None,
+        mime_type: str | None = None,
+        relationship: str | None = None,
+        modified: str | None = None,
+    ) -> None: ...
     def insert_text(
         self,
         page_index: int,

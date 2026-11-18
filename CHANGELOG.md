@@ -8,6 +8,17 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- The files a document embeds (`Document::attachments`; `attachments` in Python and
+  WebAssembly): those of its `/EmbeddedFiles`, in the order of their keys, then those of its
+  pages' file attachment annotations, each with its name, key, description, MIME type, size,
+  dates, relationship to the document, and page and rectangle for an annotation's. One read
+  (`attachment_data`; `attachmentData`), bounded by `max_stream_bytes`. A file embedded
+  (`Document::add_attachment`, `NewAttachment`; `add_attachment`, `addAttachment`): compressed,
+  its MIME type (guessed from its extension when not given), size, MD5 checksum and date in
+  `/Params`, named in `/F` and `/UF`, with its description and `/AFRelationship`, added to
+  `/EmbeddedFiles` and to the catalog's `/AF`: a document with a file added converts to
+  PDF/A-3b that veraPDF passes. `mime_type_for` and `is_mime_type`, which PDF/A conversion
+  used on its own.
 - The images a page draws (`sealwax_text::images`; `images` in Python and WebAssembly), in the
   order of its content, forms and inline images included: the box and matrix they are drawn
   with, their size in pixels, object, colour space family, bits per component, filters, and
