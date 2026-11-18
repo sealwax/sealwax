@@ -138,6 +138,123 @@ pub(crate) fn operators(data: &[u8]) -> Vec<Op> {
     ops
 }
 
+/// How deep arrays and dictionaries are followed in [`object_end`]: past that, the rest of the
+/// data is taken as the object.
+const MAX_NESTING: usize = 64;
+
+/// Past the white space and comments from `at`.
+fn skip_white(data: &[u8], mut at: usize) -> usize {
+    while at < data.len() {
+        if is_white(data[at]) {
+            at += 1;
+        } else if data[at] == b'%' {
+            while at < data.len() && !matches!(data[at], b'\r' | b'\n') {
+                at += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    at
+}
+
+/// The end of the object at `at` (after white space): a string, a dictionary or an array whole,
+/// else a name, a number or a keyword; a stray delimiter is an object of one byte.
+pub(crate) fn object_end(data: &[u8], at: usize) -> usize {
+    nested_end(data, skip_white(data, at), 0)
+}
+
+fn nested_end(data: &[u8], mut at: usize, depth: usize) -> usize {
+    let Some(&first) = data.get(at) else {
+        return data.len();
+    };
+    let close: &[u8] = match first {
+        b'(' => return skip_string(data, at),
+        b'<' if data.get(at + 1) == Some(&b'<') => {
+            at += 2;
+            b">>"
+        }
+        b'<' => {
+            return data[at..]
+                .iter()
+                .position(|b| *b == b'>')
+                .map_or(data.len(), |p| at + p + 1);
+        }
+        b'[' => {
+            at += 1;
+            b"]"
+        }
+        b'/' => {
+            at += 1;
+            while at < data.len() && is_regular(data[at]) {
+                at += 1;
+            }
+            return at;
+        }
+        b if is_regular(b) => {
+            while at < data.len() && is_regular(data[at]) {
+                at += 1;
+            }
+            return at;
+        }
+        _ => return at + 1,
+    };
+    if depth >= MAX_NESTING {
+        return data.len();
+    }
+    loop {
+        at = skip_white(data, at);
+        if at >= data.len() {
+            return data.len();
+        }
+        if data[at..].starts_with(close) {
+            return at + close.len();
+        }
+        at = nested_end(data, at, depth + 1);
+    }
+}
+
+/// An entry of a dictionary written in a content stream: its key (escapes read), the range from
+/// the key to the end of the value, and the value's.
+pub(crate) struct Entry {
+    pub(crate) key: Vec<u8>,
+    pub(crate) whole: std::ops::Range<usize>,
+    pub(crate) value: std::ops::Range<usize>,
+}
+
+/// The entries of the dictionary at `at` in `data` (after white space), and where it lies;
+/// `None` when no dictionary starts there.
+pub(crate) fn dict_entries(data: &[u8], at: usize) -> Option<(Vec<Entry>, std::ops::Range<usize>)> {
+    let mut at = skip_white(data, at);
+    if !data[at..].starts_with(b"<<") {
+        return None;
+    }
+    let start = at;
+    let end = object_end(data, at);
+    at += 2;
+    let mut entries = Vec::new();
+    loop {
+        at = skip_white(data, at);
+        if at >= end || data[at..].starts_with(b">>") {
+            break;
+        }
+        let key_end = nested_end(data, at, 1);
+        if data[at] != b'/' {
+            at = key_end;
+            continue;
+        }
+        let value_start = skip_white(data, key_end);
+        let value_end = nested_end(data, value_start, 1).min(end);
+        entries.push(Entry {
+            key: name(&data[at + 1..key_end]),
+            whole: at..value_end,
+            value: value_start..value_end,
+        });
+        at = value_end;
+    }
+    Some((entries, start..end))
+}
+
 /// The last name operand of `op`, without its `/`.
 pub(crate) fn name_operand<'d>(data: &'d [u8], op: &Op) -> Option<&'d [u8]> {
     let operands = &data[op.start..op.operator.start];
@@ -359,7 +476,7 @@ fn hex(raw: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Operand, operands};
+    use super::{Operand, dict_entries, object_end, operands};
 
     #[test]
     fn operands_are_read_with_their_escapes() {
@@ -379,5 +496,27 @@ mod tests {
             operands(b"/Span <</MCID 3>>"),
             vec![Operand::Name(b"Span".to_vec()), Operand::Other]
         );
+    }
+
+    #[test]
+    fn a_dictionary_is_read_entry_by_entry() {
+        let data = b"/Span << /ActualText (a >> \\) b) /K [1 <</X 2>> [3]] %>>\n/A#6Ct <41> /MCID 7 >> rest";
+        let (entries, range) = dict_entries(data, object_end(data, 0)).unwrap();
+        let keys: Vec<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
+        assert_eq!(keys, [&b"ActualText"[..], b"K", b"Alt", b"MCID"]);
+        assert_eq!(&data[entries[0].value.clone()], b"(a >> \\) b)");
+        assert_eq!(&data[entries[1].value.clone()], b"[1 <</X 2>> [3]]");
+        assert_eq!(&data[entries[3].value.clone()], b"7");
+        assert_eq!(&data[range.end..], b" rest");
+        assert!(dict_entries(b"/Span /MC0", 5).is_none());
+    }
+
+    #[test]
+    fn nesting_too_deep_takes_the_rest() {
+        let mut data = b"<< /K ".to_vec();
+        data.extend(std::iter::repeat_n(b'[', 1 << 20));
+        assert_eq!(object_end(&data, 0), data.len());
+        let (entries, _) = dict_entries(&data, 0).unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

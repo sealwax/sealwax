@@ -174,6 +174,8 @@ export interface Redacted {
   images: number;
   imagesRemoved: number;
   paths: number;
+  /** The `/ActualText`, `/Alt` and `/E` taken off what lost content. */
+  replacementTexts: number;
 }
 
 export interface AppliedRedactions {
@@ -1827,9 +1829,10 @@ impl Document {
     /// Take out of page `pageIndex` (from 0) what it draws under `areas` (boxes in its default
     /// user space, unrotated, y up): the glyphs (a glyph an area overlaps goes whole, nothing
     /// after it moves), the images' pixels (`images`: "pixels", "remove" or "keep"), the paths
-    /// painted there (`paths`: "touched", "covered" or "keep"). Annotations stay: flatten first.
-    /// Follow with `rebuiltForRedaction()`: what the pages no longer reach stays in this
-    /// document.
+    /// painted there (`paths`: "touched", "covered" or "keep"), and the `/ActualText`, `/Alt`
+    /// and `/E` standing for what lost content. Annotations stay: flatten first. The document
+    /// then refuses `saveIncremental()`. Follow with `rebuiltForRedaction()`: what the pages no
+    /// longer reach stays in this document.
     ///
     /// # Errors
     /// A `PdfError`, or a `RangeError` for a bad area or option.
@@ -2269,6 +2272,7 @@ fn redacted_object(done: &sealwax_text::Redacted) -> Object {
     set(&object, "images", count(done.images));
     set(&object, "imagesRemoved", count(done.images_removed));
     set(&object, "paths", count(done.paths));
+    set(&object, "replacementTexts", count(done.replacement_texts));
     object
 }
 
