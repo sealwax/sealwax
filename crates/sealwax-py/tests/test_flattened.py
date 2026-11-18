@@ -74,6 +74,13 @@ def test_redaction_marks_applied_leave_nothing_under_them():
     ]))
     applied = document.apply_redactions(paths="covered")
     assert (applied["marks"], applied["redacted"]["glyphs"]) == (1, 6)
+    # An incremental save would keep the bytes it was opened from, and what was taken out.
+    try:
+        document.save_incremental()
+    except sealwax.PdfError:
+        pass
+    else:
+        raise AssertionError("a redacted document was saved incrementally")
     rebuilt = sealwax.Document.from_bytes(document.rebuilt_for_redaction())
     assert "secret" not in "".join(g["text"] or "" for g in rebuilt.glyphs(0))
     # Asked directly: the blue box goes.

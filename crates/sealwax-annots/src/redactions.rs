@@ -80,6 +80,7 @@ pub fn apply_redactions(doc: &mut Document, options: &RedactOptions) -> Result<R
         total.images += done.images;
         total.images_removed += done.images_removed;
         total.paths += done.paths;
+        total.replacement_texts += done.replacement_texts;
         applied.links_removed += remove_marks(doc, page_id, &areas)?;
         let mut placed = Vec::new();
         for mark in &marks {

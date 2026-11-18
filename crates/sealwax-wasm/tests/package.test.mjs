@@ -348,6 +348,8 @@ test("redaction marks are applied and areas redacted", () => {
   const applied = doc.applyRedactions();
   assert.equal(applied.marks, 1);
   assert.equal(applied.redacted.glyphs, 6);
+  // An incremental save would keep the bytes it was opened from, and what was taken out.
+  assert.throws(() => doc.saveIncremental());
   const rebuilt = Document.fromBytes(doc.rebuiltForRedaction());
   assert.equal(new TextDecoder().decode(rebuilt.save({ xref: "table" })).includes("secret"), false);
   assert.deepEqual(rebuilt.redact(0, [[60, 690, 80, 715]], { images: "keep" }).glyphs, 1);
