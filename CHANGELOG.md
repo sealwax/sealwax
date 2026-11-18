@@ -6,6 +6,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `metadata()` describes how a document is encrypted (`encryption`): its security handler, `/V`
+  and `/R`, the length of its key and how its streams are encrypted (RC4, AES, none), as a
+  string as PyMuPDF writes it (`Standard V5 R6 256-bit AES`) in Python and WebAssembly. None
+  for a document that is not encrypted.
+
 ### Fixed
 
 - A full save of a document whose catalog is no dictionary (a stream a later revision gave the
