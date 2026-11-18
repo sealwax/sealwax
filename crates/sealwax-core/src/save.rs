@@ -308,8 +308,16 @@ fn page_patches(source: &Source<'_>) -> Result<HashMap<ObjId, Object>> {
     let inherited = doc.inherited_resources()?;
     let page_ids = doc.page_ids();
     let catalog_id = doc.catalog_id();
-    let Some(Object::Dict(mut catalog)) = source.load(catalog_id)? else {
-        return Ok(patches);
+    // A catalog that is no dictionary (a stream a later revision gave its number, in a fuzzed
+    // file) leads to no page, though hayro found them: a catalog of its own is written, over the
+    // tree rebuilt, and what the object held is not kept.
+    let mut catalog = match source.load(catalog_id)? {
+        Some(Object::Dict(catalog)) => catalog,
+        _ => {
+            let mut catalog = Dict::new();
+            catalog.insert("Type", Name::from("Catalog"));
+            catalog
+        }
     };
     // The tree is kept only when walking it gives back the pages hayro found, in the same order.
     let found: Vec<Option<ObjId>> = match catalog.get(b"Pages").and_then(Object::as_ref_id) {
