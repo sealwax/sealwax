@@ -340,6 +340,36 @@ export type LinkTarget =
   | { kind: "named"; name: string }
   | { kind: "unknown"; name: string | null };
 
+/** A file a document embeds. */
+export interface Attachment {
+  /** Its file name. */
+  name: string;
+  /** Its key in `/EmbeddedFiles`; null for a file attachment annotation's. */
+  key: string | null;
+  description: string | null;
+  mimeType: string | null;
+  /** As declared. */
+  size: number | null;
+  /** PDF dates as written ("D:20261118120000Z"). */
+  created: string | null;
+  modified: string | null;
+  /** "Source", "Data", "Alternative"... */
+  relationship: string | null;
+  /** For a file attachment annotation: its page (from 1) and its rectangle. */
+  pageNumber: number | null;
+  rect: Box | null;
+}
+
+/** A file to embed; what is left out is guessed (the MIME type) or "Unspecified". */
+export interface NewAttachment {
+  description?: string;
+  mimeType?: string;
+  /** "Source", "Data", "Alternative", "Supplement", "EncryptedPayload", "FormData", "Schema". */
+  relationship?: string;
+  /** A PDF date ("D:20261118120000Z"), which PDF/A-3 asks for. */
+  modified?: string;
+}
+
 /** An image a page draws. */
 export interface PageImage {
   /** The box its unit square covers, in the page's default user space. */
@@ -1927,6 +1957,86 @@ impl Document {
             .arrange(&wanted)
             .map_err(|error| core_error(&error))?;
         compact(&arranged, self.inner.limits())
+    }
+
+    /// The files the document embeds: those of its `/EmbeddedFiles` in the order of their keys,
+    /// then those its pages' file attachment annotations embed. As `attachments` in Python.
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(unchecked_return_type = "Attachment[]")]
+    pub fn attachments(&self) -> Result<Array, JsValue> {
+        let files = self
+            .inner
+            .attachments()
+            .map_err(|error| core_error(&error))?;
+        let text = |value: Option<String>| value.map_or(JsValue::NULL, JsValue::from);
+        Ok(files
+            .into_iter()
+            .map(|file| {
+                let object = Object::new();
+                set(&object, "name", file.name);
+                set(&object, "key", text(file.key));
+                set(&object, "description", text(file.description));
+                set(&object, "mimeType", text(file.mime_type));
+                #[allow(clippy::cast_precision_loss)]
+                let size = file
+                    .size
+                    .map_or(JsValue::NULL, |size| JsValue::from_f64(size as f64));
+                set(&object, "size", size);
+                set(&object, "created", text(file.created));
+                set(&object, "modified", text(file.modified));
+                set(&object, "relationship", text(file.relationship));
+                set(
+                    &object,
+                    "pageNumber",
+                    file.page_index.map_or(JsValue::NULL, |i| count(i + 1)),
+                );
+                set(
+                    &object,
+                    "rect",
+                    file.rect.map_or(JsValue::NULL, |r| JsValue::from(rect(r))),
+                );
+                JsValue::from(object)
+            })
+            .collect())
+    }
+
+    /// The bytes of the `index`-th file (from 0) of `attachments()`, decoded.
+    ///
+    /// # Errors
+    /// A `RangeError` for a file the document does not embed; a `PdfError` (a `PdfLimitError`
+    /// past `maxStreamBytes`).
+    #[wasm_bindgen(js_name = attachmentData)]
+    pub fn attachment_data(&self, index: usize) -> Result<Uint8Array, JsValue> {
+        self.inner
+            .attachment_data(index)
+            .map(|data| bytes(&data))
+            .map_err(|error| core_error(&error))
+    }
+
+    /// Embed the file `data` named `name` (also its key in `/EmbeddedFiles`): compressed, its
+    /// size and MD5 checksum given, associated with the document (`/AF`). As `add_attachment`
+    /// in Python.
+    ///
+    /// # Errors
+    /// A `RangeError` for a name empty or taken, a MIME type or a relationship it cannot take.
+    #[wasm_bindgen(js_name = addAttachment)]
+    pub fn add_attachment(
+        &mut self,
+        name: String,
+        data: &[u8],
+        #[wasm_bindgen(unchecked_param_type = "NewAttachment | undefined")] options: JsValue,
+    ) -> Result<(), JsValue> {
+        let mut file = sealwax_core::NewAttachment::new(name, data.to_vec());
+        let text = |key: &str| get(&options, key).and_then(|value| value.as_string());
+        file.description = text("description");
+        file.mime_type = text("mimeType");
+        file.relationship = text("relationship");
+        file.modified = text("modified");
+        self.inner
+            .add_attachment(&file)
+            .map_err(|error| core_error(&error))
     }
 
     /// Turn pages where they are: `turns` lists `[page, quarter turns]` (from 0; clockwise,

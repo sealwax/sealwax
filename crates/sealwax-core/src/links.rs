@@ -93,7 +93,7 @@ impl Document {
     }
 
     /// The rectangle `object` is, when it is one of four numbers.
-    fn rect(&self, object: Option<&Object>) -> Result<Option<Rect>> {
+    pub(crate) fn rect(&self, object: Option<&Object>) -> Result<Option<Rect>> {
         let Some(Object::Array(items)) = self.resolved(object)? else {
             return Ok(None);
         };

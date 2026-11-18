@@ -1151,6 +1151,70 @@ impl Document {
         run(py, || Ok(inner.set_user_unit(page_index, unit)?))
     }
 
+    /// The files the document embeds: those of its `/EmbeddedFiles` in the order of their keys,
+    /// then those its pages' file attachment annotations embed. Each a dict with `name` (its
+    /// file name), `key` (in `/EmbeddedFiles`; None for an annotation's), `description`,
+    /// `mime_type`, `size` (as declared), `created` and `modified` (PDF dates as written),
+    /// `relationship` ("Source", "Data", "Alternative"...), `page_number` (from 1) and `rect`
+    /// for an annotation's (None otherwise).
+    fn attachments<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let inner = &self.inner;
+        let files = run(py, || Ok(inner.attachments()?))?;
+        files
+            .into_iter()
+            .map(|file| {
+                let dict = PyDict::new(py);
+                dict.set_item("name", file.name)?;
+                dict.set_item("key", file.key)?;
+                dict.set_item("description", file.description)?;
+                dict.set_item("mime_type", file.mime_type)?;
+                dict.set_item("size", file.size)?;
+                dict.set_item("created", file.created)?;
+                dict.set_item("modified", file.modified)?;
+                dict.set_item("relationship", file.relationship)?;
+                dict.set_item("page_number", file.page_index.map(|i| i + 1))?;
+                dict.set_item("rect", file.rect.map(|r| (r.x1, r.y1, r.x2, r.y2)))?;
+                Ok(dict)
+            })
+            .collect()
+    }
+
+    /// The bytes of the `index`-th file (from 0) of `attachments()`, decoded. `ValueError` for
+    /// a file the document does not embed; `PdfLimitError` past `max_stream_bytes`.
+    fn attachment_data<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = &self.inner;
+        let data = run(py, || Ok(inner.attachment_data(index)?))?;
+        Ok(PyBytes::new(py, &data))
+    }
+
+    /// Embed the file `data` named `name` (also its key in `/EmbeddedFiles`), with its
+    /// `description`, `mime_type` (guessed from the name's extension when None),
+    /// `relationship` to the document ("Source", "Data", "Alternative", "Supplement",
+    /// "EncryptedPayload", "FormData", "Schema"; "Unspecified" when None) and `modified` date (a
+    /// PDF date, "D:20261118120000Z", which PDF/A-3 asks for). It is compressed, given its size
+    /// and MD5 checksum, and associated with the document (`/AF`). `ValueError` for a name
+    /// empty or taken, a MIME type or a relationship it cannot take.
+    #[pyo3(signature = (name, data, *, description = None, mime_type = None, relationship = None, modified = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_attachment(
+        &mut self,
+        py: Python<'_>,
+        name: String,
+        data: Vec<u8>,
+        description: Option<String>,
+        mime_type: Option<String>,
+        relationship: Option<String>,
+        modified: Option<String>,
+    ) -> PyResult<()> {
+        let mut file = pdf::NewAttachment::new(name, data);
+        file.description = description;
+        file.mime_type = mime_type;
+        file.relationship = relationship;
+        file.modified = modified;
+        let inner = &mut self.inner;
+        run(py, || Ok(inner.add_attachment(&file)?))
+    }
+
     /// Draw `text` on page `page_index` (from 0), the first line's baseline starting at `point`
     /// (x, y) on the page as it shows (turned by its rotation, from the top-left corner of its
     /// crop box, y down, in points), upright; `\n` starts the next line, the font's height

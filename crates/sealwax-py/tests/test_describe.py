@@ -225,3 +225,24 @@ def test_images_are_listed_and_extracted():
     assert decoded["ext"] == "png" and decoded["image"].startswith(b"\x89PNG")
     with pytest.raises(ValueError):
         document.extract_image(0, 2)
+
+
+def test_files_are_embedded_listed_and_read_back():
+    document = sealwax.Document.new()
+    document.add_page(100, 100)
+    document.add_attachment("facture.xml", b"<invoice/>", description="Factur-X",
+                            relationship="Alternative", modified="D:20261118100000Z")
+    document.add_attachment("data.bin", b"\x00\x01")
+    built = sealwax.Document.from_bytes(document.save())
+    files = built.attachments()
+    assert [(f["name"], f["mime_type"], f["relationship"]) for f in files] == [
+        ("data.bin", "application/octet-stream", "Unspecified"),
+        ("facture.xml", "text/xml", "Alternative"),
+    ]
+    assert files[1]["description"] == "Factur-X" and files[1]["size"] == 10
+    assert files[1]["page_number"] is None and files[1]["rect"] is None
+    assert built.attachment_data(1) == b"<invoice/>"
+    with pytest.raises(ValueError):
+        document.add_attachment("data.bin", b"again")
+    with pytest.raises(ValueError):
+        built.attachment_data(2)

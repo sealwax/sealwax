@@ -420,6 +420,24 @@ test("pages turn in place, the outline kept", () => {
   assert.throws(() => doc.rotatePages([[2, 1]]), RangeError);
 });
 
+test("files are embedded, listed and read back", () => {
+  const doc = Document.fromBytes(build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+  ]));
+  doc.addAttachment("facture.xml", new TextEncoder().encode("<invoice/>"), { relationship: "Alternative" });
+  const saved = Document.fromBytes(doc.save());
+  const [file] = saved.attachments();
+  assert.deepEqual(
+    [file.name, file.mimeType, file.relationship, file.size, file.pageNumber],
+    ["facture.xml", "text/xml", "Alternative", 10, null],
+  );
+  assert.equal(new TextDecoder().decode(saved.attachmentData(0)), "<invoice/>");
+  assert.throws(() => doc.addAttachment("facture.xml", new Uint8Array([1])), RangeError);
+  assert.throws(() => saved.attachmentData(1), RangeError);
+});
+
 test("images are listed and extracted", () => {
   const doc = Document.fromBytes(build([
     "<< /Type /Catalog /Pages 2 0 R >>",
