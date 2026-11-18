@@ -146,7 +146,8 @@ pub struct ApplyOptions {
     /// painted: the pages show their content and the XFDF alone. Flattening then has nothing
     /// left to do.
     pub remove_annotations: bool,
-    /// TrueType programs for the free texts, by the font the XFDF names, and for every other:
+    /// TrueType or OpenType programs for the free texts, by the font the XFDF names, and for
+    /// every other:
     /// embedded (the glyphs used), each character the font has drawn as it is. Without them,
     /// Helvetica, the characters WinAnsiEncoding lacks drawn as `?`.
     pub fonts: TextFonts,
@@ -337,7 +338,7 @@ pub fn apply_xfdf_with(
     let mut helvetica: Option<ObjId> = None;
     let mut helvetica_bold: Option<ObjId> = None;
     // The programs embedded, by the program: one font per program for this XFDF's texts.
-    let mut embedded: Vec<(Arc<font::Program>, font::Embedded)> = Vec::new();
+    let mut embedded: Vec<(Arc<sealwax_compose::font::FontProgram>, font::Embedded)> = Vec::new();
     for (page, item) in prepared {
         let placed = match item {
             Prepared::Picture {
@@ -400,7 +401,7 @@ pub fn apply_xfdf_with(
                         let font = &embedded[at].1;
                         let (drawing, replaced) = draw::free_text_with(&text, width, height, font);
                         applied.characters_replaced += replaced;
-                        fonts.insert(font::TextFont::resource(font), Object::Ref(font.id));
+                        fonts.insert(font::TextFont::resource(font), Object::Ref(font.id()));
                         drawing
                     }
                     None if font::HelveticaBold::named(text.font.as_deref()) => {

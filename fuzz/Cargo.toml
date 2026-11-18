@@ -17,6 +17,7 @@ sealwax-pdfa = { path = "../crates/sealwax-pdfa" }
 sealwax-annots = { path = "../crates/sealwax-annots" }
 sealwax-raster = { path = "../crates/sealwax-raster" }
 sealwax-sign = { path = "../crates/sealwax-sign" }
+sealwax-compose = { path = "../crates/sealwax-compose" }
 
 [[bin]]
 name = "open"
@@ -98,6 +99,13 @@ bench = false
 [[bin]]
 name = "verify"
 path = "fuzz_targets/verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compose"
+path = "fuzz_targets/compose.rs"
 test = false
 doc = false
 bench = false

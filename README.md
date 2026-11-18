@@ -25,6 +25,7 @@ past a bound or a deadline they fail with an explicit error, rather than exhaust
 | **Text and drawings** | The glyphs a page draws, in the order of its content (forms, Type 3 fonts, and on request annotations): Unicode text, origin and advance, box, size, direction, font as written, invisible text (a scan's OCR layer) marked. Also what a reader reads instead: `/ActualText` from marked content or the structure tree, bold faked by drawing twice. Words, lines and reading order are left to the caller. The straight lines and rectangles a page paints (and on request its annotations), after its transformations: what tables and check boxes are drawn with |
 | **Rendering** | One page to a colour PNG at any scale, as a reader shows it (annotations and field values included; JPEG, JPEG 2000, JBIG2 and CCITT images decoded). Every page to a grayscale PDF, as a fax sends them |
 | **Optimization** | Lossless size reduction: unfiltered streams compressed, unreachable objects dropped |
+| **Composition** | A new document written from pages another engine laid out: glyphs placed one by one, paths, clips, gradients, pictures, links; fonts (TrueType or CFF, from a file or a collection) embedded as subsets whose text reads back |
 | **Python** | Bindings for all of the above (Python 3.12+, `abi3`). The interpreter lock is released while sealwax works. An `isolated` helper runs an operation in a process of its own |
 
 ## Design
@@ -134,7 +135,7 @@ sealwax glyphs in.pdf --out glyphs.jsonl
 
 | Path | Contents |
 |---|---|
-| `crates/sealwax` | The facade crate: the document model, with `annots`, `pdfa`, `raster`, `sign` and `text` modules |
+| `crates/sealwax` | The facade crate: the document model, with `annots`, `compose`, `pdfa`, `raster`, `sign` and `text` modules |
 | `crates/sealwax-*` | One crate per area. `sealwax-cli` is the command line, `sealwax-py` the Python bindings |
 | `fuzz/` | `cargo-fuzz` targets, one per entry point |
 | `benchmark/` | Hostile-input bench, and judges that check outputs with veraPDF, pyHanko, PDFium and qpdf |

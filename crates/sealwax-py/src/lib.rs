@@ -1359,9 +1359,9 @@ impl Document {
     /// document's own annotations (links but) and form out first, nothing of them painted.
     /// Several XFDF apply one after the other. `pages` lists the pages that changed (from 0).
     /// `fonts` (`{"Caveat": bytes}`, by the font the XFDF names) and `default_font` (for every
-    /// other) are TrueType programs the free texts are drawn with, embedded: each character the
-    /// font has drawn as it is; without them, Helvetica. `ValueError` for a font that is no
-    /// TrueType program. Raises XfdfError for an XFDF outside a signing page's subset, or a
+    /// other) are TrueType or OpenType programs the free texts are drawn with, embedded: each
+    /// character the font has drawn as it is; without them, Helvetica. `ValueError` for a font
+    /// that is no program sealwax can embed. Raises XfdfError for an XFDF outside a signing page's subset, or a
     /// mark that cannot be placed; nothing is changed then.
     #[pyo3(signature = (xfdf, *, flatten=true, remove_annotations=false, fonts=None, default_font=None))]
     fn apply_xfdf<'py>(

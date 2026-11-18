@@ -17,8 +17,8 @@ sealwax-core.workspace = true
 sealwax-text.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
-# The TrueType fonts a caller gives for free texts: `cmap`, advances, metrics, names.
-read-fonts = "0.46"
+# The fonts a caller gives for free texts, embedded as composed pages embed theirs.
+sealwax-compose.workspace = true
 flate2 = "1"
 quick-xml = "0.42.0"
 png = "0.18.1"
@@ -34,3 +34,5 @@ workspace = true
 
 [dev-dependencies]
 flate2 = "1"
+# The subsets embedded, read back.
+read-fonts = "0.46"

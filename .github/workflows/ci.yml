@@ -42,11 +42,14 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          [open, save, text, pdfa, annots, xfdf, photos, merge, raster, timestamp, revocation, verify]
+          [open, save, text, pdfa, annots, xfdf, photos, compose, merge, raster, timestamp, revocation, verify]
         include:
           # The test photos seed the photos target; new inputs go to its own corpus.
           - target: photos
             seeds: ../crates/sealwax-annots/tests/data
+          # The test fonts seed the compose target.
+          - target: compose
+            seeds: ../crates/sealwax-compose/tests/data
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

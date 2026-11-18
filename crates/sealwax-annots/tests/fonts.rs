@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use read_fonts::TableProvider as _;
 use sealwax_annots::{ApplyOptions, TextFonts, apply_xfdf_with};
 use sealwax_core::{Document, Error as PdfError, Object, OpenOptions, SaveOptions};
 
@@ -363,19 +364,18 @@ fn the_program_embedded_keeps_the_glyphs_used_only_and_its_widths_are_the_progra
         }
     }
     let cid_font = cid_font.expect("a CIDFontType2");
-    // k is glyph 3, ó glyph 9: their advances, 520 and 580.
+    // ó (glyph 9, advance 580) is drawn first, so it is code 1 of the subset; k (glyph 3,
+    // advance 520) code 2. `W` holds runs: a first code, then the widths from it.
     let widths = cid_font.get(b"W").and_then(Object::as_array).unwrap();
-    let pairs: Vec<(i64, f64)> = widths
-        .chunks(2)
-        .map(|pair| {
-            (
-                pair[0].as_i64().unwrap(),
-                pair[1].as_array().unwrap()[0].as_f64().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(pairs, [(3, 520.0), (9, 580.0)]);
-    // The program embedded: the glyphs used and .notdef keep their outlines, the others none.
+    let mut pairs: Vec<(i64, f64)> = Vec::new();
+    for run in widths.chunks(2) {
+        let first = run[0].as_i64().unwrap();
+        for (i, width) in run[1].as_array().unwrap().iter().enumerate() {
+            pairs.push((first + i64::try_from(i).unwrap(), width.as_f64().unwrap()));
+        }
+    }
+    assert_eq!(pairs, [(1, 580.0), (2, 520.0)]);
+    // The program embedded: .notdef and the glyphs used, with their outlines, nothing else.
     let descriptor = cid_font
         .get(b"FontDescriptor")
         .and_then(Object::as_ref_id)
@@ -398,18 +398,26 @@ fn the_program_embedded_keeps_the_glyphs_used_only_and_its_widths_are_the_progra
     .unwrap();
     assert!(embedded.len() < program.len());
     let font = read_fonts::FontRef::new(&embedded).unwrap();
+    assert_eq!(font.maxp().unwrap().num_glyphs(), 3);
+    let long = font.head().unwrap().index_to_loc_format() == 1;
     let loca = font
         .table_data(read_fonts::types::Tag::new(b"loca"))
         .unwrap();
-    let offsets: Vec<u32> = loca
-        .as_bytes()
-        .chunks(4)
-        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-        .collect();
+    let offsets: Vec<u32> = if long {
+        loca.as_bytes()
+            .chunks(4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    } else {
+        loca.as_bytes()
+            .chunks(2)
+            .map(|b| 2 * u32::from(u16::from_be_bytes([b[0], b[1]])))
+            .collect()
+    };
     let with_outline: Vec<usize> = (0..offsets.len() - 1)
         .filter(|g| offsets[g + 1] > offsets[*g])
         .collect();
-    assert_eq!(with_outline, [0, 3, 9]);
+    assert_eq!(with_outline, [0, 1, 2]);
 }
 
 #[test]
