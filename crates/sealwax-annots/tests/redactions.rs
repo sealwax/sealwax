@@ -157,3 +157,113 @@ fn a_document_without_marks_is_left_as_it_is() {
     assert_eq!(applied.marks, 0);
     assert_eq!(sealwax_annots::fields(&doc, None).unwrap().len(), 1);
 }
+
+/// A document of `objects`, numbered from 1, the first the catalog; `trailer` goes into the
+/// trailer.
+fn build(objects: &[String], trailer: &str) -> Document {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R {trailer} >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    Document::open(out, &OpenOptions::default()).unwrap()
+}
+
+/// Every place a document may keep what a page shows, under a mark or reached from elsewhere:
+/// none of it is left once the marks are applied and the pages rebuilt alone.
+#[test]
+fn nothing_of_what_was_redacted_is_left_anywhere() {
+    let content = "BT /F1 12 Tf 100 700 Td (LEAK-VISIBLE) Tj ET \
+                   BT 3 Tr /F1 12 Tf 100 680 Td (LEAK-INVISIBLE) Tj ET \
+                   q 400 400 10 10 re W n BT /F1 12 Tf 100 660 Td (LEAK-CLIPPED) Tj ET Q \
+                   /Span <</ActualText (LEAK-ACTUAL)>> BDC BT /F1 12 Tf 100 640 Td (x) Tj ET EMC \
+                   /P <</MCID 0>> BDC BT /F1 12 Tf 100 620 Td (y) Tj ET EMC \
+                   /Span /P0 BDC BT /F1 12 Tf 100 600 Td (z) Tj ET EMC \
+                   /Fm Do q 110 0 0 10 100 560 cm /Im Do Q \
+                   BT /F1 12 Tf 100 300 Td (KEEP) Tj ET";
+    let objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /Metadata 14 0 R \
+         /Names << /Dests << /Names [(LEAK-DEST) [3 0 R /Fit]] >> \
+         /EmbeddedFiles << /Names [(a.txt) 12 0 R] >> >> \
+         /StructTreeRoot 15 0 R /MarkInfo << /Marked true >> /AcroForm << /Fields [7 0 R] >> >>"
+            .to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R \
+         /Resources << /Font << /F1 5 0 R >> /XObject << /Fm 6 0 R /Im 18 0 R >> \
+         /Properties << /P0 17 0 R >> >> /Annots [7 0 R 8 0 R 9 0 R] /StructParents 0 \
+         /PieceInfo << /App << /Private (LEAK-PIECE) >> >> /Thumb 20 0 R >>"
+            .to_owned(),
+        stream("", content),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /Font << /H 5 0 R >> >>",
+            "BT /H 12 Tf 100 580 Td (LEAK-FORM) Tj ET",
+        ),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /V (LEAK-FIELD) /Rect [100 520 300 540] /F 4 >>"
+            .to_owned(),
+        "<< /Type /Annot /Subtype /FreeText /Rect [100 500 300 515] /Contents (LEAK-NOTE) \
+         /DA (/Helv 9 Tf 0 g) /F 4 >>"
+            .to_owned(),
+        "<< /Type /Annot /Subtype /Redact /Rect [90 490 320 720] /IC [0 0 0] >>".to_owned(),
+        "<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>".to_owned(),
+        "<< /Title (LEAK-BOOKMARK) /Parent 10 0 R /Dest [3 0 R /Fit] >>".to_owned(),
+        "<< /Type /Filespec /F (a.txt) /EF << /F 13 0 R >> >>".to_owned(),
+        stream("/Type /EmbeddedFile", "LEAK-ATTACHMENT"),
+        stream("/Type /Metadata /Subtype /XML", "<x:xmpmeta>LEAK-XMP</x:xmpmeta>"),
+        "<< /Type /StructTreeRoot /K 16 0 R /ParentTree << /Nums [0 [16 0 R]] >> >>".to_owned(),
+        "<< /Type /StructElem /S /P /P 15 0 R /Pg 3 0 R /K 0 /Alt (LEAK-STRUCT) >>".to_owned(),
+        "<< /ActualText (LEAK-NAMED) >>".to_owned(),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 11 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "LEAK-PIXELS",
+        ),
+        "<< /Title (LEAK-INFO) >>".to_owned(),
+        stream(
+            "/Width 10 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "LEAK-THUMB",
+        ),
+    ];
+    let mut doc = build(&objects, "/Info 19 0 R");
+    let applied = apply_redactions(&mut doc, &RedactOptions::default()).unwrap();
+    assert_eq!(applied.marks, 1);
+    let rebuilt = doc.rebuilt_for_redaction().unwrap();
+    let all = everything(&rebuilt);
+    let text = String::from_utf8_lossy(&all);
+    let left: Vec<&str> = text
+        .match_indices("LEAK-")
+        .map(|(at, _)| {
+            text[at..]
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .next()
+                .unwrap_or("")
+        })
+        .collect();
+    assert!(left.is_empty(), "left: {left:?}");
+    let rebuilt = Document::open(
+        rebuilt.save(&SaveOptions::default()).unwrap(),
+        &OpenOptions::default(),
+    )
+    .unwrap();
+    let kept: String = glyphs(&rebuilt, 0, false)
+        .unwrap()
+        .iter()
+        .filter_map(|g| g.text.clone())
+        .collect();
+    assert!(kept.contains("KEEP"), "{kept}");
+}
