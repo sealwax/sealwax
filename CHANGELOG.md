@@ -8,6 +8,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- A page's links and where they lead (`Document::links`; `links` in Python and WebAssembly):
+  each link's rectangle, and a page of the document (destinations, named ones resolved, `GoTo`,
+  `FirstPage` and `LastPage`), a URI, another file and its page, a named action, or what cannot
+  be followed, with its action's type. Never a guess.
+- The labels pages are shown with (`Document::page_labels`; `page_labels` in Python,
+  `pageLabels` in WebAssembly): prefixes and numbers in decimal, roman numerals or letters, as
+  `/PageLabels` gives them; `None` when the document gives none.
 - `sealwax-compose`: tagged documents. A composition may mark what its pages draw
   (`Item::BeginMarked`, `Item::EndMarked`: a structure element's content, by marked-content
   id, or an artifact, of pagination or another kind) and give the logical structure that ties
@@ -39,6 +46,24 @@ All notable changes to sealwax are recorded here. The format follows
 - `NewOutlineEntry` has a `top`: the height an entry leads to (`/XYZ`), or none for the whole
   page (`/Fit`, as before); it is no longer `Eq`. `Document::set_outline` takes time in
   proportion to the entries, not to their square.
+
+## [0.6.1] - 2026-11-18
+
+### Security
+
+- Redaction (`redact`, `apply_redactions`) left what it took out in the file, from 0.2.0 to
+  0.6.0:
+  - The form XObjects it copied, and the images it wrote anew or took out, stayed named in the
+    page's resources: the original form, with the text taken out, and the original image, with
+    the pixels blanked, were still saved, after `rebuilt_for_redaction` too. What the page no
+    longer draws now leaves its resources.
+  - The `/ActualText`, `/Alt` and `/E` standing for the content taken out stayed, and text
+    extraction reads them in its place: in the properties of the marked-content sequences it was
+    in, written in the content or named in the resources, and on the structure elements tied to
+    those. They now go, from the elements' ancestors too; `Redacted::replacement_texts` counts
+    the dictionaries that lost them.
+- A redacted document refuses an incremental save, which kept the bytes it was opened from and
+  what was taken out with them (`Document::mark_redacted`, `Document::is_redacted`).
 
 ## [0.6.0] - 2026-11-18
 
@@ -394,7 +419,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/sealwax/sealwax/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sealwax/sealwax/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sealwax/sealwax/compare/v0.3.0...v0.4.0

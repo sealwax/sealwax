@@ -643,7 +643,8 @@ impl Document {
     ///
     /// `xref` is "stream" (cross-reference stream and object streams, the default) or "table".
     /// With `encryption` ("rc4-128", "aes-128" or "aes-256"), it is saved encrypted with the
-    /// standard security handler: `owner_password` (required, not empty) grants everything;
+    /// standard security handler (prefer "aes-256": PDF 2.0 deprecates the other two, kept for
+    /// older readers): `owner_password` (required, not empty) grants everything;
     /// `user_password` is asked to open it (empty, the default: it opens without one), and
     /// grants `permissions`, PyMuPDF's and the PDF's bits (4 print, 8 modify, 16 copy, 32
     /// annotate, 256 fill forms, 512 extract for accessibility, 1024 assemble, 2048 print in
@@ -1427,6 +1428,47 @@ impl Document {
             .collect()
     }
 
+    /// The links of page `page_index` (from 0), in the order of its annotations: each a dict with
+    /// `rect` (x1, y1, x2, y2, in its default user space) and where it leads, `kind`: "page"
+    /// (`page_number`, from 1), "uri" (`uri`), "file" (`file`, and `page_number` there when its
+    /// destination gives one), "named" (`name`: "NextPage", "PrevPage"...) or "unknown" (`name`:
+    /// the action's type, None for a destination missing or broken). Never a guess.
+    fn links<'py>(&self, py: Python<'py>, page_index: usize) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let inner = &self.inner;
+        let links = run(py, || Ok(inner.links(page_index)?))?;
+        links
+            .into_iter()
+            .map(|link| {
+                let dict = PyDict::new(py);
+                let r = link.rect;
+                dict.set_item("rect", (r.x1, r.y1, r.x2, r.y2))?;
+                let (kind, page, uri, file, name) = match link.target {
+                    pdf::LinkTarget::Page(index) => ("page", Some(index + 1), None, None, None),
+                    pdf::LinkTarget::Uri(uri) => ("uri", None, Some(uri), None, None),
+                    pdf::LinkTarget::File { name, page_index } => {
+                        ("file", page_index.map(|i| i + 1), None, Some(name), None)
+                    }
+                    pdf::LinkTarget::Named(name) => ("named", None, None, None, Some(name)),
+                    pdf::LinkTarget::Unknown { action } => ("unknown", None, None, None, action),
+                    _ => ("unknown", None, None, None, None),
+                };
+                dict.set_item("kind", kind)?;
+                dict.set_item("page_number", page)?;
+                dict.set_item("uri", uri)?;
+                dict.set_item("file", file)?;
+                dict.set_item("name", name)?;
+                Ok(dict)
+            })
+            .collect()
+    }
+
+    /// The label each page is shown with ("i", "ii", "1", "A-1"), in page order; None when the
+    /// document gives none (readers then show the pages' numbers).
+    fn page_labels(&self, py: Python<'_>) -> PyResult<Option<Vec<String>>> {
+        let inner = &self.inner;
+        run(py, || Ok(inner.page_labels()?))
+    }
+
     /// What the document says about itself, never failing (an entry that cannot be read is left
     /// out): `version` ("1.7"), `encrypted` (also when no password is needed to open it),
     /// `encryption` (how, as PyMuPDF describes it: "Standard V5 R6 256-bit AES"; None when not
@@ -1559,8 +1601,10 @@ impl Document {
     /// "pixels", or "remove" whole, or "keep"), the paths painted there (`paths` "touched": even
     /// in part, "covered": whole, or "keep"). Form XObjects losing content are copied for the
     /// drawing that loses it. Annotations stay: flatten first. Returns the counts: `glyphs`,
-    /// `operators`, `forms`, `strings_unread`, `images`, `images_removed`, `paths`. Follow with
-    /// `rebuilt_for_redaction()`: what the pages no longer reach stays in this document.
+    /// `operators`, `forms`, `strings_unread`, `images`, `images_removed`, `paths`,
+    /// `replacement_texts` (the `/ActualText`, `/Alt` and `/E` taken off what lost content).
+    /// The document then refuses `save_incremental()`. Follow with `rebuilt_for_redaction()`:
+    /// what the pages no longer reach stays in this document.
     #[pyo3(signature = (page_index, areas, *, images = "pixels", paths = "touched"))]
     fn redact<'py>(
         &mut self,
@@ -2158,6 +2202,7 @@ fn redacted_dict<'py>(py: Python<'py>, done: &pdf::text::Redacted) -> PyResult<B
     dict.set_item("images", done.images)?;
     dict.set_item("images_removed", done.images_removed)?;
     dict.set_item("paths", done.paths)?;
+    dict.set_item("replacement_texts", done.replacement_texts)?;
     Ok(dict)
 }
 

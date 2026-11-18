@@ -134,6 +134,8 @@ pub struct Document {
     /// The document as it stands, saved and read again, while nothing changes it
     /// ([`Document::reopened_if_modified`]).
     view: Mutex<Option<Arc<Document>>>,
+    /// Content was taken out ([`Document::mark_redacted`]).
+    redacted: bool,
 }
 
 impl fmt::Debug for Document {
@@ -186,6 +188,7 @@ impl Document {
             checked: Mutex::new(HashSet::new()),
             streams: Mutex::new(HashMap::new()),
             view: Mutex::new(None),
+            redacted: false,
             limits: options.limits,
             pdf: Arc::new(pdf),
         };
@@ -499,6 +502,36 @@ impl Document {
         Ok(Some(reopened))
     }
 
+    /// The document as it stands, its incremental save opened again: its objects keep their
+    /// numbers, for what reads its pages before changing them (`sealwax-text`'s redaction). Made
+    /// even when it is redacted: the copy is marked so as well. Not a stable interface.
+    ///
+    /// # Errors
+    /// As [`Document::save_incremental`] and [`Document::open`].
+    #[doc(hidden)]
+    pub fn reopened_keeping_numbers(&self) -> Result<Document> {
+        let options = OpenOptions::default()
+            .limits(self.limits)
+            .max_file_bytes(usize::MAX);
+        let mut reopened = Document::open(save::incremental(self)?, &options)?;
+        reopened.redacted = self.redacted;
+        Ok(reopened)
+    }
+
+    /// Mark content as taken out of the document (redacted): [`Document::save_incremental`]
+    /// refuses it from then on, since the bytes it was opened from, which an incremental save
+    /// keeps, still hold that content. Save it whole instead. `sealwax_text::redact` marks the
+    /// documents it changes.
+    pub fn mark_redacted(&mut self) {
+        self.redacted = true;
+    }
+
+    /// Whether content was taken out of the document since it was opened
+    /// ([`Document::mark_redacted`]).
+    pub fn is_redacted(&self) -> bool {
+        self.redacted
+    }
+
     /// Replace an indirect object, or create it under that identifier.
     pub fn set_object(&mut self, id: ObjId, object: Object) {
         self.next_number = self.next_number.max(id.number.saturating_add(1));
@@ -535,9 +568,16 @@ impl Document {
     ///
     /// # Errors
     /// [`Error::Unsupported`] when the input is encrypted or its cross-reference had to be
-    /// repaired: save it in full first, which sealwax always does before signing.
+    /// repaired: save it in full first, which sealwax always does before signing. The same when
+    /// content was redacted ([`Document::mark_redacted`]): the input would keep it.
     /// [`Error::SaveCheck`] when the output does not read back.
     pub fn save_incremental(&self) -> Result<Vec<u8>> {
+        if self.redacted {
+            return Err(Error::Unsupported {
+                what: "an incremental save of a redacted document, which would keep what was \
+                       taken out: save it whole",
+            });
+        }
         save::incremental(self)
     }
 

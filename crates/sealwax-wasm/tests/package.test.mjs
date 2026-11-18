@@ -348,6 +348,8 @@ test("redaction marks are applied and areas redacted", () => {
   const applied = doc.applyRedactions();
   assert.equal(applied.marks, 1);
   assert.equal(applied.redacted.glyphs, 6);
+  // An incremental save would keep the bytes it was opened from, and what was taken out.
+  assert.throws(() => doc.saveIncremental());
   const rebuilt = Document.fromBytes(doc.rebuiltForRedaction());
   assert.equal(new TextDecoder().decode(rebuilt.save({ xref: "table" })).includes("secret"), false);
   assert.deepEqual(rebuilt.redact(0, [[60, 690, 80, 715]], { images: "keep" }).glyphs, 1);
@@ -416,6 +418,24 @@ test("pages turn in place, the outline kept", () => {
   assert.deepEqual(saved.geometry().map((page) => page.rotation), [270, 180]);
   assert.equal(saved.outline()[0].title, "Chapter");
   assert.throws(() => doc.rotatePages([[2, 1]]), RangeError);
+});
+
+test("links say where they lead, and pages their labels", () => {
+  const doc = Document.fromBytes(build([
+    "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /r >> 1 << /S /D /P (A-) >>] >> >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Annots [5 0 R 6 0 R] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+    "<< /Type /Annot /Subtype /Link /Rect [10 20 110 40] /Dest [4 0 R /Fit] >>",
+    "<< /Type /Annot /Subtype /Link /Rect [10 50 110 70] /A << /S /URI /URI (https://example.org) >> >>",
+  ]));
+  assert.deepEqual(doc.links(0), [
+    { rect: [10, 20, 110, 40], kind: "page", pageNumber: 2 },
+    { rect: [10, 50, 110, 70], kind: "uri", uri: "https://example.org" },
+  ]);
+  assert.deepEqual(doc.links(1), []);
+  assert.deepEqual(doc.pageLabels(), ["i", "A-1"]);
+  assert.throws(() => doc.links(2), RangeError);
 });
 
 test("an encrypted document is refused when asked, its sources too", () => {

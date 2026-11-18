@@ -36,8 +36,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/sealwax/sealwax"
 authors = ["Sylvain Boily and the sealwax contributors"]
 readme = "README.md"
-keywords = ["pdf", "pdfa", "pades", "signature", "xfdf"]
-categories = ["parser-implementations", "encoding", "cryptography"]
+keywords = ["pdf", "pdfa", "redaction", "signature", "forms"]
+categories = ["parser-implementations", "rendering", "text-processing", "cryptography", "encoding"]
 
 [workspace.dependencies]
 sealwax-core = { path = "crates/sealwax-core", version = "0.6.0" }

@@ -324,6 +324,11 @@ fn page(content: &str, resources: &str, extra: &[String]) -> Document {
         stream("", content),
     ];
     objects.extend_from_slice(extra);
+    build(&objects)
+}
+
+/// A document of `objects`, numbered from 1, the first the catalog.
+fn build(objects: &[String]) -> Document {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (index, body) in objects.iter().enumerate() {
@@ -573,4 +578,161 @@ fn a_stencil_an_inline_image_and_the_options() {
     )
     .unwrap();
     assert_eq!((kept.images, kept.images_removed), (0, 0));
+}
+
+/// What a reader reads on page `page`: an `/ActualText` in place of the glyphs it covers.
+fn read(doc: &Document, page: usize) -> String {
+    glyphs(doc, page, false)
+        .unwrap()
+        .into_iter()
+        .filter_map(|g| g.actual_text.or(g.text))
+        .collect()
+}
+
+#[test]
+fn what_stands_for_content_redacted_goes_with_it() {
+    let content = "/Span <</ActualText (SECRET-INLINE) /Lang (en-US)>> BDC \
+                   BT /F1 24 Tf 100 700 Td (XXXX) Tj ET EMC \
+                   /Span /MC0 BDC BT /F1 24 Tf 100 640 Td (YYYY) Tj ET EMC \
+                   /Span /MC1 BDC BT /F1 24 Tf 100 580 Td (WWWW) Tj ET EMC \
+                   /Figure <</Alt (SECRET-ALT) /E (SECRET-E)>> BDC 0 0 1 rg 100 500 40 40 re f EMC \
+                   /Span <</ActualText (SECRET-OUTER)>> BDC /Sp <</MCID 3>> BDC /Fm Do EMC EMC \
+                   /Span <</ActualText (KEPT-TEXT)>> BDC BT /F1 24 Tf 100 200 Td (KEEP) Tj ET EMC";
+    let resources = "/Font << /F1 5 0 R >> /XObject << /Fm 7 0 R >> \
+                     /Properties << /MC0 6 0 R /MC1 << /ActualText (SECRET-DIRECT) >> >>";
+    let extra = [
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+        "<< /ActualText (SECRET-NAMED) >>".to_owned(),
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /Font << /H 5 0 R >> >>",
+            "/Span <</ActualText (SECRET-IN-FORM)>> BDC BT /H 24 Tf 100 420 Td (VVVV) Tj ET EMC",
+        ),
+    ];
+    let mut doc = page(content, resources, &extra);
+    let before = read(&doc, 0);
+    assert!(
+        before.contains("SECRET-INLINE") && before.contains("SECRET-NAMED"),
+        "{before}"
+    );
+    let area = Rect::from_corners(90.0, 400.0, 260.0, 740.0);
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    assert_eq!(done.paths, 1);
+    // The inline one, the two named, the figure's, the outer one and the form's.
+    assert_eq!(done.replacement_texts, 6);
+    let all = everything(&doc);
+    assert!(
+        find(&all, b"SECRET").is_none(),
+        "{}",
+        String::from_utf8_lossy(&all)
+    );
+    // What stands for content left whole stays, and so does what is not a text.
+    assert!(find(&all, b"KEPT-TEXT").is_some());
+    assert!(find(&all, b"en-US").is_some() && find(&all, b"MCID 3").is_some());
+    assert_eq!(read(&reopened(&doc), 0), "KEPT-TEXT");
+}
+
+#[test]
+fn a_structure_element_tied_to_content_redacted_loses_its_texts() {
+    // The resources come from the page tree; the structure: a section holding a paragraph tied
+    // to the first sequence, and a paragraph tied to the second.
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R /MarkInfo << /Marked true >> >>"
+            .to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /StructParents 0 >>"
+            .to_owned(),
+        stream(
+            "",
+            "/P <</MCID 0>> BDC BT /F1 24 Tf 100 700 Td (Hello secret) Tj ET EMC \
+             /P <</MCID 1>> BDC BT /F1 24 Tf 100 600 Td (Other) Tj ET EMC",
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+        "<< /Type /StructTreeRoot /K 7 0 R /ParentTree << /Nums [0 [8 0 R 9 0 R]] >> >>".to_owned(),
+        "<< /Type /StructElem /S /Sect /P 6 0 R /K [8 0 R 9 0 R] /Alt (SECRET-SECTION) >>"
+            .to_owned(),
+        "<< /Type /StructElem /S /P /P 7 0 R /Pg 3 0 R /K 0 /ActualText (Hello SECRET-ELEMENT) >>"
+            .to_owned(),
+        "<< /Type /StructElem /S /P /P 7 0 R /Pg 3 0 R /K 1 /ActualText (OTHER-KEPT) >>".to_owned(),
+    ];
+    let mut doc = build(&objects);
+    assert!(read(&doc, 0).contains("SECRET-ELEMENT"));
+    // Over "secret" in Helvetica 24 from 100: 161.3 to 226.7.
+    let area = Rect::from_corners(165.0, 702.0, 222.0, 715.0);
+    let done = redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    assert_eq!((done.glyphs, done.replacement_texts), (6, 2));
+    let all = everything(&doc);
+    assert!(
+        find(&all, b"SECRET").is_none(),
+        "{}",
+        String::from_utf8_lossy(&all)
+    );
+    assert!(find(&all, b"OTHER-KEPT").is_some());
+    let after = read(&reopened(&doc), 0);
+    assert!(
+        after.starts_with("Hello") && !after.contains("secret"),
+        "{after}"
+    );
+}
+
+#[test]
+fn a_document_redacted_is_not_saved_incrementally() {
+    let mut doc = document(
+        "BT /F1 12 Tf 72 700 Td (Hello secret world) Tj ET",
+        "/Fm Do",
+    );
+    let area = area_over(&doc, 0, "secret");
+    redact(&mut doc, 0, &[area], &RedactOptions::default()).unwrap();
+    // The bytes it was opened from, kept by an incremental save, hold what was taken out.
+    assert!(matches!(
+        doc.save_incremental(),
+        Err(sealwax_core::Error::Unsupported { .. })
+    ));
+    // Another page can still be redacted, and the document saved whole.
+    let area = area_over(&doc, 1, "private");
+    redact(&mut doc, 1, &[area], &RedactOptions::default()).unwrap();
+    let again = reopened(&doc);
+    assert!(again.save_incremental().is_ok());
+    // A redaction that takes nothing out leaves the document as it was.
+    let mut doc = document("BT /F1 12 Tf 72 700 Td (Hello) Tj ET", "");
+    let nowhere = Rect::from_corners(400.0, 100.0, 500.0, 200.0);
+    redact(&mut doc, 0, &[nowhere], &RedactOptions::default()).unwrap();
+    assert!(doc.save_incremental().is_ok());
+}
+
+#[test]
+fn what_the_page_drew_before_is_no_longer_reached() {
+    // The red image, and a form showing "VVVV", both under the area.
+    let content = "q 80 0 0 20 100 100 cm /Im Do Q /Fm Do";
+    let mut extra = picture_objects();
+    extra.push(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    );
+    extra.push(stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /Font << /H 8 0 R >> >>",
+        "BT /H 24 Tf 100 420 Td (VVVV) Tj ET",
+    ));
+    let resources = "/XObject << /Im 5 0 R /St 7 0 R /Fm 9 0 R >>";
+    let area = Rect::from_corners(90.0, 90.0, 300.0, 500.0);
+    for images in [ImageRedaction::Pixels, ImageRedaction::Remove] {
+        let mut doc = page(content, resources, &extra);
+        let done = redact(
+            &mut doc,
+            0,
+            &[area],
+            &RedactOptions::default().images(images),
+        )
+        .unwrap();
+        assert_eq!((done.glyphs, done.forms), (4, 1));
+        for saved in [&doc, &doc.rebuilt_for_redaction().unwrap()] {
+            let all = everything(saved);
+            assert!(find(&all, b"(VVVV)").is_none(), "{images:?}");
+            assert!(find(&all, b"FF0000FF0000").is_none(), "{images:?}");
+            // The stencil, never drawn, stays named.
+            assert!(find(&all, b"/St ").is_some(), "{images:?}");
+        }
+    }
 }

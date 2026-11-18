@@ -93,6 +93,14 @@ class OutlineEntry(TypedDict):
     title: str
     page_number: int | None
 
+class Link(TypedDict):
+    rect: tuple[float, float, float, float]
+    kind: Literal["page", "uri", "file", "named", "unknown"]
+    page_number: int | None
+    uri: str | None
+    file: str | None
+    name: str | None
+
 class Metadata(TypedDict):
     version: str
     encrypted: bool
@@ -130,6 +138,7 @@ class Redacted(TypedDict):
     images: int
     images_removed: int
     paths: int
+    replacement_texts: int
 
 class AppliedRedactions(TypedDict):
     marks: int
@@ -344,6 +353,8 @@ class Document:
     ) -> tuple[int, int, bytes]: ...
     def drawings(self, page_index: int, annotations: bool = False) -> Drawings: ...
     def outline(self) -> list[OutlineEntry]: ...
+    def links(self, page_index: int) -> list[Link]: ...
+    def page_labels(self) -> list[str] | None: ...
     def metadata(self) -> Metadata: ...
     def extract_pages(self, start: int, stop: int) -> bytes: ...
     def arrange(self, pages: list[int | tuple[int, int]]) -> bytes: ...

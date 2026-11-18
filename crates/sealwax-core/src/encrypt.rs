@@ -25,7 +25,8 @@ const PADDING: [u8; 32] = [
 /// annotate, fill forms, extract for accessibility, assemble, print in high quality.
 pub const PERMISSIONS: u32 = 0xF3C;
 
-/// How a document is encrypted when saved.
+/// How a document is encrypted when saved. PDF 2.0 deprecates RC4 and AES-128 (ISO 32000-2,
+/// 7.6.2): they are kept for readers that know nothing else. Prefer AES-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cipher {
     /// RC4, a 128-bit key (`/V 2 /R 3`).
