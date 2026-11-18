@@ -6,6 +6,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
 ### Added
 
 - `sealwax-compose`: a new document written from laid-out pages (`compose` and `Composition`),
@@ -41,7 +43,10 @@ All notable changes to sealwax are recorded here. The format follows
   `defaultFont` in WebAssembly) may be OpenType programs with CFF outlines, or collections (their
   first face), as well as TrueType programs: they are embedded as `sealwax-compose` embeds
   fonts. The subset now holds the glyphs used only, numbered from 1 (they kept their
-  place among emptied ones): the PDF's bytes change, not what it draws or reads back.
+  place among emptied ones): the PDF's bytes change, not what it draws or reads back. A program
+  the subsetter cannot cut is refused, as one that cannot be read. In WebAssembly, where a panic
+  cannot be caught, a program made to make the subsetter panic stops the module (see the
+  WebAssembly README).
 
 ### Fixed
 
@@ -297,7 +302,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sealwax/sealwax/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sealwax/sealwax/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sealwax/sealwax/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sealwax/sealwax/releases/tag/v0.1.0
