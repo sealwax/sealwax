@@ -622,8 +622,23 @@ impl Document {
     /// The document saved in full: every reachable object rewritten, decrypted and renumbered.
     ///
     /// `xref` is "stream" (cross-reference stream and object streams, the default) or "table".
-    #[pyo3(signature = (*, xref="stream"))]
-    fn save<'py>(&self, py: Python<'py>, xref: &str) -> PyResult<Bound<'py, PyBytes>> {
+    /// With `encryption` ("rc4-128", "aes-128" or "aes-256"), it is saved encrypted with the
+    /// standard security handler: `owner_password` (required, not empty) grants everything;
+    /// `user_password` is asked to open it (empty, the default: it opens without one), and
+    /// grants `permissions`, PyMuPDF's and the PDF's bits (4 print, 8 modify, 16 copy, 32
+    /// annotate, 256 fill forms, 512 extract for accessibility, 1024 assemble, 2048 print in
+    /// high quality; all by default). `ValueError` for an encryption, a password or permissions
+    /// it cannot take.
+    #[pyo3(signature = (*, xref="stream", encryption=None, owner_password=None, user_password="", permissions=None))]
+    fn save<'py>(
+        &self,
+        py: Python<'py>,
+        xref: &str,
+        encryption: Option<&str>,
+        owner_password: Option<String>,
+        user_password: &str,
+        permissions: Option<u32>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         let format = match xref {
             "stream" => pdf::XrefFormat::Stream,
             "table" => pdf::XrefFormat::Table,
@@ -633,7 +648,39 @@ impl Document {
                 ));
             }
         };
-        let options = pdf::SaveOptions::default().xref(format);
+        let mut options = pdf::SaveOptions::default().xref(format);
+        if let Some(encryption) = encryption {
+            let cipher = match encryption {
+                "rc4-128" => pdf::Cipher::Rc4,
+                "aes-128" => pdf::Cipher::Aes128,
+                "aes-256" => pdf::Cipher::Aes256,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "encryption must be \"rc4-128\", \"aes-128\" or \"aes-256\"",
+                    ));
+                }
+            };
+            let owner_password = owner_password
+                .filter(|password| !password.is_empty())
+                .ok_or_else(|| {
+                    PyValueError::new_err("an encrypted save needs an owner password")
+                })?;
+            // The file key, salts and initialization vectors are drawn from the system's source.
+            let random: Vec<u8> = py.import("os")?.call_method1("urandom", (32,))?.extract()?;
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&random[..32]);
+            options = options.encrypt(pdf::Encrypt {
+                cipher,
+                owner_password,
+                user_password: user_password.to_owned(),
+                permissions: permissions.unwrap_or(pdf::PERMISSIONS),
+                seed,
+            });
+        } else if owner_password.is_some() || !user_password.is_empty() || permissions.is_some() {
+            return Err(PyValueError::new_err(
+                "passwords and permissions go with an encryption",
+            ));
+        }
         let inner = &self.inner;
         let saved = run(py, || Ok(inner.save(&options)?))?;
         Ok(PyBytes::new(py, &saved))

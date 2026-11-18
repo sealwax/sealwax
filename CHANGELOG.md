@@ -23,6 +23,13 @@ All notable changes to sealwax are recorded here. The format follows
   changed (`set_field_label`), a check box's checked state renamed, to a name of any bytes
   (`rename_button_state`), the appearances of a field's widgets taken away
   (`remove_field_appearances`).
+- Saving encrypted with the standard security handler: RC4 with a 128-bit key, AES-128 or
+  AES-256, an owner password, a user password or none, and the permissions granted
+  (`save(encryption="aes-256", owner_password=..., user_password=..., permissions=4 | 256)` in
+  Python, `SaveOptions::encrypt` in Rust). Read back by qpdf and PyMuPDF with either password.
+  The randomness keys and initialization vectors take comes from the caller in Rust
+  (`Encrypt::seed`), from the system in Python. sealwax itself opens a document of RC4 or
+  AES-128 with its user password only, as hayro does.
 
 - `metadata()` describes how a document is encrypted (`encryption`): its security handler, `/V`
   and `/R`, the length of its key and how its streams are encrypted (RC4, AES, none), as a

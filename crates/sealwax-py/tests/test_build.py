@@ -133,3 +133,45 @@ def test_fields_of_every_kind_and_their_retouches_read_back():
         document.rename_button_state("code", b"On")
     with pytest.raises(ValueError):
         document.set_field_label("nobody", "x")
+
+
+@pytest.mark.parametrize("encryption, description", [
+    ("rc4-128", "Standard V2 R3 128-bit RC4"),
+    ("aes-128", "Standard V4 R4 128-bit AES"),
+    ("aes-256", "Standard V5 R6 256-bit AES"),
+])
+def test_a_document_saved_encrypted_opens_with_its_password(encryption, description):
+    document = sealwax.Document.new()
+    page = document.add_page()
+    document.insert_text(page, (80, 100), "Secret")
+    document.set_info({"Title": "Chiffré"})
+    # Without a user password, it opens as it is.
+    opened = sealwax.Document.from_bytes(
+        document.save(encryption=encryption, owner_password="owner",
+                      permissions=4 | 256))
+    assert opened.metadata()["encryption"] == description
+    assert "".join(g["text"] or "" for g in opened.glyphs(0)) == "Secret"
+    # With one, it is asked for.
+    locked = document.save(encryption=encryption, owner_password="owner", user_password="user")
+    with pytest.raises(sealwax.PdfPasswordError):
+        sealwax.Document.from_bytes(locked)
+    with pytest.raises(sealwax.PdfPasswordError):
+        sealwax.Document.from_bytes(locked, password="wrong")
+    unlocked = sealwax.Document.from_bytes(locked, password="user")
+    assert unlocked.metadata()["info"] == {"Title": "Chiffré"}
+    # Two saves draw their keys anew.
+    assert document.save(encryption=encryption, owner_password="owner") != \
+        document.save(encryption=encryption, owner_password="owner")
+
+
+def test_encryption_options_it_cannot_take_are_refused():
+    document = sealwax.Document.new()
+    document.add_page()
+    with pytest.raises(ValueError):
+        document.save(encryption="aes-512", owner_password="owner")
+    with pytest.raises(ValueError):
+        document.save(encryption="aes-256")
+    with pytest.raises(ValueError):
+        document.save(encryption="aes-256", owner_password="owner", permissions=1)
+    with pytest.raises(ValueError):
+        document.save(user_password="user")

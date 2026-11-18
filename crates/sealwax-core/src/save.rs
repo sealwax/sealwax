@@ -15,6 +15,7 @@ use flate2::write::ZlibEncoder;
 use sha2::{Digest, Sha256};
 
 use crate::document::{Document, OpenOptions};
+use crate::encrypt::{Encrypt, Security};
 use crate::error::{Error, Result};
 use crate::limits::Limits;
 use crate::object::{Dict, Name, ObjId, Object, Stream, StreamData};
@@ -44,12 +45,19 @@ pub enum XrefFormat {
 #[derive(Debug, Clone, Default)]
 pub struct SaveOptions {
     xref: XrefFormat,
+    encrypt: Option<Encrypt>,
 }
 
 impl SaveOptions {
     /// The cross-reference format. Default: [`XrefFormat::Stream`].
     pub fn xref(mut self, format: XrefFormat) -> Self {
         self.xref = format;
+        self
+    }
+
+    /// Save encrypted ([`Encrypt`]). Default: not encrypted, whether the input was or not.
+    pub fn encrypt(mut self, encrypt: Encrypt) -> Self {
+        self.encrypt = Some(encrypt);
         self
     }
 }
@@ -135,31 +143,71 @@ pub(crate) fn full(doc: &Document, options: &SaveOptions) -> Result<Vec<u8>> {
     );
     let new_catalog = refs.map(catalog).ok_or(Error::Malformed)?;
 
+    // Encrypted, the first identifier is known first: the key of revisions 3 and 4 comes from it.
+    let known_id = doc.base_trailer().id().map(|(first, _)| first);
+    let mut security = match &options.encrypt {
+        Some(encrypt) => {
+            let id = known_id.clone().unwrap_or_else(|| {
+                Sha256::new()
+                    .chain_update(encrypt.seed)
+                    .chain_update(b"ID")
+                    .finalize()[..16]
+                    .to_vec()
+            });
+            Some((Security::new(encrypt, &id)?, id, count + 1))
+        }
+        None => None,
+    };
+    let first_object_stream = count + 1 + u32::from(security.is_some());
+
     let mut out = HEADER.to_vec();
     let mut entries: Vec<(u32, Entry)> = vec![(0, Entry::Free)];
-    let mut packer = Packer::new(count + 1);
+    let mut packer = Packer::new(first_object_stream);
     for (old, number) in order.iter().zip(1..=count) {
         if number.is_multiple_of(1024) {
             doc.check_time()?;
         }
         // Every object of `order` was read in the first pass.
         let object = source.load(*old)?.unwrap_or(Object::Null);
+        let security = security.as_mut().map(|(security, _, _)| security);
         if options.xref == XrefFormat::Stream && !matches!(object, Object::Stream(_)) {
-            packer.push(number, &object, &refs, &mut out, &mut entries);
+            // Its strings are encrypted with the object stream it goes in.
+            packer.push(number, &object, &refs, &mut out, &mut entries, security);
         } else {
+            let object = match security {
+                Some(security) => security.object(number, &object),
+                None => object,
+            };
             entries.push((number, Entry::InFile(out.len(), 0)));
             serialize::indirect(&mut out, ObjId::new(number), &object, &refs);
         }
     }
-    packer.flush(&mut out, &mut entries);
+    packer.flush(
+        &mut out,
+        &mut entries,
+        security.as_mut().map(|(security, _, _)| security),
+    );
+    // The encryption dictionary, itself never encrypted.
+    if let Some((security, _, number)) = &security {
+        entries.push((*number, Entry::InFile(out.len(), 0)));
+        serialize::indirect(
+            &mut out,
+            ObjId::new(*number),
+            &Object::Dict(security.dict.clone()),
+            &SameRefs,
+        );
+    }
 
     let second_id = digest(&out);
-    let first_id = doc
-        .base_trailer()
-        .id()
-        .map_or_else(|| second_id.clone(), |(first, _)| first);
+    let first_id = match &security {
+        Some((_, id, _)) => id.clone(),
+        None => known_id.unwrap_or_else(|| second_id.clone()),
+    };
     let mut trailer = Dict::new();
     trailer.insert("Root", new_catalog);
+    if let Some((_, _, number)) = &security {
+        trailer.insert("Encrypt", ObjId::new(*number));
+    }
     if let Some(info) = doc.info_id().and_then(|id| refs.map(id)) {
         trailer.insert("Info", info);
     }
@@ -174,7 +222,8 @@ pub(crate) fn full(doc: &Document, options: &SaveOptions) -> Result<Vec<u8>> {
     let size = xref_number.unwrap_or(packer.next_number - 1) + 1;
     trailer.insert("Size", size);
     finish(&mut out, kind, entries, trailer, xref_number);
-    check(doc, &out, false)?;
+    let password = options.encrypt.as_ref().map(|e| e.user_password.as_str());
+    check(doc, &out, false, password)?;
     Ok(out)
 }
 
@@ -255,7 +304,7 @@ pub(crate) fn incremental(doc: &Document) -> Result<Vec<u8>> {
     .unwrap_or(1);
     trailer.insert("Size", size);
     finish(&mut out, base.kind, entries, trailer, xref_number);
-    check(doc, &out, true)?;
+    check(doc, &out, true, None)?;
     Ok(out)
 }
 
@@ -269,11 +318,14 @@ pub(crate) fn incremental(doc: &Document) -> Result<Vec<u8>> {
 ///
 /// The document's deadline holds for this reading too, and is checked once more before the save
 /// is returned.
-fn check(doc: &Document, out: &[u8], incremental: bool) -> Result<()> {
-    let options = OpenOptions::default().limits(Limits {
+fn check(doc: &Document, out: &[u8], incremental: bool, password: Option<&str>) -> Result<()> {
+    let mut options = OpenOptions::default().limits(Limits {
         deadline: doc.limits().deadline,
         ..Limits::default()
     });
+    if let Some(password) = password {
+        options = options.password(password.to_owned());
+    }
     let saved = Document::open(out.to_vec(), &options).map_err(|error| match error {
         Error::Timeout => Error::Timeout,
         _ => Error::SaveCheck {
@@ -543,17 +595,24 @@ impl Packer {
         refs: &impl Refs,
         out: &mut Vec<u8>,
         entries: &mut Vec<(u32, Entry)>,
+        security: Option<&mut Security>,
     ) {
         let mut body = Vec::new();
         serialize::direct(&mut body, object, refs);
         self.pending.push((number, body));
         if self.pending.len() == OBJECTS_PER_STREAM {
-            self.flush(out, entries);
+            self.flush(out, entries, security);
         }
     }
 
-    /// Writes the pending objects as one object stream (ISO 32000-1, 7.5.7).
-    fn flush(&mut self, out: &mut Vec<u8>, entries: &mut Vec<(u32, Entry)>) {
+    /// Writes the pending objects as one object stream (ISO 32000-1, 7.5.7), encrypted with
+    /// `security` if given.
+    fn flush(
+        &mut self,
+        out: &mut Vec<u8>,
+        entries: &mut Vec<(u32, Entry)>,
+        security: Option<&mut Security>,
+    ) {
         if self.pending.is_empty() {
             return;
         }
@@ -581,10 +640,11 @@ impl Packer {
         dict.insert("N", i64::try_from(count).unwrap_or(i64::MAX));
         dict.insert("First", i64::try_from(first).unwrap_or(i64::MAX));
         dict.insert("Filter", Name::from("FlateDecode"));
-        let stream = Stream {
-            dict,
-            data: deflate(&header),
-        };
+        let mut data = deflate(&header);
+        if let Some(security) = security {
+            data = security.stream_data(stream_number, &data);
+        }
+        let stream = Stream { dict, data };
         entries.push((stream_number, Entry::InFile(out.len(), 0)));
         serialize::indirect(
             out,
