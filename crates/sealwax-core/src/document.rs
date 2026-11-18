@@ -898,7 +898,11 @@ impl Document {
             return input.get(*index).map(|page| PageGeometry {
                 rotation: self.rotations.get(index).copied().unwrap_or(page.rotation),
                 crop_box: self.crop_boxes.get(index).copied().unwrap_or(page.crop_box),
-                user_unit: self.user_units.get(index).copied().unwrap_or(page.user_unit),
+                user_unit: self
+                    .user_units
+                    .get(index)
+                    .copied()
+                    .unwrap_or(page.user_unit),
                 ..*page
             });
         }
