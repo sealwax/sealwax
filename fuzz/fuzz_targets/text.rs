@@ -1,15 +1,15 @@
 #![no_main]
 //! Whatever the bytes: interpreting every page to count what its glyphs map to, reading each
 //! page's glyphs (its content instrumented to name fonts, the structure looked up for
-//! `/ActualText`, its annotations drawn), and redacting the first page's middle (text, images, paths),
-//! never panics (hayro-interpret runs here with the `unsafe` and `images` features of
+//! `/ActualText`, its annotations drawn), listing its images and extracting the first, and
+//! redacting the first page's middle (text, images, paths), never panics (hayro-interpret runs here with the `unsafe` and `images` features of
 //! hayro-syntax on); a page redacted saves and reads back.
 //!
 //!     cargo +nightly fuzz run text fuzz/corpus/text corpus/public -- -max_len=1048576
 
 use libfuzzer_sys::fuzz_target;
 use sealwax_core::{Document, OpenOptions, Rect, SaveOptions};
-use sealwax_text::{RedactOptions, glyphs, redact, text_census};
+use sealwax_text::{RedactOptions, extract_image, glyphs, images, redact, text_census};
 
 fuzz_target!(|data: &[u8]| {
     let options = OpenOptions::default().max_file_bytes(4 << 20);
@@ -21,6 +21,14 @@ fuzz_target!(|data: &[u8]| {
         assert!(text.private_use_with_actual_text <= text.private_use);
     }
     for page in 0..document.page_count().min(4) {
+        if let Ok(pictures) = images(&document, page) {
+            for picture in &pictures {
+                assert!(picture.bbox[0] <= picture.bbox[2] || picture.bbox[0].is_nan());
+            }
+            if !pictures.is_empty() {
+                let _ = extract_image(&document, page, 0);
+            }
+        }
         let Ok(found) = glyphs(&document, page, true) else {
             continue;
         };

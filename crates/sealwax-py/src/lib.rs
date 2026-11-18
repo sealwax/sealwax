@@ -1679,6 +1679,61 @@ impl Document {
         Ok(PyBytes::new(py, &data))
     }
 
+    /// The images page `page_index` (from 0) draws, in the order of its content, forms included
+    /// (an image drawn twice is listed twice; annotations left out): each a dict with `bbox`
+    /// (x1, y1, x2, y2, in its default user space), `transform` (the matrix mapping its unit
+    /// square there), `width` and `height` (pixels, as stored), `xref` (its object number; None
+    /// for an image written in the content), `color_space` ("DeviceRGB", "ICCBased"...; None
+    /// when not named), `bits_per_component`, `filters`, `stencil` (a mask painting the fill
+    /// colour) and `masked` (a soft mask or a mask).
+    fn images<'py>(&self, py: Python<'py>, page_index: usize) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let inner = &self.inner;
+        let found = run(py, || Ok(pdf::text::images(inner, page_index)?))?;
+        found
+            .into_iter()
+            .map(|image| {
+                let dict = PyDict::new(py);
+                let [x1, y1, x2, y2] = image.bbox;
+                dict.set_item("bbox", (x1, y1, x2, y2))?;
+                let [a, b, c, d, e, f] = image.transform;
+                dict.set_item("transform", (a, b, c, d, e, f))?;
+                dict.set_item("width", image.width)?;
+                dict.set_item("height", image.height)?;
+                dict.set_item("xref", image.object.map(|id| id.number))?;
+                dict.set_item("color_space", image.color_space)?;
+                dict.set_item("bits_per_component", image.bits_per_component)?;
+                dict.set_item("filters", image.filters)?;
+                dict.set_item("stencil", image.stencil)?;
+                dict.set_item("masked", image.masked)?;
+                Ok(dict)
+            })
+            .collect()
+    }
+
+    /// The `index`-th image (from 0) of `images(page_index)`: a dict with `ext` ("jpeg", "jpx"
+    /// or "png", as PyMuPDF's `extract_image`), `image` (bytes), `width` and `height`. A JPEG or
+    /// JPEG 2000 stored without mask, decode array or other filter comes as stored; any other
+    /// image as a PNG of its pixels (RGB or gray, its soft mask as alpha; a stencil black where
+    /// it paints). `ValueError` for a page or an image the page does not have; `PdfLimitError`
+    /// past `max_image_pixels`.
+    fn extract_image<'py>(
+        &self,
+        py: Python<'py>,
+        page_index: usize,
+        index: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let inner = &self.inner;
+        let image = run(py, || {
+            Ok(pdf::text::extract_image(inner, page_index, index)?)
+        })?;
+        let dict = PyDict::new(py);
+        dict.set_item("ext", image_ext(image.format))?;
+        dict.set_item("image", PyBytes::new(py, &image.data))?;
+        dict.set_item("width", image.width)?;
+        dict.set_item("height", image.height)?;
+        Ok(dict)
+    }
+
     /// The glyphs page `page_index` (from 0) draws, in the order of its content (forms and
     /// Type 3 glyphs included), then with `annotations` those its annotations' appearances draw
     /// (as MuPDF's text includes them), each a dict in the page's default user space
@@ -2201,6 +2256,15 @@ fn redact_options(images: &str, paths: &str) -> PyResult<pdf::text::RedactOption
     Ok(pdf::text::RedactOptions::default()
         .images(images)
         .paths(paths))
+}
+
+/// The extension PyMuPDF gives an image extracted in `format`.
+fn image_ext(format: pdf::text::ImageFormat) -> &'static str {
+    match format {
+        pdf::text::ImageFormat::Jpeg => "jpeg",
+        pdf::text::ImageFormat::Jpeg2000 => "jpx",
+        _ => "png",
+    }
 }
 
 fn redacted_dict<'py>(py: Python<'py>, done: &pdf::text::Redacted) -> PyResult<Bound<'py, PyDict>> {

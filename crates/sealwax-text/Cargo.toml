@@ -21,6 +21,7 @@ hayro-interpret = "0.9"
 # advance when text is redacted (Apache-2.0 OR MIT, the same project; its features come from
 # hayro-interpret).
 hayro-font = { version = "0.5", default-features = false }
+png = "0.18"
 flate2 = "1"
 # Keeps a parsed document beside the interpreter cache that borrows from it, so that a document's
 # fonts are parsed once rather than on every call (Apache-2.0 OR GPL-2.0-only, used as Apache-2.0;

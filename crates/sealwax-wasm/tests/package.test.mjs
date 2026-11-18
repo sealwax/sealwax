@@ -420,6 +420,25 @@ test("pages turn in place, the outline kept", () => {
   assert.throws(() => doc.rotatePages([[2, 1]]), RangeError);
 });
 
+test("images are listed and extracted", () => {
+  const doc = Document.fromBytes(build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /XObject << /P 5 0 R >> >> >>",
+    stream("q 20 0 0 10 300 300 cm /P Do Q"),
+    "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 13 >>\nstream\nFF000000FF00>\nendstream",
+  ]));
+  const [image] = doc.images(0);
+  assert.deepEqual(
+    [image.xref, image.bbox, image.filters, image.colorSpace, image.masked],
+    [5, [300, 300, 320, 310], ["ASCIIHexDecode"], "DeviceRGB", false],
+  );
+  const extracted = doc.extractImage(0, 0);
+  assert.equal(extracted.ext, "png");
+  assert.deepEqual([...extracted.image.slice(1, 4)], [0x50, 0x4e, 0x47]);
+  assert.throws(() => doc.extractImage(0, 1), RangeError);
+});
+
 test("links say where they lead, and pages their labels", () => {
   const doc = Document.fromBytes(build([
     "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /r >> 1 << /S /D /P (A-) >>] >> >>",

@@ -15,6 +15,7 @@ mod cache;
 mod drawings;
 mod drawn;
 mod glyphs;
+mod images;
 mod metrics;
 mod redact;
 mod scan;
@@ -23,6 +24,7 @@ pub use cache::release_cache;
 pub use drawings::{Drawings, Painted, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
+pub use images::{ExtractedImage, ImageFormat, PageImage, extract_image, images};
 pub use redact::{ImageRedaction, PathRedaction, RedactOptions, Redacted, redact};
 
 use std::collections::{BTreeSet, HashMap, HashSet};

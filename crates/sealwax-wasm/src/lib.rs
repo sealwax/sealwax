@@ -340,6 +340,35 @@ export type LinkTarget =
   | { kind: "named"; name: string }
   | { kind: "unknown"; name: string | null };
 
+/** An image a page draws. */
+export interface PageImage {
+  /** The box its unit square covers, in the page's default user space. */
+  bbox: Box;
+  /** The matrix mapping its unit square there. */
+  transform: [number, number, number, number, number, number];
+  /** Pixels, as stored. */
+  width: number;
+  height: number;
+  /** Its object number; null for an image written in the content (`BI`). */
+  xref: number | null;
+  /** "DeviceRGB", "ICCBased"...; null when not named (a stencil mask). */
+  colorSpace: string | null;
+  bitsPerComponent: number | null;
+  filters: string[];
+  /** A mask that paints the fill colour. */
+  stencil: boolean;
+  /** It has a soft mask or a mask. */
+  masked: boolean;
+}
+
+/** An image extracted: as stored (JPEG, JPEG 2000), or a PNG of its pixels. */
+export interface ExtractedImage {
+  ext: "jpeg" | "jpx" | "png";
+  image: Uint8Array;
+  width: number;
+  height: number;
+}
+
 /** A link of a page: its rectangle, in the page's default user space, and where it leads. */
 export type Link = { rect: Box } & LinkTarget;
 
@@ -1606,6 +1635,75 @@ impl Document {
                 JsValue::from(object)
             })
             .collect())
+    }
+
+    /// The images page `pageIndex` (from 0) draws, in the order of its content, forms included
+    /// (an image drawn twice is listed twice; annotations left out). As `images` in Python.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page the document does not have; a `PdfError`.
+    #[wasm_bindgen(unchecked_return_type = "PageImage[]")]
+    pub fn images(&self, page_index: usize) -> Result<Array, JsValue> {
+        let found =
+            sealwax_text::images(&self.inner, page_index).map_err(|error| core_error(&error))?;
+        Ok(found
+            .into_iter()
+            .map(|image| {
+                let object = Object::new();
+                set(&object, "bbox", numbers(&image.bbox));
+                set(&object, "transform", numbers(&image.transform));
+                set(&object, "width", image.width);
+                set(&object, "height", image.height);
+                set(
+                    &object,
+                    "xref",
+                    image
+                        .object
+                        .map_or(JsValue::NULL, |id| JsValue::from(id.number)),
+                );
+                set(
+                    &object,
+                    "colorSpace",
+                    image.color_space.map_or(JsValue::NULL, JsValue::from),
+                );
+                set(
+                    &object,
+                    "bitsPerComponent",
+                    image
+                        .bits_per_component
+                        .map_or(JsValue::NULL, JsValue::from),
+                );
+                let filters: Array = image.filters.into_iter().map(JsValue::from).collect();
+                set(&object, "filters", filters);
+                set(&object, "stencil", image.stencil);
+                set(&object, "masked", image.masked);
+                JsValue::from(object)
+            })
+            .collect())
+    }
+
+    /// The `index`-th image (from 0) of `images(pageIndex)`: as stored when it is a JPEG or
+    /// JPEG 2000 without mask, decode array or other filter, else a PNG of its pixels. As
+    /// `extract_image` in Python.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page or an image the page does not have; a `PdfError` (a
+    /// `PdfLimitError` past `maxImagePixels`).
+    #[wasm_bindgen(js_name = extractImage, unchecked_return_type = "ExtractedImage")]
+    pub fn extract_image(&self, page_index: usize, index: usize) -> Result<Object, JsValue> {
+        let image = sealwax_text::extract_image(&self.inner, page_index, index)
+            .map_err(|error| core_error(&error))?;
+        let object = Object::new();
+        let ext = match image.format {
+            sealwax_text::ImageFormat::Jpeg => "jpeg",
+            sealwax_text::ImageFormat::Jpeg2000 => "jpx",
+            _ => "png",
+        };
+        set(&object, "ext", ext);
+        set(&object, "image", bytes(&image.data));
+        set(&object, "width", image.width);
+        set(&object, "height", image.height);
+        Ok(object)
     }
 
     /// The links of page `pageIndex` (from 0), in the order of its annotations: each its
