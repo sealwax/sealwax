@@ -6,6 +6,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A full save of a document whose catalog is no dictionary (a stream a later revision gave the
+  catalog's number), its pages found by scanning the file, writes a catalog of its own over the
+  page tree rebuilt. It wrote the object as found, which led to no page, and the save failed its
+  read-back check. Found by fuzzing.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added

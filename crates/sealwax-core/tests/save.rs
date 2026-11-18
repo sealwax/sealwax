@@ -365,6 +365,37 @@ fn a_full_save_rebuilds_a_page_tree_that_does_not_read() {
 }
 
 #[test]
+fn a_full_save_writes_a_catalog_of_its_own_when_the_catalog_is_no_dictionary() {
+    // The catalog read as a stream (an object stream that a later revision gave the catalog's
+    // number, in a fuzzed file), its pages found all the same: written as is, it would lead to
+    // no page. The catalog written is a new one, over the page tree rebuilt.
+    let mut doc = open(sample());
+    let mut dict = Dict::new();
+    dict.insert("Type", Name::from("ObjStm"));
+    dict.insert("N", 0);
+    dict.insert("First", 0);
+    doc.set_object(
+        doc.catalog_id(),
+        Object::Stream(Stream {
+            dict,
+            data: Vec::new(),
+        }),
+    );
+    for format in FORMATS {
+        let saved = open(save(&doc, format));
+        assert_eq!(saved.page_count(), 2, "{format:?}");
+        assert_eq!(saved.geometry(), doc.geometry(), "{format:?}");
+        let Some(Object::Dict(catalog)) = saved.object(saved.catalog_id()).unwrap() else {
+            panic!("the catalog is no dictionary");
+        };
+        assert_eq!(
+            catalog.get(b"Type"),
+            Some(&Object::Name(Name::from("Catalog")))
+        );
+    }
+}
+
+#[test]
 fn a_full_save_rebuilds_a_page_tree_that_leads_elsewhere() {
     // /Pages is a dictionary, but not a page tree (a damaged object stream did that in a fuzzed
     // file): hayro finds the page by scanning, and the tree must be rebuilt for it.
