@@ -435,6 +435,10 @@ test("a page's words come in blocks and lines", () => {
     ["again", 1, 0, 0],
   ]);
   assert.equal(words[0].bbox[0], 72);
+  const hits = doc.search(0, "HELLO world");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].length, 1);
+  assert.equal(hits[0][0][0], 72);
 });
 
 test("files are embedded, listed and read back", () => {

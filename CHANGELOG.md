@@ -8,6 +8,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Text looked for on a page (`sealwax_text::search`; `search` in Python and WebAssembly), as
+  PyMuPDF's `search_for` finds it: the page's lines, as `words` reads them, taken as one text
+  where a line break is a space and a hyphen ending a line joins it to the next, compared with
+  case ignored, white space as one space, hyphens alike, ligatures and full-width forms as their
+  letters. Each occurrence its boxes, one for each line it spans. On a corpus of 98 documents,
+  for 41,897 texts looked for (words and pairs of words of each page, across lines too), 91.7%
+  are found as often as PyMuPDF finds them, with boxes within 1 pt; PyMuPDF splits a line's box
+  at wide gaps, where sealwax keeps one box for the line.
 - A page's words (`sealwax_text::words`; `words` in Python and WebAssembly), as PyMuPDF's
   `get_text("words")` gives them: the glyphs in the order of the content, in lines and blocks
   by MuPDF's rules (a space where glyphs leave a gap of 0.15 to 0.8 em, a step back taken as
