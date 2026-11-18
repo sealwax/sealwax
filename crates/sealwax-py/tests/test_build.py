@@ -175,3 +175,21 @@ def test_encryption_options_it_cannot_take_are_refused():
         document.save(encryption="aes-256", owner_password="owner", permissions=1)
     with pytest.raises(ValueError):
         document.save(user_password="user")
+
+
+def test_a_field_shown_on_two_pages_holds_one_value():
+    document = sealwax.Document.new()
+    first, second = document.add_page(), document.add_page()
+    document.add_field("name", "text", first, (20, 20, 180, 50), required=True, max_length=12)
+    document.add_widget("name", second, (20, 20, 180, 50))
+    built = sealwax.Document.from_bytes(document.save())
+    assert [f["page_number"] for f in built.fields()] == [1, 2]
+    assert all(f["required"] and f["max_length"] == 12 for f in built.fields())
+    filled = built.fill_fields({"name": "Élodie"})
+    assert filled["occurrences"] == 2
+    assert sealwax.Document.from_bytes(built.save()).field_values() == {"name": ["Élodie", "Élodie"]}
+    with pytest.raises(ValueError):
+        document.add_widget("nobody", second, (20, 20, 180, 50))
+    document.add_field("sign", "signature", first, (20, 100, 180, 140))
+    with pytest.raises(ValueError):
+        document.add_widget("sign", second, (20, 100, 180, 140))
