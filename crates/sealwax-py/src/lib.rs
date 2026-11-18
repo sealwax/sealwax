@@ -1539,8 +1539,10 @@ impl Document {
     /// "pixels", or "remove" whole, or "keep"), the paths painted there (`paths` "touched": even
     /// in part, "covered": whole, or "keep"). Form XObjects losing content are copied for the
     /// drawing that loses it. Annotations stay: flatten first. Returns the counts: `glyphs`,
-    /// `operators`, `forms`, `strings_unread`, `images`, `images_removed`, `paths`. Follow with
-    /// `rebuilt_for_redaction()`: what the pages no longer reach stays in this document.
+    /// `operators`, `forms`, `strings_unread`, `images`, `images_removed`, `paths`,
+    /// `replacement_texts` (the `/ActualText`, `/Alt` and `/E` taken off what lost content).
+    /// The document then refuses `save_incremental()`. Follow with `rebuilt_for_redaction()`:
+    /// what the pages no longer reach stays in this document.
     #[pyo3(signature = (page_index, areas, *, images = "pixels", paths = "touched"))]
     fn redact<'py>(
         &mut self,
@@ -2138,6 +2140,7 @@ fn redacted_dict<'py>(py: Python<'py>, done: &pdf::text::Redacted) -> PyResult<B
     dict.set_item("images", done.images)?;
     dict.set_item("images_removed", done.images_removed)?;
     dict.set_item("paths", done.paths)?;
+    dict.set_item("replacement_texts", done.replacement_texts)?;
     Ok(dict)
 }
 

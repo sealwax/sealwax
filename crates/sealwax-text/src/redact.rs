@@ -11,7 +11,12 @@
 //!
 //! Text in a hidden optional content group is read like any other: hidden is not gone. A form
 //! XObject that loses text is written anew for this page, the page's resources pointing to the
-//! copy, so that the other pages drawing the form keep it whole.
+//! copy, so that the other pages drawing the form keep it whole; what the page no longer draws
+//! (the form, an image written anew or taken out) leaves its resources.
+//!
+//! What stands for content taken out goes with it: the `/ActualText`, `/Alt` and `/E` of the
+//! marked-content sequences it was in (readers read them in its place), and of the structure
+//! elements those are tied to, with their ancestors.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
@@ -37,7 +42,7 @@ use hayro_interpret::{
 };
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Stream};
 
-use crate::scan::{Op, Operand, operands, operators};
+use crate::scan::{Op, Operand, dict_entries, object_end, operands, operators};
 
 /// Glyph units per em (hayro-font's).
 const UNITS: f64 = 1000.0;
@@ -49,6 +54,14 @@ const MAX_DEPTH: usize = 12;
 /// The most pixels an image is decoded with to blank some (a page scanned at 600 dpi has 35
 /// million): a larger one under an area is taken out whole.
 const MAX_BLANKED_PIXELS: u64 = 1 << 26;
+/// The texts that stand for content (ISO 32000-1, 14.9.3 to 14.9.5): read in its place, they go
+/// when some of it does.
+const STANDS_FOR: [&[u8]; 3] = [b"ActualText", b"Alt", b"E"];
+/// How many structure elements are climbed from one tied to content, and how deep a number tree
+/// is followed and how many of its nodes are read.
+const MAX_ANCESTORS: usize = 256;
+const MAX_TREE_DEPTH: usize = 32;
+const MAX_TREE_NODES: usize = 4096;
 
 /// What [`redact`] took out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -70,6 +83,10 @@ pub struct Redacted {
     pub images_removed: usize,
     /// Paths painted under an area, taken out.
     pub paths: usize,
+    /// Dictionaries that lost the texts standing for content taken out (`/ActualText`, `/Alt`,
+    /// `/E`): the properties of the marked-content sequences it was in, and the structure
+    /// elements those are tied to, with their ancestors.
+    pub replacement_texts: usize,
 }
 
 /// What becomes of an image drawn under an area.
@@ -125,7 +142,12 @@ impl RedactOptions {
 /// Take out of page `page_index` (from 0) what it draws under `areas`, rectangles in the page's
 /// default user space (unrotated, y up), its form XObjects' included (see the module): the
 /// glyphs, the images' pixels (or whole images, as `options` asks), the paths painted over an
-/// area. Annotations are left as they are: flatten them first to redact what they show.
+/// area, and the texts standing for them. Annotations are left as they are: flatten them first
+/// to redact what they show.
+///
+/// A document that lost content is marked redacted ([`Document::mark_redacted`]): it refuses an
+/// incremental save, which would keep the bytes it was opened from. Follow with
+/// [`Document::rebuilt_for_redaction`] and a full save.
 ///
 /// # Errors
 /// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have or an area
@@ -163,17 +185,54 @@ pub fn redact(
     // their numbers.
     let reread;
     let reader: &Document = if doc.is_modified() {
-        reread = Document::open(
-            doc.save_incremental()?,
-            &sealwax_core::OpenOptions::default().limits(*doc.limits()),
-        )?;
+        reread = doc.reopened_keeping_numbers()?;
         &reread
     } else {
         doc
     };
     let content = page_content(reader, page_id)?;
     let plan = plan(reader, page_index, &content, &areas, *options)?;
-    write(doc, page_id, &content, plan)
+    let done = write(doc, page_id, &content, plan)?;
+    // What was taken out is still in the bytes the document was opened from.
+    if done != Redacted::default() {
+        doc.mark_redacted();
+    }
+    Ok(done)
+}
+
+/// The properties written in `BDC` operator `op`.
+fn inline_properties(content: &[u8], op: &Op) -> Properties {
+    let operands = &content[op.start..op.operator.start];
+    let Some((entries, dict)) = dict_entries(operands, object_end(operands, 0)) else {
+        return Properties::Inline {
+            mcid: None,
+            stripped: None,
+        };
+    };
+    let mcid = entries
+        .iter()
+        .find(|entry| entry.key == b"MCID")
+        .and_then(|entry| std::str::from_utf8(&operands[entry.value.clone()]).ok())
+        .and_then(|value| value.trim().parse().ok());
+    let stripped = entries
+        .iter()
+        .any(|entry| STANDS_FOR.contains(&entry.key.as_slice()))
+        .then(|| {
+            let mut out = operands[..dict.start].to_vec();
+            out.extend_from_slice(b"<<");
+            for entry in &entries {
+                if !STANDS_FOR.contains(&entry.key.as_slice()) {
+                    out.push(b' ');
+                    out.extend_from_slice(&operands[entry.whole.clone()]);
+                }
+            }
+            out.extend_from_slice(b" >>");
+            out.extend_from_slice(&operands[dict.end..]);
+            out.push(b' ');
+            out.extend_from_slice(&content[op.operator.clone()]);
+            (op.start..op.end, out)
+        });
+    Properties::Inline { mcid, stripped }
 }
 
 /// The decoded data of stream `id`, as hayro reads it.
@@ -276,6 +335,29 @@ struct Plan {
     images: HashMap<Source, Vec<(Range<usize>, Blanked)>>,
     paths: usize,
     images_removed: usize,
+    /// The marked-content sequences met (`BDC`).
+    sequences: Vec<Sequence>,
+}
+
+/// A marked-content sequence, and whether content of it was taken out.
+#[derive(Debug, Clone)]
+struct Sequence {
+    source: Source,
+    properties: Properties,
+    lost: bool,
+}
+
+/// The properties of a marked-content sequence.
+#[derive(Debug, Clone)]
+enum Properties {
+    /// Written in its `BDC`: its `/MCID`, and the operator written without the texts standing
+    /// for content, when it has some.
+    Inline {
+        mcid: Option<i64>,
+        stripped: Option<(Range<usize>, Vec<u8>)>,
+    },
+    /// Named in the resources' `/Properties`.
+    Named(Vec<u8>),
 }
 
 /// Bytes of a content, and what is written in their place.
@@ -342,6 +424,9 @@ struct Walker<'a, 'r> {
     plan: Plan,
     /// Shown operators of each stream, by operator index, while it is read.
     shown: HashMap<Source, HashMap<usize, (Range<usize>, Shown)>>,
+    /// The marked-content sequences open, through the forms drawn: indexes into the plan's
+    /// sequences (`None` for a `BMC`, which has no properties).
+    marked: Vec<Option<usize>>,
 }
 
 fn object_id(id: ObjectIdentifier) -> ObjId {
@@ -374,6 +459,7 @@ fn plan(
         settings: InterpreterSettings::default(),
         plan: Plan::default(),
         shown: HashMap::new(),
+        marked: Vec::new(),
     };
     walker.walk(Source::Page, content, page.resources(), State::default(), 0);
     let mut plan = walker.plan;
@@ -425,6 +511,9 @@ impl<'a> Walker<'a, '_> {
         // clips.
         let mut path: Option<(Vec<Range<usize>>, Option<KurboRect>)> = None;
         let mut clips = false;
+        // The sequences open when this content starts are its drawing's; those it leaves open
+        // close with it.
+        let base = self.marked.len();
         for (index, op) in operators(content).iter().enumerate() {
             let operator = &content[op.operator.clone()];
             let args = operands(&content[op.start..op.operator.start]);
@@ -500,12 +589,31 @@ impl<'a> Walker<'a, '_> {
                                 cuts.push((op.start..op.end, Vec::new()));
                             }
                             self.plan.paths += 1;
+                            self.lose();
                         }
                     }
                     path = None;
                     clips = false;
                 }
                 b"w" => state.line_width = number(0).unwrap_or(state.line_width),
+                b"BMC" => self.marked.push(None),
+                b"BDC" => {
+                    let properties = match args.get(1) {
+                        Some(Operand::Name(name)) => Properties::Named(name.clone()),
+                        _ => inline_properties(content, op),
+                    };
+                    self.marked.push(Some(self.plan.sequences.len()));
+                    self.plan.sequences.push(Sequence {
+                        source,
+                        properties,
+                        lost: false,
+                    });
+                }
+                b"EMC" => {
+                    if self.marked.len() > base {
+                        self.marked.pop();
+                    }
+                }
                 b"BI" => self.image(source, op, &content[op.start..op.end], resources, &state),
                 b"q" => stack.push(state.clone()),
                 b"Q" => {
@@ -646,6 +754,14 @@ impl<'a> Walker<'a, '_> {
                 _ => {}
             }
         }
+        self.marked.truncate(base);
+    }
+
+    /// Content of the sequences open was taken out.
+    fn lose(&mut self) {
+        for index in self.marked.iter().flatten() {
+            self.plan.sequences[*index].lost = true;
+        }
     }
 
     /// An image drawn (`drawing` is its `Do`, or the inline image itself): under an area, its
@@ -681,6 +797,7 @@ impl<'a> Walker<'a, '_> {
                 .or_default()
                 .push((op.start..op.end, Vec::new()));
             self.plan.images_removed += 1;
+            self.lose();
             return;
         };
         // The areas in the image's unit square, then in its pixels: the first row on top.
@@ -724,6 +841,7 @@ impl<'a> Walker<'a, '_> {
             .entry(source)
             .or_default()
             .push((op.start..op.end, image));
+        self.lose();
     }
 
     /// The pixels of the image `drawing` draws, as hayro decodes them for rendering.
@@ -878,6 +996,9 @@ impl<'a> Walker<'a, '_> {
         }
         if unread && !removed.is_empty() {
             removed = (0..code_index).collect();
+        }
+        if !removed.is_empty() {
+            self.lose();
         }
         let ops = self.shown.entry(source).or_default();
         match ops.get_mut(&index) {
@@ -1183,7 +1304,7 @@ fn write(
     doc: &mut Document,
     page: ObjId,
     content: &[u8],
-    plan: Plan,
+    mut plan: Plan,
 ) -> sealwax_core::Result<Redacted> {
     let mut report = Redacted {
         paths: plan.paths,
@@ -1198,6 +1319,7 @@ fn write(
             report.strings_unread += usize::from(shown.unread);
         }
     }
+    report.replacement_texts = unmark(doc, page, &mut plan)?;
     // The drawings to copy: those losing text, and those drawing them. A drawing comes after
     // the one drawing it.
     let touched = |source: &Source| {
@@ -1443,7 +1565,23 @@ fn rewrite_content(
         }
     }
     let data = replaced(content, replacements);
-    if added.is_empty() {
+    // What the content no longer draws (an image written anew or taken out, a form copied)
+    // leaves its resources: the page would still reach it, and it holds what was taken out.
+    // Unless a form reading these resources draws it.
+    let mut needed = drawn_names(&data);
+    for entry in &plan.draws {
+        if !entry.own_resources
+            && resources_source(plan, entry.parent) == source
+            && let Some(form) = plan.forms.get(&entry.form)
+        {
+            needed.extend(drawn_names(form));
+        }
+    }
+    let gone: Vec<Vec<u8>> = drawn_names(content)
+        .into_iter()
+        .filter(|name| !needed.contains(name))
+        .collect();
+    if added.is_empty() && gone.is_empty() {
         return Ok((data, resources));
     }
     let mut dict = match &resources {
@@ -1465,11 +1603,289 @@ fn rewrite_content(
     for (name, _) in xobjects.iter() {
         used_names.insert(name.as_bytes().to_vec());
     }
+    for name in &gone {
+        xobjects.remove(name);
+    }
     for (name, copy) in added {
         xobjects.insert(Name::new(name), Object::Ref(copy));
     }
     dict.insert("XObject", Object::Dict(xobjects));
     Ok((data, Some(Object::Dict(dict))))
+}
+
+/// Take the texts standing for content off the marked-content sequences that lost some, and off
+/// the structure elements they are tied to; how many dictionaries lost them. Written in its
+/// `BDC`, the operator is written again; named in the resources, or on a structure element, the
+/// dictionary loses them where it is, for whatever else names it too: they stand for no content
+/// that shows.
+fn unmark(doc: &mut Document, page: ObjId, plan: &mut Plan) -> sealwax_core::Result<usize> {
+    let mut count = 0;
+    let mut tied: Vec<(Source, i64)> = Vec::new();
+    let lost: Vec<Sequence> = plan.sequences.iter().filter(|s| s.lost).cloned().collect();
+    for sequence in lost {
+        match sequence.properties {
+            Properties::Inline { mcid, stripped } => {
+                if let Some(cut) = stripped {
+                    plan.cuts.entry(sequence.source).or_default().push(cut);
+                    count += 1;
+                }
+                tied.extend(mcid.map(|mcid| (sequence.source, mcid)));
+            }
+            Properties::Named(name) => {
+                let Some(holder) = resources_holder(doc, plan, page, sequence.source)? else {
+                    continue;
+                };
+                let mut mcid = None;
+                let path: [&[u8]; 3] = [b"Resources", b"Properties", &name];
+                let changed = edit_at(doc, holder, &path, &mut |dict| {
+                    mcid = dict.get(b"MCID").and_then(Object::as_i64);
+                    strip(dict)
+                })?;
+                count += usize::from(changed);
+                tied.extend(mcid.map(|mcid| (sequence.source, mcid)));
+            }
+        }
+    }
+    Ok(count + untie(doc, plan, page, &tied)?)
+}
+
+/// Take the texts standing for content off `dict`: whether it had some.
+fn strip(dict: &mut Dict) -> bool {
+    let mut had = false;
+    for key in STANDS_FOR {
+        had |= dict.remove(key).is_some();
+    }
+    had
+}
+
+/// `object`, read through a reference.
+fn resolved(doc: &Document, object: Option<&Object>) -> sealwax_core::Result<Option<Object>> {
+    Ok(match object {
+        Some(Object::Ref(id)) => doc.object(*id)?,
+        other => other.cloned(),
+    })
+}
+
+/// Change, with `edit`, the dictionary `path` leads to from object `id` (a dictionary or a
+/// stream's), through references; written back where it lies. Whether `edit` changed it.
+fn edit_at(
+    doc: &mut Document,
+    id: ObjId,
+    path: &[&[u8]],
+    edit: &mut dyn FnMut(&mut Dict) -> bool,
+) -> sealwax_core::Result<bool> {
+    match doc.object(id)? {
+        Some(Object::Dict(mut dict)) => {
+            let changed = edit_in(doc, &mut dict, path, edit)?;
+            if changed {
+                doc.set_object(id, Object::Dict(dict));
+            }
+            Ok(changed)
+        }
+        Some(Object::Stream(mut stream)) => {
+            let changed = edit_in(doc, &mut stream.dict, path, edit)?;
+            if changed {
+                doc.set_object(id, Object::Stream(stream));
+            }
+            Ok(changed)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn edit_in(
+    doc: &mut Document,
+    dict: &mut Dict,
+    path: &[&[u8]],
+    edit: &mut dyn FnMut(&mut Dict) -> bool,
+) -> sealwax_core::Result<bool> {
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(edit(dict));
+    };
+    match dict.get(first).cloned() {
+        Some(Object::Ref(id)) => edit_at(doc, id, rest, edit),
+        Some(Object::Dict(mut inner)) => {
+            let changed = edit_in(doc, &mut inner, rest, edit)?;
+            if changed {
+                dict.insert(Name::new(first.to_vec()), Object::Dict(inner));
+            }
+            Ok(changed)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// The object whose `/Resources` the content of `source` reads: the page, or the node of the
+/// page tree it inherits them from; a form, or what draws it when it has none.
+fn resources_holder(
+    doc: &Document,
+    plan: &Plan,
+    page: ObjId,
+    source: Source,
+) -> sealwax_core::Result<Option<ObjId>> {
+    if let Source::Draw(draw) = resources_source(plan, source) {
+        return Ok(Some(plan.draws[draw].form));
+    }
+    let mut node = Some(page);
+    let mut seen = HashSet::new();
+    while let Some(id) = node {
+        if !seen.insert(id) {
+            break;
+        }
+        let Some(Object::Dict(dict)) = doc.object(id)? else {
+            break;
+        };
+        if dict.get(b"Resources").is_some() {
+            return Ok(Some(id));
+        }
+        node = dict.get(b"Parent").and_then(Object::as_ref_id);
+    }
+    Ok(None)
+}
+
+/// Take the texts standing for content off the structure elements the sequences `tied` (their
+/// content, their `/MCID`) are tied to by the structure tree's `/ParentTree`, and off the
+/// elements above them, whose texts stand for their children's content too; how many lost some.
+fn untie(
+    doc: &mut Document,
+    plan: &Plan,
+    page: ObjId,
+    tied: &[(Source, i64)],
+) -> sealwax_core::Result<usize> {
+    if tied.is_empty() {
+        return Ok(0);
+    }
+    let catalog = doc.object(doc.catalog_id())?;
+    let root = resolved(
+        doc,
+        catalog
+            .as_ref()
+            .and_then(|c| c.as_dict()?.get(b"StructTreeRoot")),
+    )?;
+    let tree = resolved(
+        doc,
+        root.as_ref().and_then(|r| r.as_dict()?.get(b"ParentTree")),
+    )?;
+    let Some(Object::Dict(tree)) = tree else {
+        return Ok(0);
+    };
+    let mut elements = Vec::new();
+    for (source, mcid) in tied {
+        let holder = match source {
+            Source::Page => page,
+            Source::Draw(draw) => plan.draws[*draw].form,
+        };
+        let key = match doc.object(holder)? {
+            Some(Object::Dict(dict)) => dict.get(b"StructParents").and_then(Object::as_i64),
+            Some(Object::Stream(stream)) => {
+                stream.dict.get(b"StructParents").and_then(Object::as_i64)
+            }
+            _ => None,
+        };
+        let Some(key) = key else {
+            continue;
+        };
+        let items = number_tree_get(doc, &tree, key)?;
+        let Some(Object::Array(items)) = resolved(doc, items.as_ref())? else {
+            continue;
+        };
+        if let Some(Object::Ref(element)) = usize::try_from(*mcid).ok().and_then(|i| items.get(i)) {
+            elements.push(*element);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut count = 0;
+    for element in elements {
+        let mut next = Some(element);
+        for _ in 0..MAX_ANCESTORS {
+            let Some(id) = next.filter(|id| seen.insert(*id)) else {
+                break;
+            };
+            let Some(Object::Dict(mut dict)) = doc.object(id)? else {
+                break;
+            };
+            if dict.get(b"Type").and_then(Object::as_name) == Some(b"StructTreeRoot") {
+                break;
+            }
+            next = dict.get(b"P").and_then(Object::as_ref_id);
+            if strip(&mut dict) {
+                doc.set_object(id, Object::Dict(dict));
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// The value of `key` in the number tree `root`.
+fn number_tree_get(doc: &Document, root: &Dict, key: i64) -> sealwax_core::Result<Option<Object>> {
+    let mut stack = vec![(root.clone(), 0)];
+    let mut read = 0;
+    while let Some((node, depth)) = stack.pop() {
+        if let Some(Object::Array(nums)) = resolved(doc, node.get(b"Nums"))?
+            && let Some(pair) = nums
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .find(|[k, _]| k.as_i64() == Some(key))
+        {
+            return Ok(Some(pair[1].clone()));
+        }
+        if depth >= MAX_TREE_DEPTH {
+            continue;
+        }
+        let Some(Object::Array(kids)) = resolved(doc, node.get(b"Kids"))? else {
+            continue;
+        };
+        for kid in kids.iter().rev() {
+            read += 1;
+            if read > MAX_TREE_NODES {
+                return Ok(None);
+            }
+            let Some(Object::Dict(kid)) = resolved(doc, Some(kid))? else {
+                continue;
+            };
+            let within = match resolved(doc, kid.get(b"Limits"))? {
+                Some(Object::Array(limits)) => match limits.as_slice() {
+                    [low, high] => match (low.as_i64(), high.as_i64()) {
+                        (Some(low), Some(high)) => low <= key && key <= high,
+                        _ => true,
+                    },
+                    _ => true,
+                },
+                _ => true,
+            };
+            if within {
+                stack.push((kid, depth + 1));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The names content `data` draws (`Do`).
+fn drawn_names(data: &[u8]) -> HashSet<Vec<u8>> {
+    operators(data)
+        .iter()
+        .filter(|op| &data[op.operator.clone()] == b"Do")
+        .filter_map(
+            |op| match operands(&data[op.start..op.operator.start]).pop() {
+                Some(Operand::Name(name)) => Some(name),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// The content whose resources `source` reads: itself, or what draws it when it has none.
+fn resources_source(plan: &Plan, mut source: Source) -> Source {
+    while let Source::Draw(draw) = source {
+        if plan.draws[draw].own_resources {
+            break;
+        }
+        source = plan.draws[draw].parent;
+    }
+    source
 }
 
 /// The resources a page inherits from its parents.

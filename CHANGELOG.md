@@ -30,6 +30,22 @@ All notable changes to sealwax are recorded here. The format follows
   page (`/Fit`, as before); it is no longer `Eq`. `Document::set_outline` takes time in
   proportion to the entries, not to their square.
 
+### Security
+
+- Redaction (`redact`, `apply_redactions`) left what it took out in the file, from 0.2.0 to
+  0.6.0:
+  - The form XObjects it copied, and the images it wrote anew or took out, stayed named in the
+    page's resources: the original form, with the text taken out, and the original image, with
+    the pixels blanked, were still saved, after `rebuilt_for_redaction` too. What the page no
+    longer draws now leaves its resources.
+  - The `/ActualText`, `/Alt` and `/E` standing for the content taken out stayed, and text
+    extraction reads them in its place: in the properties of the marked-content sequences it was
+    in, written in the content or named in the resources, and on the structure elements tied to
+    those. They now go, from the elements' ancestors too; `Redacted::replacement_texts` counts
+    the dictionaries that lost them.
+- A redacted document refuses an incremental save, which kept the bytes it was opened from and
+  what was taken out with them (`Document::mark_redacted`, `Document::is_redacted`).
+
 ## [0.6.0] - 2026-11-18
 
 ### Added
