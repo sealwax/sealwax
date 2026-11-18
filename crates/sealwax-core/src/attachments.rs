@@ -141,6 +141,9 @@ impl NewAttachment {
     }
 }
 
+/// An entry of a name tree: its key as written, and its value.
+type NameTreeEntry = (Vec<u8>, Object);
+
 /// A file specification found, and where.
 struct Found {
     key: Option<String>,
@@ -206,7 +209,10 @@ impl Document {
     ///
     /// # Errors
     /// [`Error::InvalidArgument`] for a name empty, too long or taken, a MIME type or a
-    /// relationship it cannot take; [`Error::LimitExceeded`] past
+    /// relationship it cannot take; [`Error::Unsupported`] for a document claiming PDF/A-1 (which
+    /// forbids embedded files) or PDF/A-2 (which takes only PDF/A files), or whose
+    /// `/EmbeddedFiles` cannot be read whole (too deep, a key that is no string...): rewritten,
+    /// it would lose what was not read; [`Error::LimitExceeded`] past
     /// [`crate::Limits::max_stream_bytes`] or when a new object cannot be numbered.
     pub fn add_attachment(&mut self, file: &NewAttachment) -> Result<()> {
         if file.name.is_empty() || file.name.chars().count() > MAX_NAME {
@@ -229,6 +235,17 @@ impl Document {
                 what: "attachment relationship",
             });
         }
+        // PDF/A-1 forbids embedded files, and PDF/A-2 takes only PDF/A files, which sealwax does
+        // not check: the document would keep a claim it no longer meets.
+        if self
+            .metadata()
+            .pdfa
+            .is_some_and(|claim| claim.starts_with('1') || claim.starts_with('2'))
+        {
+            return Err(Error::Unsupported {
+                what: "a file embedded in a document claiming PDF/A-1 or PDF/A-2",
+            });
+        }
         if u64::try_from(file.data.len()).unwrap_or(u64::MAX) > self.limits().max_stream_bytes {
             return Err(Error::LimitExceeded {
                 what: "max_stream_bytes",
@@ -241,7 +258,15 @@ impl Document {
             .resolved_dict(catalog.get(b"Names"))?
             .unwrap_or_default();
         let mut entries = match self.resolved_dict(names.get(b"EmbeddedFiles"))? {
-            Some(root) => self.name_tree_entries(root)?,
+            Some(root) => match self.name_tree_entries(root)? {
+                (entries, true) => entries,
+                // Rewritten from what was read, the rest would be lost.
+                (_, false) => {
+                    return Err(Error::Unsupported {
+                        what: "a file added to an /EmbeddedFiles tree that cannot be read whole",
+                    });
+                }
+            },
             None => Vec::new(),
         };
         if entries
@@ -346,7 +371,7 @@ impl Document {
             .resolved_dict(catalog.get(b"Names"))?
             .unwrap_or_default();
         if let Some(root) = self.resolved_dict(names.get(b"EmbeddedFiles"))? {
-            let mut entries = self.name_tree_entries(root)?;
+            let (mut entries, _) = self.name_tree_entries(root)?;
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             for (key, value) in entries {
                 if let Some(spec) = self.resolved_dict(Some(&value))? {
@@ -447,46 +472,67 @@ impl Document {
         }))
     }
 
-    /// The entries of the name tree `root`: each key (as written) and its value.
-    fn name_tree_entries(&self, root: Dict) -> Result<Vec<(Vec<u8>, Object)>> {
+    /// The entries of the name tree `root`, each key (as written) and its value, and whether it
+    /// was read whole: not when it goes past 32 levels or 100,000 nodes, nor when an entry, a
+    /// node or a list of them is not what the tree holds (a key that is no string, a value
+    /// missing, a kid that is no dictionary). Reading takes what it can; rewriting the tree
+    /// must not lose the rest.
+    fn name_tree_entries(&self, root: Dict) -> Result<(Vec<NameTreeEntry>, bool)> {
         let mut entries = Vec::new();
+        let mut whole = true;
         let mut seen = HashSet::new();
         let mut stack = vec![(root, 0)];
         let mut nodes = 0;
         while let Some((node, depth)) = stack.pop() {
             nodes += 1;
             if nodes > MAX_TREE_NODES {
+                whole = false;
                 break;
             }
             if nodes % 1024 == 0 {
                 self.check_time()?;
             }
-            if let Some(Object::Array(names)) = self.resolved(node.get(b"Names"))? {
-                for [key, value] in names.as_chunks::<2>().0 {
-                    if let Some(key) = self
-                        .resolved(Some(key))?
-                        .and_then(|k| k.as_string().map(<[u8]>::to_vec))
-                    {
-                        entries.push((key, value.clone()));
+            match self.resolved(node.get(b"Names"))? {
+                Some(Object::Array(names)) => {
+                    let (pairs, rest) = names.as_chunks::<2>();
+                    whole &= rest.is_empty();
+                    for [key, value] in pairs {
+                        match self
+                            .resolved(Some(key))?
+                            .and_then(|k| k.as_string().map(<[u8]>::to_vec))
+                        {
+                            Some(key) => entries.push((key, value.clone())),
+                            None => whole = false,
+                        }
                     }
                 }
+                None | Some(Object::Null) => {}
+                Some(_) => whole = false,
             }
+            let kids = match self.resolved(node.get(b"Kids"))? {
+                Some(Object::Array(kids)) => kids,
+                None | Some(Object::Null) => continue,
+                Some(_) => {
+                    whole = false;
+                    continue;
+                }
+            };
             if depth >= MAX_TREE_DEPTH {
+                whole &= kids.is_empty();
                 continue;
             }
-            if let Some(Object::Array(kids)) = self.resolved(node.get(b"Kids"))? {
-                for kid in kids.iter().rev() {
-                    if let Some(id) = kid.as_ref_id()
-                        && !seen.insert(id)
-                    {
-                        continue;
-                    }
-                    if let Some(kid) = self.resolved_dict(Some(kid))? {
-                        stack.push((kid, depth + 1));
-                    }
+            for kid in kids.iter().rev() {
+                if let Some(id) = kid.as_ref_id()
+                    && !seen.insert(id)
+                {
+                    continue;
+                }
+                match self.resolved_dict(Some(kid))? {
+                    Some(kid) => stack.push((kid, depth + 1)),
+                    None => whole = false,
                 }
             }
         }
-        Ok(entries)
+        Ok((entries, whole))
     }
 }

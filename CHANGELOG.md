@@ -17,7 +17,8 @@ All notable changes to sealwax are recorded here. The format follows
   its MIME type (guessed from its extension when not given), size, MD5 checksum and date in
   `/Params`, named in `/F` and `/UF`, with its description and `/AFRelationship`, added to
   `/EmbeddedFiles` and to the catalog's `/AF`: a document with a file added converts to
-  PDF/A-3b that veraPDF passes. `mime_type_for` and `is_mime_type`, which PDF/A conversion
+  PDF/A-3b that veraPDF passes. Refused for a document claiming PDF/A-1 or PDF/A-2, and for an
+  `/EmbeddedFiles` that cannot be read whole, which rewriting would lose. `mime_type_for` and `is_mime_type`, which PDF/A conversion
   used on its own.
 - The images a page draws (`sealwax_text::images`; `images` in Python and WebAssembly), in the
   order of its content, forms and inline images included: the box and matrix they are drawn

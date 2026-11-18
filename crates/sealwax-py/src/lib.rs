@@ -1193,7 +1193,9 @@ impl Document {
     /// "EncryptedPayload", "FormData", "Schema"; "Unspecified" when None) and `modified` date (a
     /// PDF date, "D:20261118120000Z", which PDF/A-3 asks for). It is compressed, given its size
     /// and MD5 checksum, and associated with the document (`/AF`). `ValueError` for a name
-    /// empty or taken, a MIME type or a relationship it cannot take.
+    /// empty or taken, a MIME type or a relationship it cannot take; `PdfError` for a document
+    /// claiming PDF/A-1 or PDF/A-2, or whose `/EmbeddedFiles` cannot be read whole (rewritten,
+    /// it would lose the rest).
     #[pyo3(signature = (name, data, *, description = None, mime_type = None, relationship = None, modified = None))]
     #[allow(clippy::too_many_arguments)]
     fn add_attachment(
