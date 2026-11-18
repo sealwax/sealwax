@@ -51,17 +51,7 @@ impl Document {
         else {
             return Ok(Vec::new());
         };
-        let mut reader = Destinations {
-            doc: self,
-            pages: self
-                .page_ids()
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, id)| id.map(|id| (id, index)))
-                .collect(),
-            catalog,
-            named: HashMap::new(),
-        };
+        let mut reader = Destinations::new(self, catalog);
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
         let mut stack = vec![(first, 1)];
@@ -101,7 +91,7 @@ impl Document {
     }
 
     /// The dictionary object `id` is, if it is one.
-    fn dict_at(&self, id: ObjId) -> Result<Option<Dict>> {
+    pub(crate) fn dict_at(&self, id: ObjId) -> Result<Option<Dict>> {
         Ok(match self.object_without_data(id)? {
             Some(Object::Dict(dict)) => Some(dict),
             _ => None,
@@ -109,7 +99,7 @@ impl Document {
     }
 
     /// `object`, the object it refers to when it is a reference.
-    fn resolved(&self, object: Option<&Object>) -> Result<Option<Object>> {
+    pub(crate) fn resolved(&self, object: Option<&Object>) -> Result<Option<Object>> {
         match object {
             Some(Object::Ref(id)) => self.object_without_data(*id),
             Some(other) => Ok(Some(other.clone())),
@@ -117,7 +107,7 @@ impl Document {
         }
     }
 
-    fn resolved_dict(&self, object: Option<&Object>) -> Result<Option<Dict>> {
+    pub(crate) fn resolved_dict(&self, object: Option<&Object>) -> Result<Option<Dict>> {
         Ok(match self.resolved(object)? {
             Some(Object::Dict(dict)) => Some(dict),
             _ => None,
@@ -126,7 +116,7 @@ impl Document {
 }
 
 /// Reads where destinations lead.
-struct Destinations<'d> {
+pub(crate) struct Destinations<'d> {
     doc: &'d Document,
     /// Each page object, and its index.
     pages: HashMap<ObjId, usize>,
@@ -135,7 +125,22 @@ struct Destinations<'d> {
     named: HashMap<Vec<u8>, Option<usize>>,
 }
 
-impl Destinations<'_> {
+impl<'d> Destinations<'d> {
+    /// Destinations of `doc`, whose catalog is `catalog`.
+    pub(crate) fn new(doc: &'d Document, catalog: Dict) -> Self {
+        Self {
+            doc,
+            pages: doc
+                .page_ids()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, id)| id.map(|id| (id, index)))
+                .collect(),
+            catalog,
+            named: HashMap::new(),
+        }
+    }
+
     /// The page an outline entry leads to.
     fn of_item(&mut self, item: &Dict) -> Result<Option<usize>> {
         if item.contains_key(b"Dest") {
@@ -163,7 +168,11 @@ impl Destinations<'_> {
     /// The page a destination leads to: an array naming the page, a name or a string (looked up
     /// in the catalog's `/Dests`, then in its `/Names` tree: producers write either for both, and
     /// readers look in both), or a dictionary holding one under `/D`.
-    fn page_of(&mut self, destination: Option<Object>, depth: usize) -> Result<Option<usize>> {
+    pub(crate) fn page_of(
+        &mut self,
+        destination: Option<Object>,
+        depth: usize,
+    ) -> Result<Option<usize>> {
         if depth > MAX_INDIRECTIONS {
             return Ok(None);
         }

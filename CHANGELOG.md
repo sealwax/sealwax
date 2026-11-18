@@ -8,6 +8,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- A page's links and where they lead (`Document::links`; `links` in Python and WebAssembly):
+  each link's rectangle, and a page of the document (destinations, named ones resolved, `GoTo`,
+  `FirstPage` and `LastPage`), a URI, another file and its page, a named action, or what cannot
+  be followed, with its action's type. Never a guess.
+- The labels pages are shown with (`Document::page_labels`; `page_labels` in Python,
+  `pageLabels` in WebAssembly): prefixes and numbers in decimal, roman numerals or letters, as
+  `/PageLabels` gives them; `None` when the document gives none.
 - `sealwax-compose`: tagged documents. A composition may mark what its pages draw
   (`Item::BeginMarked`, `Item::EndMarked`: a structure element's content, by marked-content
   id, or an artifact, of pagination or another kind) and give the logical structure that ties

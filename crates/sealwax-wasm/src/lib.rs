@@ -331,6 +331,18 @@ export interface OutlineEntry {
   pageNumber: number | null;
 }
 
+/** Where a link leads: a page of this document, a URI, another file, a named action, or
+ * nowhere sealwax can tell (`name`: the action's type, null for a broken destination). */
+export type LinkTarget =
+  | { kind: "page"; pageNumber: number }
+  | { kind: "uri"; uri: string }
+  | { kind: "file"; file: string; pageNumber: number | null }
+  | { kind: "named"; name: string }
+  | { kind: "unknown"; name: string | null };
+
+/** A link of a page: its rectangle, in the page's default user space, and where it leads. */
+export type Link = { rect: Box } & LinkTarget;
+
 /** How a shape is painted: its inside filled (`f`), its outline stroked (`S`), or both (`B`, or
  * the path filled then stroked where it was filled). */
 export interface Painted {
@@ -1594,6 +1606,72 @@ impl Document {
                 JsValue::from(object)
             })
             .collect())
+    }
+
+    /// The links of page `pageIndex` (from 0), in the order of its annotations: each its
+    /// rectangle and where it leads (`kind`: "page", "uri", "file", "named" or "unknown"; page
+    /// numbers from 1). Never a guess.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page the document does not have; a `PdfError`.
+    #[wasm_bindgen(unchecked_return_type = "Link[]")]
+    pub fn links(&self, page_index: usize) -> Result<Array, JsValue> {
+        let links = self
+            .inner
+            .links(page_index)
+            .map_err(|error| core_error(&error))?;
+        Ok(links
+            .into_iter()
+            .map(|link| {
+                let object = Object::new();
+                set(&object, "rect", rect(link.rect));
+                let page = |index: Option<usize>| index.map_or(JsValue::NULL, |i| count(i + 1));
+                match link.target {
+                    sealwax_core::LinkTarget::Page(index) => {
+                        set(&object, "kind", "page");
+                        set(&object, "pageNumber", count(index + 1));
+                    }
+                    sealwax_core::LinkTarget::Uri(uri) => {
+                        set(&object, "kind", "uri");
+                        set(&object, "uri", uri);
+                    }
+                    sealwax_core::LinkTarget::File { name, page_index } => {
+                        set(&object, "kind", "file");
+                        set(&object, "file", name);
+                        set(&object, "pageNumber", page(page_index));
+                    }
+                    sealwax_core::LinkTarget::Named(name) => {
+                        set(&object, "kind", "named");
+                        set(&object, "name", name);
+                    }
+                    sealwax_core::LinkTarget::Unknown { action } => {
+                        set(&object, "kind", "unknown");
+                        set(&object, "name", action.map_or(JsValue::NULL, JsValue::from));
+                    }
+                    _ => {
+                        set(&object, "kind", "unknown");
+                        set(&object, "name", JsValue::NULL);
+                    }
+                }
+                JsValue::from(object)
+            })
+            .collect())
+    }
+
+    /// The label each page is shown with ("i", "ii", "1", "A-1"), in page order; null when the
+    /// document gives none (readers then show the pages' numbers).
+    ///
+    /// # Errors
+    /// A `PdfError`.
+    #[wasm_bindgen(js_name = pageLabels, unchecked_return_type = "string[] | null")]
+    pub fn page_labels(&self) -> Result<JsValue, JsValue> {
+        let labels = self
+            .inner
+            .page_labels()
+            .map_err(|error| core_error(&error))?;
+        Ok(labels.map_or(JsValue::NULL, |labels| {
+            JsValue::from(labels.into_iter().map(JsValue::from).collect::<Array>())
+        }))
     }
 
     /// What page `pageIndex` (from 0) paints with straight lines, each shape with how it is
