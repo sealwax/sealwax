@@ -2020,7 +2020,9 @@ impl Document {
     /// in Python.
     ///
     /// # Errors
-    /// A `RangeError` for a name empty or taken, a MIME type or a relationship it cannot take.
+    /// A `RangeError` for a name empty or taken, a MIME type or a relationship it cannot take; a
+    /// `PdfError` for a document claiming PDF/A-1 or PDF/A-2, or whose `/EmbeddedFiles` cannot be
+    /// read whole (rewritten, it would lose the rest).
     #[wasm_bindgen(js_name = addAttachment)]
     pub fn add_attachment(
         &mut self,

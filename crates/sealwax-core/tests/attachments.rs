@@ -203,3 +203,82 @@ fn files_that_cannot_be_added_are_refused() {
         .unwrap();
     assert_eq!(reopened(&doc).attachment_data(0).unwrap(), b"a");
 }
+
+/// A one-page document whose `/EmbeddedFiles` is `tree` (object 3), with `extra` objects from 4,
+/// and `catalog` added to its catalog.
+fn with_tree(tree: &str, extra: &[String], catalog: &str) -> Document {
+    let mut objects = vec![
+        (
+            1,
+            format!(
+                "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 3 0 R >> {catalog} >>"
+            ),
+        ),
+        (2, "<< /Type /Pages /Kids [99 0 R] /Count 1 >>".to_owned()),
+        (3, tree.to_owned()),
+    ];
+    for (index, body) in extra.iter().enumerate() {
+        objects.push((u32::try_from(index).unwrap() + 4, body.clone()));
+    }
+    objects.push((
+        99,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>".to_owned(),
+    ));
+    let objects: Vec<(u32, &str)> = objects.iter().map(|(n, b)| (*n, b.as_str())).collect();
+    open(common::pdf(&objects, false))
+}
+
+#[test]
+fn a_tree_that_cannot_be_read_whole_is_not_rewritten() {
+    let spec = |name: &str, stream: u32| {
+        format!("<< /Type /Filespec /F ({name}) /EF << /F {stream} 0 R >> >>")
+    };
+    let file = "<< /Length 1 >>\nstream\nx\nendstream".to_owned();
+    // A file 40 levels down, past what is followed.
+    let mut extra: Vec<String> = (0..40)
+        .map(|level| format!("<< /Kids [{} 0 R] >>", level + 5))
+        .collect();
+    extra[39] = format!("<< /Names [(deep.txt) {} 0 R] >>", 44);
+    extra.push(spec("deep.txt", 45));
+    extra.push(file.clone());
+    let mut deep = with_tree("<< /Kids [4 0 R] >>", &extra, "");
+    // A key that is a name, not a string.
+    let mut named = with_tree(
+        "<< /Names [/b.txt 4 0 R (c.txt) 6 0 R] >>",
+        &[spec("b.txt", 5), file.clone(), spec("c.txt", 5)],
+        "",
+    );
+    for doc in [&mut deep, &mut named] {
+        // Read, what can be is listed.
+        doc.attachments().unwrap();
+        assert!(matches!(
+            doc.add_attachment(&NewAttachment::new("new.txt", b"n".to_vec())),
+            Err(Error::Unsupported { .. })
+        ));
+        assert!(!doc.is_modified());
+    }
+    assert_eq!(named.attachments().unwrap().len(), 1);
+}
+
+#[test]
+fn a_document_claiming_pdfa_1_or_2_is_given_no_file() {
+    let xmp = |part: &str| {
+        let data = format!(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><pdfaid:part>{part}</pdfaid:part>\
+             <pdfaid:conformance>B</pdfaid:conformance></x:xmpmeta>"
+        );
+        format!(
+            "<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{data}\nendstream",
+            data.len()
+        )
+    };
+    for (part, refused) in [("1", true), ("2", true), ("3", false)] {
+        let mut doc = with_tree("<< /Names [] >>", &[xmp(part)], "/Metadata 4 0 R");
+        let added = doc.add_attachment(&NewAttachment::new("a.txt", b"a".to_vec()));
+        assert_eq!(
+            matches!(added, Err(Error::Unsupported { .. })),
+            refused,
+            "PDF/A-{part}: {added:?}"
+        );
+    }
+}
