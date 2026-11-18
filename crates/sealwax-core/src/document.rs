@@ -117,6 +117,8 @@ pub struct Document {
     pub(crate) appended: Vec<(ObjId, PageGeometry)>,
     /// The rotation of input pages turned since ([`Document::rotate_pages`]), by index.
     rotations: HashMap<usize, Rotation>,
+    /// The crop box of input pages given one since ([`Document::set_crop_box`]), by index.
+    crop_boxes: HashMap<usize, Rect>,
     info: Option<ObjId>,
     next_number: u32,
     /// The highest object number the file defines, read from its bytes when first needed.
@@ -178,6 +180,7 @@ impl Document {
             catalog: None,
             appended: Vec::new(),
             rotations: HashMap::new(),
+            crop_boxes: HashMap::new(),
             highest_defined: OnceLock::new(),
             geometry: OnceLock::new(),
             checked: Mutex::new(HashSet::new()),
@@ -695,6 +698,11 @@ impl Document {
                 page.rotation = *rotation;
             }
         }
+        for (index, crop_box) in &self.crop_boxes {
+            if let Some(page) = geometry.get_mut(*index) {
+                page.crop_box = *crop_box;
+            }
+        }
         let first = geometry.len();
         geometry.extend(
             self.appended
@@ -749,6 +757,54 @@ impl Document {
         Ok(())
     }
 
+    /// Give page `page_index` (from 0) the crop box `crop_box`, in its default user space: what
+    /// a reader shows of it, the media box's part it covers (a reader clips it so).
+    ///
+    /// # Errors
+    /// [`Error::InvalidArgument`] for a page the document does not have, or a crop box that
+    /// leaves nothing of the media box.
+    pub fn set_crop_box(&mut self, page_index: usize, crop_box: Rect) -> Result<()> {
+        let geometry = self.geometry();
+        let (Some(Some(id)), Some(page)) = (
+            self.page_ids().get(page_index).copied(),
+            geometry.get(page_index),
+        ) else {
+            return Err(Error::InvalidArgument { what: "page index" });
+        };
+        let clipped = crop_box.intersect(&page.media_box);
+        let values = [crop_box.x1, crop_box.y1, crop_box.x2, crop_box.y2];
+        if !values.iter().all(|v| v.is_finite())
+            || clipped.width() <= 0.0
+            || clipped.height() <= 0.0
+        {
+            return Err(Error::InvalidArgument { what: "crop box" });
+        }
+        let Some(Object::Dict(mut dict)) = self.object(id)? else {
+            return Err(Error::InvalidArgument { what: "page index" });
+        };
+        dict.insert(
+            "CropBox",
+            vec![
+                clipped.x1.into(),
+                clipped.y1.into(),
+                clipped.x2.into(),
+                clipped.y2.into(),
+            ],
+        );
+        self.set_object(id, Object::Dict(dict));
+        match self.page_index.get(&id) {
+            Some(input) => {
+                self.crop_boxes.insert(*input, clipped);
+            }
+            None => {
+                if let Some((_, appended)) = self.appended.iter_mut().find(|(p, _)| *p == id) {
+                    appended.crop_box = clipped;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The geometry of the page whose object is `id`, as [`Document::geometry`] reports it,
     /// without measuring every page: `None` when `id` is no page of the document.
     pub fn page_geometry(&self, id: ObjId) -> Option<PageGeometry> {
@@ -756,6 +812,7 @@ impl Document {
         if let Some(index) = self.page_index.get(&id) {
             return input.get(*index).map(|page| PageGeometry {
                 rotation: self.rotations.get(index).copied().unwrap_or(page.rotation),
+                crop_box: self.crop_boxes.get(index).copied().unwrap_or(page.crop_box),
                 ..*page
             });
         }

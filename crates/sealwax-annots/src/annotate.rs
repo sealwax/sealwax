@@ -617,7 +617,7 @@ impl<'a> Shape<'a> {
 }
 
 /// `annotation` added to the annotations of `page`.
-fn add_to_page(doc: &mut Document, page: ObjId, annotation: ObjId) -> Result<()> {
+pub(crate) fn add_to_page(doc: &mut Document, page: ObjId, annotation: ObjId) -> Result<()> {
     let Some(Object::Dict(mut dict)) = doc.object(page)? else {
         return Err(Error::Pdf(sealwax_core::Error::Malformed));
     };
