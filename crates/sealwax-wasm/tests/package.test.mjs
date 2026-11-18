@@ -287,6 +287,23 @@ test("fields are created and a name taken is refused with its own error", () => 
   ]);
 });
 
+test("a field is given another widget, on another page, one value for both", () => {
+  const twoPages = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+  ]);
+  const doc = Document.fromBytes(twoPages);
+  doc.addField({ name: "name", kind: "text", pageIndex: 0, rect: [20, 20, 180, 50], required: true });
+  doc.addWidget("name", 1, [20, 20, 180, 50]);
+  const built = Document.fromBytes(doc.save());
+  assert.deepEqual(built.fields().map((f) => [f.name, f.pageNumber, f.required]), [["name", 1, true], ["name", 2, true]]);
+  assert.equal(built.fillFields({ name: "Élodie" }).occurrences, 2);
+  assert.throws(() => doc.addWidget("nobody", 1, [20, 20, 180, 50]), RangeError);
+  assert.throws(() => doc.addWidget("name", 1, [20, 20]), RangeError);
+});
+
 test("photos become pages, those that cannot be read are named", () => {
   const data = new URL("../../sealwax-annots/tests/data/", import.meta.url);
   const jpeg = new Uint8Array(readFileSync(new URL("photo-40x20-exif6.jpg", data)));

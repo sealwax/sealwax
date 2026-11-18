@@ -1,12 +1,14 @@
 //! Form fields created on a page: a text field, a date field, a check box, each with its
-//! appearance drawn, placed where the page shows it.
+//! appearance drawn, placed where the page shows it; and another widget for a field a form has.
 
 use std::collections::HashMap;
 
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Rotation, encode_text_string};
 
 use crate::draw::COMBO;
-use crate::fields::{FillValue, fields, fill_fields};
+use crate::fields::{
+    FieldKind, FillValue, draw_text_widget, field_kind, fields, fill_fields, states, widgets,
+};
 use crate::flatten::{Font, font_dict, turned_form_stream};
 use crate::pdf;
 use crate::text::number;
@@ -304,6 +306,258 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
         }
     }
     Ok(id)
+}
+
+/// The keys of a field's dictionary, as opposed to its widget's when the two are one dictionary
+/// (ISO 32000-1, tables 220, 222, 227, 229, 231 and 232): what a field holds for all its widgets.
+const FIELD_KEYS: &[&[u8]] = &[
+    b"FT", b"T", b"TU", b"TM", b"Ff", b"V", b"DV", b"DA", b"Q", b"DS", b"RV", b"MaxLen", b"Opt",
+    b"TI", b"I", b"Lock", b"SV",
+];
+/// The triggers of a field's additional actions (table 196), as opposed to its widget's.
+const FIELD_TRIGGERS: &[&[u8]] = &[b"K", b"F", b"V", b"C"];
+
+/// Give the field named `name` (its full name) another widget, on page `page_index` at `rect` on
+/// the page as it shows, as [`add_field`] places one: the same field shown twice, on one page or
+/// two, one value for both. The field keeps what it is (its kind, flags, value, maximum length,
+/// name shown, options); the widget takes the look of the field's first one (its border, its
+/// colours, a check box's states), turned with its own page, and shows the field's value. A
+/// field that is one dictionary with its widget is first made the parent of that widget, where
+/// the field was. Returns the widget.
+///
+/// # Errors
+/// [`sealwax_core::Error::InvalidArgument`] when no widget on the pages belongs to a field of
+/// that name; for a field that is no text field, combo box, list box or check box (`field
+/// kind`: a radio button's widgets are its options, a signature field has one); a page the
+/// document does not have; a rectangle without area.
+pub fn add_widget(
+    doc: &mut Document,
+    name: &str,
+    page_index: usize,
+    rect: [f64; 4],
+) -> Result<ObjId> {
+    let invalid = |what| Error::Pdf(sealwax_core::Error::InvalidArgument { what });
+    let mut first = None;
+    for page in doc.page_ids().into_iter().flatten() {
+        first = widgets(doc, page)?
+            .into_iter()
+            .find(|widget| widget.name == name && widget.id.is_some() && widget.field.is_some());
+        if first.is_some() {
+            break;
+        }
+    }
+    let Some((Some(model_id), Some(field_id), model)) =
+        first.map(|widget| (widget.id, widget.field, widget.dict))
+    else {
+        return Err(invalid("field name"));
+    };
+    let kind = field_kind(doc, &model)?;
+    if !matches!(
+        kind,
+        FieldKind::Text | FieldKind::ComboBox | FieldKind::ListBox | FieldKind::CheckBox
+    ) {
+        return Err(invalid("field kind"));
+    }
+    let Some(Some(page)) = doc.page_ids().get(page_index).copied() else {
+        return Err(invalid("page index"));
+    };
+    let geometry = doc.geometry()[page_index];
+    let rect = shown_to_user(rect, geometry.crop_box, geometry.rotation)
+        .ok_or(invalid("field rectangle"))?;
+    let field_id = if field_id == model_id {
+        own_field(doc, model_id)?
+    } else {
+        field_id
+    };
+    let Some(Object::Dict(model)) = doc.object(model_id)? else {
+        return Err(Error::Pdf(sealwax_core::Error::Malformed));
+    };
+    let turns = i64::from(geometry.rotation.degrees() / 90);
+    let mut widget = Dict::new();
+    widget.insert("Type", Name::from("Annot"));
+    widget.insert("Subtype", Name::from("Widget"));
+    widget.insert("Parent", Object::Ref(field_id));
+    widget.insert("Rect", pdf::numbers(&[rect.x1, rect.y1, rect.x2, rect.y2]));
+    widget.insert("P", Object::Ref(page));
+    widget.insert("F", model.get(b"F").cloned().unwrap_or(Object::Integer(4)));
+    // Its look, the model's: turned with its own page.
+    let mut characteristics = pdf::dict(doc, model.get(b"MK"))?.unwrap_or_default();
+    characteristics.remove(b"R");
+    if turns != 0 {
+        characteristics.insert("R", turns * 90);
+    }
+    widget.insert("MK", characteristics);
+    for key in [&b"BS"[..], b"Border", b"DA", b"Q", b"H"] {
+        if let Some(value) = model.get(key) {
+            widget.insert(Name::new(key.to_vec()), value.clone());
+        }
+    }
+    if kind == FieldKind::CheckBox {
+        let (mut width, mut height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
+        if turns % 2 == 1 {
+            (width, height) = (height, width);
+        }
+        let mut checked: Vec<Vec<u8>> = states(doc, &model)?
+            .into_iter()
+            .filter(|state| state != b"Off")
+            .collect();
+        if checked.is_empty() {
+            checked.push(b"Yes".to_vec());
+        }
+        let fonts = form_fonts(doc)?;
+        let mut font = Dict::new();
+        font.insert("ZaDb", Object::Ref(fonts.check));
+        let mut resources = Dict::new();
+        resources.insert("Font", font);
+        let mut drawn = Dict::new();
+        for (state, on) in checked
+            .iter()
+            .map(|state| (state.as_slice(), true))
+            .chain([(&b"Off"[..], false)])
+        {
+            let form = doc.add_object(turned_form_stream(
+                &check_box(width, height, on),
+                width,
+                height,
+                resources.clone(),
+                turns,
+            ))?;
+            drawn.insert(Name::new(state.to_vec()), Object::Ref(form));
+        }
+        let mut appearances = Dict::new();
+        appearances.insert("N", drawn);
+        widget.insert("AP", appearances);
+        let value = pdf::inherited(doc, &model, b"V")?;
+        let shown = match value.as_ref().and_then(Object::as_name) {
+            Some(state) if checked.iter().any(|on| on == state) => state.to_vec(),
+            _ => b"Off".to_vec(),
+        };
+        widget.insert("AS", Name::new(shown));
+    }
+    let id = doc.add_object(Object::Dict(widget))?;
+    add_to_kids(doc, field_id, id)?;
+    add_to_page(doc, page, id)?;
+    if kind != FieldKind::CheckBox {
+        let (acro_form, _) = form(doc)?;
+        draw_text_widget(doc, &acro_form, id, kind != FieldKind::Text, &mut None)?;
+    }
+    Ok(id)
+}
+
+/// The field of `merged`, a field and its widget in one dictionary, made a dictionary of its own
+/// where the field was (its parent's `/Kids`, or the form's `/Fields`, and the form's calculation
+/// order), `merged` its widget under it: what is the field's (its keys, its triggers) moves to
+/// it, the rest (the widget's, and the object pages and the structure refer to) stays.
+fn own_field(doc: &mut Document, merged: ObjId) -> Result<ObjId> {
+    let Some(Object::Dict(mut widget)) = doc.object(merged)? else {
+        return Err(Error::Pdf(sealwax_core::Error::Malformed));
+    };
+    let mut field = Dict::new();
+    for key in FIELD_KEYS.iter().chain([&&b"Parent"[..]]) {
+        if let Some(value) = widget.remove(key) {
+            field.insert(Name::new(key.to_vec()), value);
+        }
+    }
+    if let Some(mut actions) = pdf::dict(doc, widget.get(b"AA"))? {
+        let mut moved = Dict::new();
+        for key in FIELD_TRIGGERS {
+            if let Some(action) = actions.remove(key) {
+                moved.insert(Name::new(key.to_vec()), action);
+            }
+        }
+        if !moved.is_empty() {
+            field.insert("AA", moved);
+            if actions.is_empty() {
+                widget.remove(b"AA");
+            } else {
+                widget.insert("AA", actions);
+            }
+        }
+    }
+    let parent = field.get(b"Parent").and_then(Object::as_ref_id);
+    field.insert("Kids", Object::Array(vec![Object::Ref(merged)]));
+    let id = doc.add_object(Object::Dict(field))?;
+    widget.insert("Parent", Object::Ref(id));
+    doc.set_object(merged, Object::Dict(widget));
+    if let Some(parent) = parent {
+        let Some(Object::Dict(mut dict)) = doc.object(parent)? else {
+            return Err(Error::Pdf(sealwax_core::Error::Malformed));
+        };
+        if let Some(kids) = replaced(doc, dict.get(b"Kids"), merged, id)? {
+            dict.insert("Kids", kids);
+            doc.set_object(parent, Object::Dict(dict));
+        }
+    }
+    // The calculation order names fields at any depth; the form's fields, those at the top.
+    let (mut form, location) = form(doc)?;
+    let lists: &[&[u8]] = if parent.is_some() {
+        &[b"CO"]
+    } else {
+        &[b"Fields", b"CO"]
+    };
+    for key in lists {
+        if let Some(list) = replaced(doc, form.get(key), merged, id)? {
+            form.insert(Name::new(key.to_vec()), list);
+        }
+    }
+    store_form(doc, form, location)?;
+    Ok(id)
+}
+
+/// `list` (an array, or a reference to one) with `from` replaced by `to`: the array to write in
+/// its place when it is written in place; a referred array is written over, and `None` returned.
+fn replaced(
+    doc: &mut Document,
+    list: Option<&Object>,
+    from: ObjId,
+    to: ObjId,
+) -> Result<Option<Object>> {
+    let swap = |items: Vec<Object>| -> Vec<Object> {
+        items
+            .into_iter()
+            .map(|item| match item {
+                Object::Ref(id) if id == from => Object::Ref(to),
+                item => item,
+            })
+            .collect()
+    };
+    Ok(match list {
+        Some(Object::Ref(id)) => {
+            if let Some(Object::Array(items)) = doc.object(*id)? {
+                doc.set_object(*id, Object::Array(swap(items)));
+            }
+            None
+        }
+        Some(Object::Array(items)) => Some(Object::Array(swap(items.clone()))),
+        _ => None,
+    })
+}
+
+/// `widget` added to the `/Kids` of `field`.
+fn add_to_kids(doc: &mut Document, field: ObjId, widget: ObjId) -> Result<()> {
+    let Some(Object::Dict(mut dict)) = doc.object(field)? else {
+        return Err(Error::Pdf(sealwax_core::Error::Malformed));
+    };
+    match dict.get(b"Kids").cloned() {
+        Some(Object::Ref(id)) => {
+            let mut kids = match doc.object(id)? {
+                Some(Object::Array(kids)) => kids,
+                _ => Vec::new(),
+            };
+            kids.push(Object::Ref(widget));
+            doc.set_object(id, Object::Array(kids));
+        }
+        Some(Object::Array(mut kids)) => {
+            kids.push(Object::Ref(widget));
+            dict.insert("Kids", Object::Array(kids));
+            doc.set_object(field, Object::Dict(dict));
+        }
+        _ => {
+            dict.insert("Kids", Object::Array(vec![Object::Ref(widget)]));
+            doc.set_object(field, Object::Dict(dict));
+        }
+    }
+    Ok(())
 }
 
 /// A node of the form's field tree, from its `/Fields` down.
