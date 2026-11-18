@@ -3,7 +3,8 @@ name = "sealwax-py"
 description = "Python bindings of sealwax."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# sealwax-convert's layout engine, docxide-pdf, needs a newer compiler than the published crates.
+rust-version = "1.97"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -19,6 +20,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pdf = { package = "sealwax", path = "../sealwax" }
+# Not on crates.io (a git dependency); PyPI takes the wheels it is compiled into.
+sealwax-convert = { path = "../sealwax-convert" }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py312"] }
 
 [lints]

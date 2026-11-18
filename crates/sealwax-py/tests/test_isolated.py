@@ -18,7 +18,7 @@ def allocate(size: int) -> int:
 
 
 def test_limits_pickle():
-    limits = sealwax.Limits(timeout=30, max_operators=3, min_dash_period=0.5)
+    limits = sealwax.Limits(timeout=30, max_operators=3, min_dash_period=0.5, max_unpacked_bytes=1_000)
     assert pickle.loads(pickle.dumps(limits)) == limits
     assert pickle.loads(pickle.dumps(sealwax.Limits.unbounded())) == sealwax.Limits.unbounded()
 

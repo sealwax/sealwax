@@ -27,6 +27,12 @@ All notable changes to sealwax are recorded here. The format follows
   unpack to, all its parts together, as its archive declares them. A DOCX converted is checked
   against it before its layout, so a ZIP that expands without end is refused rather than
   exhausting the memory.
+- In Python, `docx_to_pdf(docx_content, font_dirs=None, limits=None)`: a Word document converted
+  to PDF, laid out by docxide-pdf, tagged with its structure and bookmarks, and what the
+  conversion left out (`skipped`, `not_described`). ValueError when it cannot be laid out;
+  `Limits(max_unpacked_bytes=...)` bounds what it unpacks to. The layout's time is not bounded:
+  convert documents you do not trust with `sealwax.isolated`. Building the Python package now
+  needs Rust 1.97.
 
 ### Changed
 

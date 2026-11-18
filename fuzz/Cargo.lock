@@ -1130,6 +1130,7 @@ dependencies = [
  "sealwax-compose",
  "sealwax-core",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 //! parallel. A panic that escapes the Rust code becomes a `PdfError`, never PyO3's
 //! `PanicException`, which `except Exception` does not catch.
 
+mod convert;
 mod signing;
 
 use std::collections::{BTreeMap, HashMap};
@@ -84,6 +85,7 @@ pub(crate) enum Failure {
     Raster(pdf::raster::Error),
     Pdfa(pdf::Error),
     Sign(pdf::sign::Error),
+    Convert(sealwax_convert::Error),
     Value(String),
     /// An exception a Python object raised (a signer, a client), kept as is.
     Python(PyErr),
@@ -104,6 +106,12 @@ impl From<pdf::annots::Error> for Failure {
 impl From<pdf::raster::Error> for Failure {
     fn from(error: pdf::raster::Error) -> Self {
         Self::Raster(error)
+    }
+}
+
+impl From<sealwax_convert::Error> for Failure {
+    fn from(error: sealwax_convert::Error) -> Self {
+        Self::Convert(error)
     }
 }
 
@@ -176,6 +184,7 @@ impl Failure {
                 other => pdf_error(py, &other),
             },
             Self::Sign(error) => signing::sign_error(py, error),
+            Self::Convert(error) => convert::convert_error(py, &error),
             Self::Value(message) => PyValueError::new_err(message),
             Self::Python(error) => error,
         }
@@ -220,6 +229,7 @@ impl Limits {
         min_dash_period=None,
         max_annotations=None,
         max_render_pixels=None,
+        max_unpacked_bytes=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -234,6 +244,7 @@ impl Limits {
         min_dash_period: Option<f64>,
         max_annotations: Option<u64>,
         max_render_pixels: Option<u64>,
+        max_unpacked_bytes: Option<u64>,
     ) -> PyResult<Self> {
         let mut bounds = pdf::Limits::default();
         let set = |field: &mut u64, value: Option<u64>| {
@@ -250,6 +261,7 @@ impl Limits {
         set(&mut bounds.max_stream_bytes, max_stream_bytes);
         set(&mut bounds.max_annotations, max_annotations);
         set(&mut bounds.max_render_pixels, max_render_pixels);
+        set(&mut bounds.max_unpacked_bytes, max_unpacked_bytes);
         if let Some(period) = min_dash_period {
             if !(period.is_finite() && period >= 0.0) {
                 return Err(PyValueError::new_err(
@@ -329,6 +341,11 @@ impl Limits {
         self.bounds.max_render_pixels
     }
 
+    #[getter]
+    fn max_unpacked_bytes(&self) -> u64 {
+        self.bounds.max_unpacked_bytes
+    }
+
     /// What pickling needs to make the same limits again (`sealwax.isolated` hands them to a
     /// child process).
     fn __getnewargs_ex__<'py>(&self, py: Python<'py>) -> PyResult<((), Bound<'py, PyDict>)> {
@@ -344,6 +361,7 @@ impl Limits {
         kwargs.set_item("min_dash_period", self.bounds.min_dash_period)?;
         kwargs.set_item("max_annotations", self.bounds.max_annotations)?;
         kwargs.set_item("max_render_pixels", self.bounds.max_render_pixels)?;
+        kwargs.set_item("max_unpacked_bytes", self.bounds.max_unpacked_bytes)?;
         Ok(((), kwargs))
     }
 
@@ -355,7 +373,8 @@ impl Limits {
         format!(
             "Limits(timeout={:?}, max_operators={}, max_shown_bytes={}, max_page_cost={}, \
              max_image_pixels={}, max_mesh_bytes={}, max_code_range={}, max_stream_bytes={}, \
-             min_dash_period={}, max_annotations={}, max_render_pixels={})",
+             min_dash_period={}, max_annotations={}, max_render_pixels={}, \
+             max_unpacked_bytes={})",
             self.timeout,
             self.bounds.max_operators,
             self.bounds.max_shown_bytes,
@@ -367,6 +386,7 @@ impl Limits {
             self.bounds.min_dash_period,
             self.bounds.max_annotations,
             self.bounds.max_render_pixels,
+            self.bounds.max_unpacked_bytes,
         )
     }
 }
@@ -2273,5 +2293,6 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(has_redaction_marks, m)?)?;
     m.add_function(wrap_pyfunction!(photos_to_pdf, m)?)?;
     signing::register(m)?;
+    convert::register(m)?;
     Ok(())
 }
