@@ -904,17 +904,20 @@ impl Document {
     }
 
     /// Create a field on page `page_index` (from 0): `kind` "text", "date" (a text field
-    /// carrying Acrobat's `yyyy-mm-dd` date actions) or "checkbox" (states `Yes` and `Off`),
-    /// named `name` (not empty, no period), at `rect` (x1, y1, x2, y2) on the page as it shows:
-    /// turned by its rotation, from the top-left corner of its crop box, y down, in points.
-    /// It gets a gray border one point wide and no background, and turns with the page so that
-    /// its text reads upright. `font_size` (1 to 1000 points) fixes the size of a text or date
-    /// field's text; `None` fits it to the field (`0 Tf`), which some viewers (PDFium) do not
-    /// keep a typed value in. A check box's mark is always fitted. The form is created if the
-    /// document has none; the fields it has are left as they are. `FieldNameTakenError` when
-    /// the form already has a field of that name; `ValueError` for a bad name, page, rectangle
-    /// or font size.
-    #[pyo3(signature = (name, kind, page_index, rect, *, required = false, font_size = None))]
+    /// carrying Acrobat's `yyyy-mm-dd` date actions), "checkbox" (states `Yes` and `Off`),
+    /// "combobox" (a drop-down list of `choices`, each a string or an (exported value, label)
+    /// pair, none chosen) or "signature" (not signed), named `name` (not empty, no period), at
+    /// `rect` (x1, y1, x2, y2) on the page as it shows: turned by its rotation, from the
+    /// top-left corner of its crop box, y down, in points. It gets a gray border one point wide
+    /// and no background, and turns with the page so that its text reads upright. `label` is the
+    /// name shown to users (`/TU`); `max_length` the most characters a text or date field takes.
+    /// `font_size` (1 to 1000 points) fixes the size of a text, date or combo box field's text;
+    /// `None` fits it to the field (`0 Tf`), which some viewers (PDFium) do not keep a typed
+    /// value in. A check box's mark is always fitted. The form is created if the document has
+    /// none; the fields it has are left as they are. `FieldNameTakenError` when the form already
+    /// has a field of that name; `ValueError` for a bad name, page, rectangle, font size, choices
+    /// (none for a combo box, some for another kind) or maximum length (0, or for another kind).
+    #[pyo3(signature = (name, kind, page_index, rect, *, required=false, font_size=None, choices=None, label=None, max_length=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_field(
         &mut self,
@@ -925,26 +928,81 @@ impl Document {
         rect: (f64, f64, f64, f64),
         required: bool,
         font_size: Option<f64>,
+        choices: Option<Vec<Bound<'_, PyAny>>>,
+        label: Option<String>,
+        max_length: Option<u32>,
     ) -> PyResult<()> {
         let kind = match kind {
             "text" => pdf::annots::NewFieldKind::Text,
             "date" => pdf::annots::NewFieldKind::Date,
             "checkbox" => pdf::annots::NewFieldKind::CheckBox,
+            "combobox" => pdf::annots::NewFieldKind::ComboBox,
+            "signature" => pdf::annots::NewFieldKind::Signature,
             _ => {
                 return Err(PyValueError::new_err(
-                    "kind must be \"text\", \"date\" or \"checkbox\"",
+                    "kind must be \"text\", \"date\", \"checkbox\", \"combobox\" or \"signature\"",
                 ));
             }
         };
+        let mut options = Vec::new();
+        for choice in choices.unwrap_or_default() {
+            if let Ok(shown) = choice.extract::<String>() {
+                options.push((shown.clone(), shown));
+            } else if let Ok(pair) = choice.extract::<(String, String)>() {
+                options.push(pair);
+            } else {
+                return Err(PyValueError::new_err(
+                    "a choice is a string or an (exported value, label) pair",
+                ));
+            }
+        }
         let field =
             pdf::annots::NewField::new(name, kind, page_index, [rect.0, rect.1, rect.2, rect.3])
                 .required(required)
-                .font_size(font_size);
+                .font_size(font_size)
+                .choices(options)
+                .label(label)
+                .max_length(max_length);
         let inner = &mut self.inner;
         run(
             py,
             || Ok(pdf::annots::add_field(inner, &field).map(|_| ())?),
         )
+    }
+
+    /// Set the name shown to users (`/TU`) of the field named `name` (its full name), or remove
+    /// it with None. `ValueError` when no widget belongs to a field of that name.
+    fn set_field_label(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        label: Option<String>,
+    ) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::set_field_label(inner, name, label.as_deref())?)
+        })
+    }
+
+    /// Rename the state that checks the check box named `name` to `state`, a name given as its
+    /// bytes (b"Fran\xe7ais" is written `/Fran#E7ais`): in its appearances, its widgets' state
+    /// and its value when checked. `ValueError` when no check box has that name, or for a state
+    /// that is empty or `Off`.
+    fn rename_button_state(&mut self, py: Python<'_>, name: &str, state: Vec<u8>) -> PyResult<()> {
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::rename_button_state(inner, name, &state)?)
+        })
+    }
+
+    /// Take away the appearances (`/AP`) of the widgets of the field named `name`, as in a
+    /// document a reader must draw them for; returns the widgets that had some. `ValueError`
+    /// when no widget belongs to a field of that name.
+    fn remove_field_appearances(&mut self, py: Python<'_>, name: &str) -> PyResult<usize> {
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::remove_field_appearances(inner, name)?)
+        })
     }
 
     /// A new document without pages, to build: add pages with `add_page`, then draw on them,

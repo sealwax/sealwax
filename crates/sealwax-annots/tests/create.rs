@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use sealwax_annots::{
-    Error, FieldKind, FillValue, NewField, NewFieldKind, add_field, field_values, fields,
-    fill_fields,
+    Error, FieldChoice, FieldKind, FillValue, NewField, NewFieldKind, add_field, field_values,
+    fields, fill_fields, remove_field_appearances, rename_button_state, set_field_label,
 };
 use sealwax_core::{Document, Object, OpenOptions, SaveOptions};
 
@@ -314,4 +314,131 @@ fn a_font_size_out_of_range_is_refused_and_nothing_added() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn combo_boxes_signatures_labels_and_lengths_read_back() {
+    let mut doc = flat(0, "", &[]);
+    let field = |name: &str, kind| NewField::new(name, kind, 0, [80.0, 100.0, 300.0, 120.0]);
+    add_field(
+        &mut doc,
+        &field("country", NewFieldKind::ComboBox)
+            .choices(vec![
+                ("fr".to_owned(), "France".to_owned()),
+                ("Other".to_owned(), "Other".to_owned()),
+            ])
+            .label(Some("Country".to_owned())),
+    )
+    .unwrap();
+    add_field(&mut doc, &field("sign", NewFieldKind::Signature)).unwrap();
+    add_field(
+        &mut doc,
+        &field("code", NewFieldKind::Text).max_length(Some(5)),
+    )
+    .unwrap();
+    let doc = reopened(&doc);
+    let read = fields(&doc, None).unwrap();
+    let by_name = |name: &str| read.iter().find(|f| f.name == name).unwrap();
+    let country = by_name("country");
+    assert_eq!(country.kind, FieldKind::ComboBox);
+    assert_eq!(country.label.as_deref(), Some("Country"));
+    assert_eq!(
+        country.choices,
+        [
+            FieldChoice::Pair {
+                export: "fr".to_owned(),
+                display: "France".to_owned()
+            },
+            FieldChoice::Single("Other".to_owned()),
+        ]
+    );
+    // None chosen.
+    assert_eq!(country.value, None);
+    assert_eq!(by_name("sign").kind, FieldKind::Signature);
+    assert_eq!(by_name("code").max_length, Some(5));
+}
+
+#[test]
+fn choices_and_lengths_where_they_do_not_belong_are_refused() {
+    let mut doc = flat(0, "", &[]);
+    let field = |kind| NewField::new("f", kind, 0, [80.0, 100.0, 300.0, 120.0]);
+    let choices = vec![("a".to_owned(), "a".to_owned())];
+    for refused in [
+        field(NewFieldKind::ComboBox),
+        field(NewFieldKind::Text).choices(choices.clone()),
+        field(NewFieldKind::Text).max_length(Some(0)),
+        field(NewFieldKind::CheckBox).max_length(Some(3)),
+        field(NewFieldKind::ComboBox)
+            .choices(choices.clone())
+            .max_length(Some(3)),
+    ] {
+        assert!(
+            matches!(
+                add_field(&mut doc, &refused),
+                Err(Error::Pdf(sealwax_core::Error::InvalidArgument { .. }))
+            ),
+            "{refused:?}"
+        );
+    }
+    assert!(!doc.is_modified());
+}
+
+#[test]
+fn a_label_changes_a_check_box_state_is_renamed_and_appearances_go() {
+    let mut doc = flat(0, "", &[]);
+    let field = |name: &str, kind| NewField::new(name, kind, 0, [80.0, 100.0, 95.0, 115.0]);
+    add_field(&mut doc, &field("agree", NewFieldKind::CheckBox)).unwrap();
+    add_field(
+        &mut doc,
+        &field("name", NewFieldKind::Text).label(Some("Name".to_owned())),
+    )
+    .unwrap();
+    fill_fields(
+        &mut doc,
+        &HashMap::from([("agree".to_owned(), FillValue::Text("Yes".to_owned()))]),
+    )
+    .unwrap();
+    set_field_label(&mut doc, "name", Some("Full name")).unwrap();
+    rename_button_state(&mut doc, "agree", b"Fran\xE7ais").unwrap();
+    assert_eq!(remove_field_appearances(&mut doc, "name").unwrap(), 1);
+    let doc = reopened(&doc);
+    let read = fields(&doc, None).unwrap();
+    let agree = read.iter().find(|f| f.name == "agree").unwrap();
+    assert_eq!(
+        agree.button_states,
+        [b"Fran\xE7ais".to_vec(), b"Off".to_vec()]
+    );
+    // Checked, it stays checked under the state's new name.
+    assert_eq!(agree.state.as_deref(), Some(b"Fran\xE7ais".as_slice()));
+    assert_eq!(
+        agree.value,
+        Some(sealwax_annots::FieldValue::Name(b"Fran\xE7ais".to_vec()))
+    );
+    let name = read.iter().find(|f| f.name == "name").unwrap();
+    assert_eq!(name.label.as_deref(), Some("Full name"));
+    let saved = doc
+        .save(&SaveOptions::default().xref(sealwax_core::XrefFormat::Table))
+        .unwrap();
+    assert!(saved.windows(11).any(|w| w == b"/Fran#E7ais"));
+}
+
+#[test]
+fn retouches_of_a_field_the_form_lacks_are_refused() {
+    let mut doc = flat(0, "", &[]);
+    add_field(
+        &mut doc,
+        &NewField::new("name", NewFieldKind::Text, 0, [80.0, 100.0, 300.0, 120.0]),
+    )
+    .unwrap();
+    assert!(set_field_label(&mut doc, "nobody", Some("x")).is_err());
+    assert!(remove_field_appearances(&mut doc, "nobody").is_err());
+    // A text field has no state to rename; Off is no name to give.
+    assert!(rename_button_state(&mut doc, "name", b"On").is_err());
+    add_field(
+        &mut doc,
+        &NewField::new("box", NewFieldKind::CheckBox, 0, [10.0, 10.0, 20.0, 20.0]),
+    )
+    .unwrap();
+    assert!(rename_button_state(&mut doc, "box", b"Off").is_err());
+    assert!(rename_button_state(&mut doc, "box", b"").is_err());
 }

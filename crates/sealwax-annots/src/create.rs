@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use sealwax_core::{Dict, Document, Name, ObjId, Object, Rect, Rotation, encode_text_string};
 
+use crate::draw::COMBO;
 use crate::fields::{FillValue, fields, fill_fields};
 use crate::flatten::{Font, font_dict, turned_form_stream};
 use crate::pdf;
@@ -31,6 +32,10 @@ pub enum NewFieldKind {
     Date,
     /// A check box, whose states are `/Yes` and `/Off`.
     CheckBox,
+    /// A drop-down list of [`NewField::choices`] (a combo box), none chosen.
+    ComboBox,
+    /// A signature field, not signed.
+    Signature,
 }
 
 /// A field to create ([`add_field`]).
@@ -52,6 +57,12 @@ pub struct NewField {
     /// (`0 Tf`). Some readers do not keep a value typed into a field whose size is fitted. A
     /// check box's mark is always fitted.
     pub font_size: Option<f64>,
+    /// A combo box's options, in order: the value each exports, and what it shows (`/Opt`).
+    pub choices: Vec<(String, String)>,
+    /// The name shown to users (`/TU`), for any kind.
+    pub label: Option<String>,
+    /// The most characters a text or date field takes (`/MaxLen`).
+    pub max_length: Option<u32>,
 }
 
 impl NewField {
@@ -65,6 +76,9 @@ impl NewField {
             rect,
             required: false,
             font_size: None,
+            choices: Vec::new(),
+            label: None,
+            max_length: None,
         }
     }
 
@@ -79,6 +93,27 @@ impl NewField {
     #[must_use]
     pub fn font_size(mut self, size: Option<f64>) -> Self {
         self.font_size = size;
+        self
+    }
+
+    /// A combo box's options: the value each exports, and what it shows.
+    #[must_use]
+    pub fn choices(mut self, choices: Vec<(String, String)>) -> Self {
+        self.choices = choices;
+        self
+    }
+
+    /// The name shown to users (`/TU`).
+    #[must_use]
+    pub fn label(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
+    /// The most characters a text or date field takes (`/MaxLen`).
+    #[must_use]
+    pub fn max_length(mut self, max_length: Option<u32>) -> Self {
+        self.max_length = max_length;
         self
     }
 }
@@ -96,11 +131,19 @@ pub const FIELD_FONT_SIZES: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 /// # Errors
 /// [`sealwax_core::Error::FieldNameTaken`] when the form already has a field of that name (or
 /// fields under it); [`sealwax_core::Error::InvalidArgument`] for an empty name or one with a
-/// period, a page the document does not have, a rectangle without area, or a font size outside
-/// [`FIELD_FONT_SIZES`].
+/// period, a page the document does not have, a rectangle without area, a font size outside
+/// [`FIELD_FONT_SIZES`], a combo box without options (or options for another kind), or a
+/// maximum length of 0 or for a field other than a text or date one.
 pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
     if field.name.is_empty() || field.name.contains('.') {
         return Err(sealwax_core::Error::InvalidArgument { what: "field name" }.into());
+    }
+    if (field.kind == NewFieldKind::ComboBox) == field.choices.is_empty() {
+        return Err(sealwax_core::Error::InvalidArgument { what: "choices" }.into());
+    }
+    let texts = matches!(field.kind, NewFieldKind::Text | NewFieldKind::Date);
+    if field.max_length.is_some_and(|length| length == 0 || !texts) {
+        return Err(sealwax_core::Error::InvalidArgument { what: "max length" }.into());
     }
     let text_appearance = match field.font_size {
         None => TEXT_APPEARANCE.to_vec(),
@@ -144,9 +187,10 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
     widget.insert("P", Object::Ref(page));
     // Printed.
     widget.insert("F", 4_i64);
-    if field.required {
-        widget.insert("Ff", 2_i64);
+    if let Some(label) = &field.label {
+        widget.insert("TU", Object::String(encode_text_string(label)));
     }
+    let mut flags = if field.required { 2_i64 } else { 0 };
     let mut characteristics = Dict::new();
     characteristics.insert("BC", pdf::numbers(&[BORDER_GRAY; 3]));
     if turns != 0 {
@@ -167,7 +211,46 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
             if field.kind == NewFieldKind::Date {
                 widget.insert("AA", date_actions());
             }
+            if let Some(length) = field.max_length {
+                widget.insert("MaxLen", i64::from(length));
+            }
             widget.insert("MK", characteristics);
+        }
+        NewFieldKind::ComboBox => {
+            widget.insert("FT", Name::from("Ch"));
+            flags |= COMBO;
+            widget.insert("DA", Object::String(text_appearance));
+            let options: Vec<Object> = field
+                .choices
+                .iter()
+                .map(|(export, shown)| {
+                    if export == shown {
+                        Object::String(encode_text_string(shown))
+                    } else {
+                        Object::Array(vec![
+                            Object::String(encode_text_string(export)),
+                            Object::String(encode_text_string(shown)),
+                        ])
+                    }
+                })
+                .collect();
+            widget.insert("Opt", options);
+            widget.insert("MK", characteristics);
+        }
+        NewFieldKind::Signature => {
+            widget.insert("FT", Name::from("Sig"));
+            widget.insert("MK", characteristics);
+            // Its border only, until it is signed.
+            let border = doc.add_object(turned_form_stream(
+                &check_box(width, height, false),
+                width,
+                height,
+                Dict::new(),
+                turns,
+            ))?;
+            let mut appearances = Dict::new();
+            appearances.insert("N", Object::Ref(border));
+            widget.insert("AP", appearances);
         }
         NewFieldKind::CheckBox => {
             widget.insert("FT", Name::from("Btn"));
@@ -202,13 +285,23 @@ pub fn add_field(doc: &mut Document, field: &NewField) -> Result<ObjId> {
             widget.insert("AP", appearances);
         }
     }
+    if flags != 0 {
+        widget.insert("Ff", flags);
+    }
     let id = doc.add_object(Object::Dict(widget))?;
     add_to_form(doc, id)?;
     add_to_page(doc, page, id)?;
-    if field.kind != NewFieldKind::CheckBox {
+    if !matches!(field.kind, NewFieldKind::CheckBox | NewFieldKind::Signature) {
         // The empty appearance, drawn as filling draws it: its border, turned with the page.
         let values = HashMap::from([(field.name.clone(), FillValue::Text(String::new()))]);
         fill_fields(doc, &values)?;
+        // A combo box drawn empty has no option chosen: no value.
+        if field.kind == NewFieldKind::ComboBox
+            && let Some(Object::Dict(mut widget)) = doc.object(id)?
+        {
+            widget.remove(b"V");
+            doc.set_object(id, Object::Dict(widget));
+        }
     }
     Ok(id)
 }

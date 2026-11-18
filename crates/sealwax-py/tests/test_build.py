@@ -105,3 +105,31 @@ def test_what_cannot_be_built_is_refused():
         document.set_outline([(1, "Nowhere", 2)])
     with pytest.raises(ValueError):
         document.add_link(page, (10, 10, 10, 20), "https://example.org/")
+
+
+def test_fields_of_every_kind_and_their_retouches_read_back():
+    document = sealwax.Document.new()
+    page = document.add_page(600, 800)
+    document.add_field("country", "combobox", page, (80, 100, 300, 120),
+                       choices=[("fr", "France"), "Other"], label="Country")
+    document.add_field("sign", "signature", page, (80, 200, 300, 260))
+    document.add_field("code", "text", page, (80, 300, 200, 320), max_length=5, label="Code")
+    document.add_field("agree", "checkbox", page, (80, 400, 95, 415))
+    document.rename_button_state("agree", b"99/99")
+    document.set_field_label("code", "Postal code")
+    assert document.remove_field_appearances("code") == 1
+    fields = {f["name"]: f for f in sealwax.Document.from_bytes(document.save()).fields()}
+    assert fields["country"]["kind"] == "combo_box"
+    assert fields["country"]["choices"] == [("fr", "France"), "Other"]
+    assert fields["country"]["label"] == "Country" and fields["country"]["value"] is None
+    assert fields["sign"]["kind"] == "signature"
+    assert fields["code"]["max_length"] == 5 and fields["code"]["label"] == "Postal code"
+    assert fields["agree"]["button_states"] == [b"99/99", b"Off"]
+    with pytest.raises(ValueError):
+        document.add_field("list", "combobox", page, (80, 500, 300, 520))
+    with pytest.raises(ValueError):
+        document.add_field("box", "checkbox", page, (80, 500, 95, 515), max_length=3)
+    with pytest.raises(ValueError):
+        document.rename_button_state("code", b"On")
+    with pytest.raises(ValueError):
+        document.set_field_label("nobody", "x")
