@@ -6,6 +6,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
 ### Added
 
 - Text looked for on a page (`sealwax_text::search`; `search` in Python and WebAssembly), as
@@ -477,7 +479,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/sealwax/sealwax/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/sealwax/sealwax/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sealwax/sealwax/compare/v0.4.0...v0.5.0
