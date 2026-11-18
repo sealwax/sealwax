@@ -10,7 +10,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use sealwax_core::{Document, OpenOptions, Rect, SaveOptions};
-use sealwax_text::{RedactOptions, extract_image, glyphs, images, redact, text_census, words};
+use sealwax_text::{
+    RedactOptions, extract_image, glyphs, images, redact, search, text_census, words,
+};
 
 fuzz_target!(|data: &[u8]| {
     let options = OpenOptions::default().max_file_bytes(4 << 20);
@@ -23,8 +25,11 @@ fuzz_target!(|data: &[u8]| {
     }
     for page in 0..document.page_count().min(4) {
         if let Ok(found) = words(&document, page) {
-            for word in found {
+            for word in &found {
                 assert!(!word.text.is_empty());
+            }
+            if let Some(word) = found.first() {
+                let _ = search(&document, page, &word.text);
             }
         }
         if let Ok(pictures) = images(&document, page) {
