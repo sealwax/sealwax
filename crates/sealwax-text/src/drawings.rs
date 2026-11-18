@@ -59,12 +59,60 @@ pub struct Drawings {
     /// Each such rectangle that the transformation turns off the axes, as its four corners in
     /// order.
     pub quads: Vec<[[f64; 2]; 4]>,
+    /// How each of `lines` is painted, in their order.
+    pub lines_painted: Vec<Painted>,
+    /// How each of `rectangles` is painted, in their order.
+    pub rectangles_painted: Vec<Painted>,
+    /// How each of `quads` is painted, in their order.
+    pub quads_painted: Vec<Painted>,
+    /// The subpath each of `lines` belongs to, in their order: lines of one subpath (from a move
+    /// to the next move or closing, painted at once) share a number, no other line has it. The
+    /// numbers grow in the order of the content, from 0, with gaps. A rectangle or quad is a
+    /// subpath of its own.
+    pub lines_subpath: Vec<usize>,
+}
+
+/// How a shape is painted: filled (`f`, `F`, `f*`), stroked (`S`, `s`), or both (`B`, `B*`, `b`,
+/// `b*`, or a fill then a stroke of the path it filled, landing where it did). A box filled with
+/// its fourth side drawn back to its start, which MuPDF gives as four lines, gives four lines
+/// filled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum Painted {
+    /// Its inside filled.
+    Filled,
+    /// Its outline stroked.
+    Stroked,
+    /// Both.
+    FilledAndStroked,
+}
+
+impl Painted {
+    /// Whether its inside is filled.
+    #[must_use]
+    pub fn filled(self) -> bool {
+        self != Self::Stroked
+    }
+
+    /// Whether its outline is stroked.
+    #[must_use]
+    pub fn stroked(self) -> bool {
+        self != Self::Filled
+    }
+
+    fn of(mode: &DrawMode) -> Self {
+        match mode {
+            DrawMode::Stroke(_) => Self::Stroked,
+            DrawMode::FillAndStroke(..) => Self::FilledAndStroked,
+            DrawMode::Fill(_) | DrawMode::Invisible => Self::Filled,
+        }
+    }
 }
 
 /// The lines and rectangles page `page_index` (from 0) paints, in the order of its content, forms
 /// included; then, with `annotations`, those its annotations' appearances paint (shown ones, in
 /// the order of `/Annots`: field borders and check boxes among them), as MuPDF's drawings include
-/// them. A shape both filled and stroked counts once.
+/// them. A shape both filled and stroked counts once, as [`Painted::FilledAndStroked`].
 ///
 /// # Errors
 /// [`sealwax_core::Error::InvalidArgument`] for a page the document does not have; what
@@ -127,31 +175,53 @@ pub fn drawings(
 #[derive(Default)]
 struct Collector {
     found: Drawings,
-    /// The last shape filled, placed on the page, to count it once when it is stroked next.
-    last_filled: Option<Vec<PathEl>>,
+    /// The last shape filled, placed on the page, to count it once when it is stroked next; and
+    /// how many lines, rectangles and quads were found before it, to mark what it gave stroked
+    /// too.
+    last_filled: Option<(Vec<PathEl>, [usize; 3])>,
     /// The marked-content sequences open: the corners of a box filled without `h` for ours.
     boxes: Vec<Option<[Point; 4]>>,
+    /// How many subpaths were met: the number of the next.
+    subpaths: usize,
 }
 
 impl Collector {
     /// Whether `path` drawn with `mode` is the shape just filled, now stroked, where it lands on
-    /// the page (it may be written anew under another matrix); remembers a shape filled.
+    /// the page (it may be written anew under another matrix): what the fill gave is then marked
+    /// stroked too. Remembers a shape filled.
     fn repeated(&mut self, elements: &[PathEl], transform: Affine, mode: &DrawMode) -> bool {
         let placed: Vec<PathEl> = elements.iter().map(|e| transform * *e).collect();
-        let same = self
-            .last_filled
-            .take()
-            .is_some_and(|last| same_elements(&last, &placed));
+        let last = self.last_filled.take();
         match mode {
-            DrawMode::Stroke(_) => same,
+            DrawMode::Stroke(_) => {
+                let Some((last, [lines, rectangles, quads])) = last else {
+                    return false;
+                };
+                if !same_elements(&last, &placed) {
+                    return false;
+                }
+                let found = &mut self.found;
+                for painted in found.lines_painted[lines..]
+                    .iter_mut()
+                    .chain(&mut found.rectangles_painted[rectangles..])
+                    .chain(&mut found.quads_painted[quads..])
+                {
+                    *painted = Painted::FilledAndStroked;
+                }
+                true
+            }
             _ => {
-                self.last_filled = Some(placed);
+                let found = &self.found;
+                self.last_filled = Some((
+                    placed,
+                    [found.lines.len(), found.rectangles.len(), found.quads.len()],
+                ));
                 false
             }
         }
     }
 
-    fn rectangle(&mut self, rect: &Rect, transform: Affine) {
+    fn rectangle(&mut self, rect: &Rect, transform: Affine, painted: Painted) {
         let corners = [
             transform * Point::new(rect.x0, rect.y0),
             transform * Point::new(rect.x1, rect.y0),
@@ -174,22 +244,41 @@ impl Collector {
             self.found
                 .rectangles
                 .push([min(xs), min(ys), max(xs), max(ys)]);
+            self.found.rectangles_painted.push(painted);
         } else {
             self.found.quads.push(corners.map(|p| [p.x, p.y]));
+            self.found.quads_painted.push(painted);
         }
     }
 
-    /// A straight segment, in the page's user space.
-    fn line(&mut self, from: Point, to: Point, transform: Affine) {
+    /// The number of a subpath met.
+    fn next_subpath(&mut self) -> usize {
+        let number = self.subpaths;
+        self.subpaths += 1;
+        number
+    }
+
+    /// A straight segment of subpath `subpath`, in the page's user space.
+    fn line(
+        &mut self,
+        from: Point,
+        to: Point,
+        transform: Affine,
+        (painted, subpath): (Painted, usize),
+    ) {
         let (a, b) = (transform * from, transform * to);
         if [a.x, a.y, b.x, b.y].iter().all(|v| v.is_finite()) {
             self.found.lines.push([a.x, a.y, b.x, b.y]);
+            self.found.lines_painted.push(painted);
+            self.found.lines_subpath.push(subpath);
         }
     }
 
-    /// One subpath: a move, what follows it, and its closing, if any; `stroked` when it is only
-    /// stroked.
-    fn subpath(&mut self, elements: &[PathEl], transform: Affine, stroked: bool) {
+    /// One subpath: a move, what follows it, and its closing, if any, painted as `painted`.
+    fn subpath(&mut self, elements: &[PathEl], transform: Affine, painted: Painted) {
+        // Only stroked, a last side back to the start closes a box as `h` does.
+        let stroked = painted == Painted::Stroked;
+        let line = (painted, self.next_subpath());
         let (start, body) = match elements.split_first() {
             Some((PathEl::MoveTo(start), body)) => (Some(*start), body),
             _ => (None, elements),
@@ -201,7 +290,7 @@ impl Collector {
         if let Some(start) = start
             && let Some(rect) = as_rectangle(start, body, closed, stroked)
         {
-            self.rectangle(&rect, transform);
+            self.rectangle(&rect, transform, painted);
             return;
         }
         let mut current = start;
@@ -209,7 +298,7 @@ impl Collector {
             match *element {
                 PathEl::LineTo(p) => {
                     if let Some(from) = current {
-                        self.line(from, p, transform);
+                        self.line(from, p, transform, line);
                     }
                     current = Some(p);
                 }
@@ -223,7 +312,7 @@ impl Collector {
             && let (Some(from), Some(to)) = (current, start)
             && !same(from, to)
         {
-            self.line(from, to, transform);
+            self.line(from, to, transform, line);
         }
     }
 }
@@ -403,18 +492,18 @@ impl<'a> Device<'a> for Collector {
             return;
         }
         let transform = props.transform;
-        let stroked = matches!(mode, DrawMode::Stroke(_));
+        let painted = Painted::of(mode);
         let mut subpath: Vec<PathEl> = Vec::new();
         for element in built(path.elements()) {
             match element {
                 PathEl::MoveTo(_) => {
-                    self.subpath(&subpath, transform, stroked);
+                    self.subpath(&subpath, transform, painted);
                     subpath.clear();
                     subpath.push(element);
                 }
                 PathEl::ClosePath => {
                     subpath.push(element);
-                    self.subpath(&subpath, transform, stroked);
+                    self.subpath(&subpath, transform, painted);
                     // What follows without a move starts where the closed subpath started.
                     let start = match subpath.first() {
                         Some(PathEl::MoveTo(start)) => Some(*start),
@@ -426,7 +515,7 @@ impl<'a> Device<'a> for Collector {
                 _ => subpath.push(element),
             }
         }
-        self.subpath(&subpath, transform, stroked);
+        self.subpath(&subpath, transform, painted);
     }
 
     fn draw_rect(&mut self, rect: &Rect, props: DrawProps<'a>, mode: &DrawMode) {
@@ -437,16 +526,18 @@ impl<'a> Device<'a> for Collector {
         if unseen(&props, mode) || self.repeated(&elements, props.transform, mode) {
             return;
         }
-        if !matches!(mode, DrawMode::Stroke(_))
+        let painted = Painted::of(mode);
+        if painted.filled()
             && let Some(Some(corners)) = self.boxes.last()
         {
             let corners = *corners;
+            let line = (painted, self.next_subpath());
             for (index, from) in corners.iter().enumerate() {
-                self.line(*from, corners[(index + 1) % 4], props.transform);
+                self.line(*from, corners[(index + 1) % 4], props.transform, line);
             }
             return;
         }
-        self.rectangle(rect, props.transform);
+        self.rectangle(rect, props.transform, painted);
     }
 
     fn push_clip_path(&mut self, _: &ClipPath) {}

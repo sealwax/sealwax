@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sealwax_core::{Document, OpenOptions};
-use sealwax_text::drawings;
+use sealwax_text::{Painted, drawings};
 
 fn page(content: &str) -> Document {
     build(&[
@@ -382,4 +382,91 @@ fn a_line_that_goes_nowhere_is_left_out_unless_it_follows_a_move() {
         lines("q 0.1 0 0 0.1 0.3 0.7 cm 0 0 m 100 0 l 100 0 l S Q").len(),
         1
     );
+}
+
+#[test]
+fn each_shape_says_whether_it_is_filled_stroked_or_both() {
+    use Painted::{Filled, FilledAndStroked, Stroked};
+    let found = drawings(
+        &page(
+            "10 10 40 30 re S \
+             100 100 20 30 re f \
+             200 200 20 20 re B \
+             300 300 20 20 re f 300 300 20 20 re S \
+             400 400 20 20 re f 450 450 20 20 re S \
+             10 500 m 200 500 l S \
+             5 600 m 15 600 l 15 610 l h f \
+             50 700 m 90 700 l 90 701 l 50 701 l 50 700 l f \
+             150 700 m 190 700 l 190 720 l 150 720 l 150 700 l B \
+             q 0.866025 0.5 -0.5 0.866025 500 100 cm 0 0 10 20 re S Q",
+        ),
+        0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        found.rectangles,
+        [
+            [10.0, 10.0, 50.0, 40.0],
+            [100.0, 100.0, 120.0, 130.0],
+            [200.0, 200.0, 220.0, 220.0],
+            [300.0, 300.0, 320.0, 320.0],
+            [400.0, 400.0, 420.0, 420.0],
+            [450.0, 450.0, 470.0, 470.0],
+        ]
+    );
+    // Filled then stroked where it was filled, it counts once, as both; another box stroked
+    // after a fill is a box of its own.
+    assert_eq!(
+        found.rectangles_painted,
+        [
+            Stroked,
+            Filled,
+            FilledAndStroked,
+            FilledAndStroked,
+            Filled,
+            Stroked
+        ]
+    );
+    // A line stroked; a triangle filled, closed by `h`; a thin bar and a box filled (and the
+    // second stroked) with their fourth side back to their start: four lines each.
+    assert_eq!(found.lines.len(), 1 + 3 + 4 + 4, "{found:?}");
+    assert_eq!(found.lines[0], [10.0, 500.0, 200.0, 500.0]);
+    assert_eq!(found.lines[4], [50.0, 700.0, 90.0, 700.0]);
+    assert_eq!(
+        found.lines_painted,
+        [
+            [Stroked].as_slice(),
+            &[Filled; 3],
+            &[Filled; 4],
+            &[FilledAndStroked; 4]
+        ]
+        .concat()
+    );
+    // The line alone, the triangle, the bar, the box: four subpaths.
+    let subpaths = &found.lines_subpath;
+    assert!(subpaths[1..4].iter().all(|n| *n == subpaths[1]));
+    assert!(subpaths[4..8].iter().all(|n| *n == subpaths[4]));
+    assert!(subpaths[8..].iter().all(|n| *n == subpaths[8]));
+    assert!(subpaths[0] < subpaths[1] && subpaths[1] < subpaths[4] && subpaths[4] < subpaths[8]);
+    assert_eq!(found.quads_painted, [Stroked]);
+    assert!(Filled.filled() && !Filled.stroked());
+    assert!(!Stroked.filled() && Stroked.stroked());
+    assert!(FilledAndStroked.filled() && FilledAndStroked.stroked());
+}
+
+#[test]
+fn the_lines_of_one_subpath_share_its_number() {
+    // A box open at its top (three sides, one subpath), then a rule drawn as two subpaths end to
+    // end, then a path of two subpaths painted at once.
+    let found = drawings(
+        &page("10 40 m 10 10 l 50 10 l 50 40 l S 100 10 m 150 10 l S 150 10 m 200 10 l S 0 0 m 0 5 l 20 20 m 25 20 l S"),
+        0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(found.lines.len(), 7, "{found:?}");
+    let n = &found.lines_subpath;
+    assert!(n[0] == n[1] && n[1] == n[2]);
+    assert!(n[2] < n[3] && n[3] < n[4] && n[4] < n[5] && n[5] < n[6]);
 }

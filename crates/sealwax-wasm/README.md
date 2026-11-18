@@ -1,8 +1,8 @@
 # sealwax for the browser
 
 sealwax is a PDF library written in Rust. This package is sealwax compiled to WebAssembly, for
-browsers, web views, workers and Node: read and fill forms, flatten, render pages, merge, extract
-and turn pages, redact, save. It works on bytes in memory and never reaches the network.
+browsers, web views, workers and Node: read and fill forms, flatten, render pages, read their
+lines and text, merge, extract and turn pages, redact, save. It works on bytes in memory and never reaches the network.
 
 ```js
 import init, { Document, PdfError } from "sealwax";
@@ -101,6 +101,20 @@ is freed or another document is rendered: a page rendered again is faster.
 const view = doc.renderRgba(page, 3 * devicePixelRatio, {
   clip: { x: scrollLeft, y: scrollTop, width: canvas.width, height: canvas.height },
 });
+```
+
+## Lines and text
+
+`drawings` and `glyphs` read what a page draws, in its default user space (unrotated, y up; the
+page's boxes and rotation in `geometry()` place it on the page as shown): its straight lines,
+rectangles and quads, each filled, stroked or both, and its glyphs with their text, box, size and
+font. The lines of one subpath share their `subpath`: a box open on one side is three lines of one
+subpath.
+
+```js
+const { rectangles } = doc.drawings(pageIndex);
+const outlined = rectangles.filter((r) => r.stroked).map((r) => r.box);
+const text = doc.glyphs(pageIndex).map((g) => g.text ?? "").join("");
 ```
 
 ## Limits and panics
