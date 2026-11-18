@@ -1098,7 +1098,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sealwax-annots"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "flate2",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-compose"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "read-fonts 0.46.0",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-convert"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "docxide-pdf",
  "sealwax-compose",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aes",
  "flate2",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-pdfa"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "hayro-cmap",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-raster"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "hayro",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-sign"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cms",
  "const-oid 0.9.6",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "sealwax-text"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "hayro-font",
