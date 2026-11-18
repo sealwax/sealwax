@@ -340,18 +340,6 @@ export type LinkTarget =
   | { kind: "named"; name: string }
   | { kind: "unknown"; name: string | null };
 
-/** A word of a page, as PyMuPDF's `get_text("words")` gives it. */
-export interface TextWord {
-  /** Its text: an `/ActualText` in place of the glyphs it covers. */
-  text: string;
-  /** The box of its glyphs, in the page's default user space (y up). */
-  bbox: Box;
-  /** Its block, its line in the block and its place in the line, from 0. */
-  block: number;
-  line: number;
-  word: number;
-}
-
 /** A file a document embeds. */
 export interface Attachment {
   /** Its file name. */
@@ -1746,29 +1734,6 @@ impl Document {
         set(&object, "width", image.width);
         set(&object, "height", image.height);
         Ok(object)
-    }
-
-    /// The words of page `pageIndex` (from 0), block by block and line by line, in the order of
-    /// its content, as PyMuPDF's `get_text("words")` gives them. As `words` in Python.
-    ///
-    /// # Errors
-    /// A `RangeError` for a page the document does not have; a `PdfError`.
-    #[wasm_bindgen(unchecked_return_type = "TextWord[]")]
-    pub fn words(&self, page_index: usize) -> Result<Array, JsValue> {
-        let found =
-            sealwax_text::words(&self.inner, page_index).map_err(|error| core_error(&error))?;
-        Ok(found
-            .into_iter()
-            .map(|word| {
-                let object = Object::new();
-                set(&object, "text", word.text);
-                set(&object, "bbox", numbers(&word.bbox));
-                set(&object, "block", count(word.block));
-                set(&object, "line", count(word.line));
-                set(&object, "word", count(word.word));
-                JsValue::from(object)
-            })
-            .collect())
     }
 
     /// The links of page `pageIndex` (from 0), in the order of its annotations: each its

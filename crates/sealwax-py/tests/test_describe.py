@@ -246,19 +246,3 @@ def test_files_are_embedded_listed_and_read_back():
         document.add_attachment("data.bin", b"again")
     with pytest.raises(ValueError):
         built.attachment_data(2)
-
-
-def test_words_come_in_blocks_and_lines():
-    document = sealwax.Document.from_bytes(build([
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R "
-        "/Resources << /Font << /F1 5 0 R >> >> >>",
-        stream("", b"BT /F1 10 Tf 72 700 Td (Hello world) Tj 0 -40 Td (again) Tj ET"),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-    ]))
-    words = document.words(0)
-    assert [(w["text"], w["block"], w["line"], w["word"]) for w in words] == [
-        ("Hello", 0, 0, 0), ("world", 0, 0, 1), ("again", 1, 0, 0),
-    ]
-    assert words[0]["bbox"][0] == 72

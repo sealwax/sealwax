@@ -420,23 +420,6 @@ test("pages turn in place, the outline kept", () => {
   assert.throws(() => doc.rotatePages([[2, 1]]), RangeError);
 });
 
-test("a page's words come in blocks and lines", () => {
-  const doc = Document.fromBytes(build([
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-    stream("BT /F1 10 Tf 72 700 Td (Hello world) Tj 0 -40 Td (again) Tj ET"),
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-  ]));
-  const words = doc.words(0);
-  assert.deepEqual(words.map((w) => [w.text, w.block, w.line, w.word]), [
-    ["Hello", 0, 0, 0],
-    ["world", 0, 0, 1],
-    ["again", 1, 0, 0],
-  ]);
-  assert.equal(words[0].bbox[0], 72);
-});
-
 test("files are embedded, listed and read back", () => {
   const doc = Document.fromBytes(build([
     "<< /Type /Catalog /Pages 2 0 R >>",
