@@ -20,7 +20,7 @@ mod redact;
 mod scan;
 
 pub use cache::release_cache;
-pub use drawings::{Drawings, drawings};
+pub use drawings::{Drawings, Painted, drawings};
 pub use drawn::{Bounds, Drawn, DrawnGlyph, drawn};
 pub use glyphs::{TextGlyph, glyphs};
 pub use redact::{ImageRedaction, PathRedaction, RedactOptions, Redacted, redact};

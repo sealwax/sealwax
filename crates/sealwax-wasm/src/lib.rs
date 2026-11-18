@@ -328,6 +328,84 @@ export interface OutlineEntry {
   /** From 1; null when the entry leads nowhere in the document. */
   pageNumber: number | null;
 }
+
+/** How a shape is painted: its inside filled (`f`), its outline stroked (`S`), or both (`B`, or
+ * the path filled then stroked where it was filled). */
+export interface Painted {
+  filled: boolean;
+  stroked: boolean;
+}
+
+/** A straight segment, from where it starts to where it ends. */
+export interface DrawnLine extends Painted {
+  from: [number, number];
+  to: [number, number];
+  /**
+   * The subpath it belongs to: the lines of one subpath (from a move to the next move or closing,
+   * painted at once) share this number, no other line has it. The numbers grow in the order of
+   * the content, with gaps.
+   */
+  subpath: number;
+}
+
+export interface DrawnRectangle extends Painted {
+  box: Box;
+}
+
+export interface DrawnQuad extends Painted {
+  /** Its four corners, in order. */
+  corners: [[number, number], [number, number], [number, number], [number, number]];
+}
+
+/**
+ * What a page paints with straight lines, in its default user space (unrotated, y up), as MuPDF's
+ * drawings give it: clipping paths, text and shadings paint nothing here. A shape both filled and
+ * stroked counts once.
+ */
+export interface Drawings {
+  /**
+   * Each straight segment of a path, and the side that closes a subpath away from its start. A
+   * rectangle's sides are not repeated here; a curve whose control points lie on its ends is a
+   * line.
+   */
+  lines: DrawnLine[];
+  /**
+   * Each rectangle whose sides stay along the axes on the page: a `re`, or a subpath of four
+   * corners closed by `h`. Filled with its fourth side drawn back to its start rather than
+   * closed by `h`, it is four lines, as in MuPDF; only stroked, a rectangle.
+   */
+  rectangles: DrawnRectangle[];
+  /** Each such rectangle the transformation turns off the axes. A rectangle or a quad is a subpath of its own. */
+  quads: DrawnQuad[];
+}
+
+/** A glyph a page draws, in its default user space (unrotated, y up). */
+export interface Glyph {
+  /** What it means (`ToUnicode`, its encoding or its name), a ligature's letters included. */
+  text: string | null;
+  /** Where its origin lands. */
+  origin: [number, number];
+  /** Where the next glyph's origin would land without spacing (its advance). */
+  end: [number, number];
+  /** From its origin to its end, from its font's descent to its ascent, as MuPDF gives it. */
+  bbox: Box;
+  /** The box of its outline; null when it has none (a space). */
+  ink: Box | null;
+  /** The size it is drawn at, as MuPDF gives it (less than the font size for a squeezed em). */
+  size: number;
+  /** The direction of its baseline, a unit vector. */
+  direction: [number, number];
+  /** The font's `/BaseFont` as written (subset prefix included), when known. */
+  font: string | null;
+  /** Drawn in an invisible render mode: the text layer over a scan, usually. */
+  invisible: boolean;
+  /** Repeats the glyph shown before it (text drawn twice to look bold): a reader shows it once. */
+  overdrawn: boolean;
+  /** What an `/ActualText` around it says it reads as: the whole text on the first glyph it covers, "" on the others. */
+  actualText: string | null;
+  /** Drawn by an annotation's appearance rather than by the page's content. */
+  annotation: boolean;
+}
 "#;
 
 /// The JavaScript error of a core error.
@@ -1490,6 +1568,119 @@ impl Document {
             .collect())
     }
 
+    /// What page `pageIndex` (from 0) paints with straight lines, each shape with how it is
+    /// painted, in the order of its content (forms included); with `annotations`, then what its
+    /// shown annotations' appearances paint. As `drawings` in Python.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page the document does not have; a `PdfError` (a `PdfLimitError`
+    /// for a page past the limits, a `PdfTimeoutError`).
+    #[wasm_bindgen(unchecked_return_type = "Drawings")]
+    pub fn drawings(
+        &self,
+        page_index: usize,
+        annotations: Option<bool>,
+    ) -> Result<Object, JsValue> {
+        let found = sealwax_text::drawings(&self.inner, page_index, annotations.unwrap_or(false))
+            .map_err(|error| core_error(&error))?;
+        let shape = |painted: sealwax_text::Painted| {
+            let object = Object::new();
+            set(&object, "filled", painted.filled());
+            set(&object, "stroked", painted.stroked());
+            object
+        };
+        let lines: Array = found
+            .lines
+            .iter()
+            .zip(&found.lines_painted)
+            .zip(&found.lines_subpath)
+            .map(|(([x0, y0, x1, y1], painted), subpath)| {
+                let object = shape(*painted);
+                set(&object, "from", numbers(&[*x0, *y0]));
+                set(&object, "to", numbers(&[*x1, *y1]));
+                set(&object, "subpath", count(*subpath));
+                JsValue::from(object)
+            })
+            .collect();
+        let rectangles: Array = found
+            .rectangles
+            .iter()
+            .zip(&found.rectangles_painted)
+            .map(|(bounds, painted)| {
+                let object = shape(*painted);
+                set(&object, "box", numbers(bounds));
+                JsValue::from(object)
+            })
+            .collect();
+        let quads: Array = found
+            .quads
+            .iter()
+            .zip(&found.quads_painted)
+            .map(|(corners, painted)| {
+                let object = shape(*painted);
+                let corners: Array = corners
+                    .iter()
+                    .map(|corner| JsValue::from(numbers(corner)))
+                    .collect();
+                set(&object, "corners", corners);
+                JsValue::from(object)
+            })
+            .collect();
+        let object = Object::new();
+        set(&object, "lines", lines);
+        set(&object, "rectangles", rectangles);
+        set(&object, "quads", quads);
+        Ok(object)
+    }
+
+    /// The glyphs page `pageIndex` (from 0) draws, in the order of its content (forms and Type 3
+    /// glyphs included); with `annotations`, then those its shown annotations' appearances draw.
+    /// As `glyphs` in Python.
+    ///
+    /// # Errors
+    /// A `RangeError` for a page the document does not have; a `PdfError` (a `PdfLimitError`
+    /// for a page past the limits, a `PdfTimeoutError`).
+    #[wasm_bindgen(unchecked_return_type = "Glyph[]")]
+    pub fn glyphs(&self, page_index: usize, annotations: Option<bool>) -> Result<Array, JsValue> {
+        let found = sealwax_text::glyphs(&self.inner, page_index, annotations.unwrap_or(false))
+            .map_err(|error| core_error(&error))?;
+        // A page has thousands of glyphs: each key made once, and each font's name.
+        let keys = GlyphKeys::new();
+        let mut fonts: HashMap<String, JsValue> = HashMap::new();
+        let text = |value: Option<String>| value.map_or(JsValue::NULL, JsValue::from);
+        Ok(found
+            .into_iter()
+            .map(|glyph| {
+                let object = Object::new();
+                let put = |key: &JsValue, value: JsValue| {
+                    let _ = Reflect::set(&object, key, &value);
+                };
+                put(&keys.text, text(glyph.text));
+                put(&keys.origin, numbers(&glyph.origin).into());
+                put(&keys.end, numbers(&glyph.end).into());
+                put(&keys.bbox, numbers(&glyph.bbox).into());
+                put(
+                    &keys.ink,
+                    glyph.ink.map_or(JsValue::NULL, |ink| numbers(&ink).into()),
+                );
+                put(&keys.size, JsValue::from_f64(glyph.size));
+                put(&keys.direction, numbers(&glyph.direction).into());
+                let font = glyph.font.map_or(JsValue::NULL, |name| {
+                    fonts
+                        .entry(name)
+                        .or_insert_with_key(|name| JsValue::from_str(name))
+                        .clone()
+                });
+                put(&keys.font, font);
+                put(&keys.invisible, JsValue::from_bool(glyph.invisible));
+                put(&keys.overdrawn, JsValue::from_bool(glyph.overdrawn));
+                put(&keys.actual_text, text(glyph.actual_text));
+                put(&keys.annotation, JsValue::from_bool(glyph.annotation));
+                JsValue::from(object)
+            })
+            .collect())
+    }
+
     /// Pages `[start, stop)` (from 0; at least one) in a new PDF, saved compressed: each page with
     /// its contents, resources and annotations; the outline, the form and the structure tree
     /// left behind.
@@ -2006,6 +2197,41 @@ fn redact_options(options: Option<&JsValue>) -> Result<sealwax_text::RedactOptio
     Ok(sealwax_text::RedactOptions::default()
         .images(images)
         .paths(paths))
+}
+
+/// The keys of a glyph's object, as JavaScript strings.
+struct GlyphKeys {
+    text: JsValue,
+    origin: JsValue,
+    end: JsValue,
+    bbox: JsValue,
+    ink: JsValue,
+    size: JsValue,
+    direction: JsValue,
+    font: JsValue,
+    invisible: JsValue,
+    overdrawn: JsValue,
+    actual_text: JsValue,
+    annotation: JsValue,
+}
+
+impl GlyphKeys {
+    fn new() -> Self {
+        Self {
+            text: JsValue::from_str("text"),
+            origin: JsValue::from_str("origin"),
+            end: JsValue::from_str("end"),
+            bbox: JsValue::from_str("bbox"),
+            ink: JsValue::from_str("ink"),
+            size: JsValue::from_str("size"),
+            direction: JsValue::from_str("direction"),
+            font: JsValue::from_str("font"),
+            invisible: JsValue::from_str("invisible"),
+            overdrawn: JsValue::from_str("overdrawn"),
+            actual_text: JsValue::from_str("actualText"),
+            annotation: JsValue::from_str("annotation"),
+        }
+    }
 }
 
 fn redacted_object(done: &sealwax_text::Redacted) -> Object {

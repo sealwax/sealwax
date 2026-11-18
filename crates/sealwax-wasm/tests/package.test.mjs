@@ -337,6 +337,52 @@ test("redaction marks are applied and areas redacted", () => {
   assert.throws(() => rebuilt.redact(0, [[1, 2]]), RangeError);
 });
 
+test("a page's lines, boxes and glyphs are read, each shape with how it is painted", () => {
+  const page = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> " +
+      "/Annots [6 0 R] >>",
+    stream(
+      "100 600 200 20 re S 100 560 200 1.5 re f 100 500 20 20 re B 100 400 m 300 400 l S " +
+        "q 0.866025 0.5 -0.5 0.866025 400 100 cm 0 0 10 20 re S Q " +
+        "BT /F1 12 Tf 100 700 Td (Name:) Tj ET",
+    ),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Annot /Subtype /Square /Rect [10 10 50 50] /AP << /N 7 0 R >> >>",
+    "<< /Type /XObject /Subtype /Form /BBox [10 10 50 50] /Length 18 >>\nstream\n10 10 40 40 re S\nendstream",
+  ]);
+  const doc = Document.fromBytes(page);
+  const found = doc.drawings(0);
+  assert.deepEqual(found.rectangles, [
+    { filled: false, stroked: true, box: [100, 600, 300, 620] },
+    { filled: true, stroked: false, box: [100, 560, 300, 561.5] },
+    { filled: true, stroked: true, box: [100, 500, 120, 520] },
+  ]);
+  assert.equal(found.lines.length, 1);
+  const [line] = found.lines;
+  assert.deepEqual([line.from, line.to, line.stroked, line.filled], [[100, 400], [300, 400], true, false]);
+  assert.equal(typeof line.subpath, "number");
+  assert.equal(found.quads.length, 1);
+  assert.equal(found.quads[0].corners.length, 4);
+  assert.equal(found.quads[0].stroked, true);
+  // The annotation's appearance, when asked for.
+  assert.equal(doc.drawings(0, true).rectangles.length, 4);
+
+  const glyphs = doc.glyphs(0);
+  assert.equal(glyphs.map((g) => g.text).join(""), "Name:");
+  const [first] = glyphs;
+  assert.deepEqual(first.origin, [100, 700]);
+  assert.equal(first.font, "Helvetica");
+  assert.equal(first.size, 12);
+  assert.deepEqual(first.direction, [1, 0]);
+  assert.equal(first.bbox.length, 4);
+  assert.equal(first.annotation, false);
+  assert.equal(first.actualText, null);
+  assert.throws(() => doc.glyphs(1), RangeError);
+  assert.throws(() => doc.drawings(1), RangeError);
+});
+
 test("pages turn in place, the outline kept", () => {
   const outlined = build([
     "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",

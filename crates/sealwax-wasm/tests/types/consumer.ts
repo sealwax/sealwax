@@ -11,6 +11,8 @@ import init, {
   reset,
   xfdfFor,
   type Applied,
+  type Drawings,
+  type Glyph,
   type Field,
   type SignedMark,
   type RenderedPage,
@@ -25,6 +27,10 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const merged: Uint8Array = mergeBytes([saved, withOptions.save()]);
   const fields: Field[] = doc.fields();
   const page: RenderedPage | null = doc.renderRgba(0, 1);
+  const drawn: Drawings = doc.drawings(0, true);
+  const boxes = drawn.rectangles.filter((r) => r.stroked && !r.filled).map((r) => r.box);
+  const glyphs: Glyph[] = doc.glyphs(0);
+  const text = glyphs.map((g) => g.text ?? "").join("") + (glyphs[0]?.ink?.[0] ?? 0);
   const applied: Applied = doc.applyXfdf("<xfdf/>", { flatten: false, removeAnnotations: true });
   const changed: number[] = applied.pages;
   const marks: SignedMark[] = [
@@ -42,5 +48,7 @@ export async function use(bytes: Uint8Array): Promise<number> {
       return -1;
     }
   }
-  return merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length;
+  return (
+    merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length + boxes.length + text.length
+  );
 }

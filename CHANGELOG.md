@@ -6,6 +6,17 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- In WebAssembly, `drawings(pageIndex, annotations)` and `glyphs(pageIndex, annotations)`, as in
+  Python: the straight lines, rectangles and quads a page paints, and the glyphs it draws, in its
+  default user space. Each line, rectangle and quad says whether it is filled, stroked or both
+  (`filled`, `stroked`; a shape filled then stroked counts once, as both), and each line the
+  subpath it belongs to (`subpath`), for a caller that reads a subpath whole: a box open on one
+  side is three lines of one subpath. In Rust, `Drawings` gains `lines_painted`,
+  `rectangles_painted` and `quads_painted` (`Painted`), and `lines_subpath`. Python's `drawings`
+  is unchanged.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
