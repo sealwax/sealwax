@@ -21,6 +21,8 @@ hayro-interpret = "0.9"
 # advance when text is redacted (Apache-2.0 OR MIT, the same project; its features come from
 # hayro-interpret).
 hayro-font = { version = "0.5", default-features = false }
+# Unicode case folding for page search (MIT OR Apache-2.0).
+unicase = "2.10"
 png = "0.18"
 flate2 = "1"
 # Keeps a parsed document beside the interpreter cache that borrows from it, so that a document's

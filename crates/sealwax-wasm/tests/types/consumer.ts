@@ -13,6 +13,9 @@ import init, {
   type Applied,
   type Drawings,
   type Glyph,
+  type Word,
+  type TextBlock,
+  type TextQuad,
   type Link,
   type Attachment,
   type PageImage,
@@ -42,6 +45,9 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const picture: ExtractedImage | null = pictures.length > 0 ? doc.extractImage(0, 0) : null;
   const boxes = drawn.rectangles.filter((r) => r.stroked && !r.filled).map((r) => r.box);
   const glyphs: Glyph[] = doc.glyphs(0);
+  const words: Word[] = doc.words(0, true);
+  const blocks: TextBlock[] = doc.textBlocks(0);
+  const hits: TextQuad[][] = doc.search(0, "Date");
   const text = glyphs.map((g) => g.text ?? "").join("") + (glyphs[0]?.ink?.[0] ?? 0);
   const applied: Applied = doc.applyXfdf("<xfdf/>", { flatten: false, removeAnnotations: true });
   const changed: number[] = applied.pages;
@@ -62,6 +68,7 @@ export async function use(bytes: Uint8Array): Promise<number> {
   }
   return (
     merged.length + fields.length + (page?.width ?? 0) + changed.length + xfdf.length + boxes.length + text.length +
-    (firstPage ?? 0) + (labels?.length ?? 0) + (picture?.image.length ?? 0) + (first?.length ?? 0)
+    (firstPage ?? 0) + (labels?.length ?? 0) + (picture?.image.length ?? 0) + (first?.length ?? 0) +
+    words.length + blocks.length + hits.length
   );
 }

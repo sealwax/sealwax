@@ -62,6 +62,7 @@ documents), run as outside tools in an environment of their own:
 | Script | Compares |
 |---|---|
 | `text/compare_pymupdf.py` | The text of each page's glyphs, read as a reader reads it, with PyMuPDF's `get_text()` |
+| `text/compare_word_reference.py` | Word order, boxes and block/line/word indices against an independently generated, hashed reference, offline |
 | `text/compare_drawings_pymupdf.py` | The lines and rectangles of each page with the `l` and `re` items of PyMuPDF's `get_drawings()` |
 | `raster/compare_pdfium.py` | Each page rendered to PNG with PDFium's rendering, in blocks of 4 x 4 pixels |
 | `speed/compare_pymupdf.py` | Milliseconds per page of opening, text, drawings, rendering and fields, with PyMuPDF's |

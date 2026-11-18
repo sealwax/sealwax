@@ -1800,6 +1800,87 @@ impl Document {
         Ok(dict)
     }
 
+    /// Words in page content order, with their boxes and zero-based block, line and word indices.
+    /// Coordinates are in unrotated PDF user space, y up. Set `annotations` to read appearances too.
+    #[pyo3(signature = (page_index, annotations = false))]
+    fn words<'py>(
+        &self,
+        py: Python<'py>,
+        page_index: usize,
+        annotations: bool,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let words = run(py, || {
+            Ok(pdf::text::words(&self.inner, page_index, annotations)?)
+        })?;
+        word_dicts(py, words)
+    }
+
+    /// Text grouped into blocks, each with its box and lines. Each line has a box, a writing
+    /// direction and its words, in the same order and coordinates as `words`.
+    #[pyo3(signature = (page_index, annotations = false))]
+    fn text_blocks<'py>(
+        &self,
+        py: Python<'py>,
+        page_index: usize,
+        annotations: bool,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let blocks = run(py, || {
+            Ok(pdf::text::text_blocks(
+                &self.inner,
+                page_index,
+                annotations,
+            )?)
+        })?;
+        blocks
+            .into_iter()
+            .map(|block| {
+                let lines = PyList::empty(py);
+                for line in block.lines {
+                    let item = PyDict::new(py);
+                    item.set_item("direction", (line.direction[0], line.direction[1]))?;
+                    item.set_item("bbox", text_box(line.bbox))?;
+                    item.set_item("words", word_dicts(py, line.words)?)?;
+                    lines.append(item)?;
+                }
+                let item = PyDict::new(py);
+                item.set_item("bbox", text_box(block.bbox))?;
+                item.set_item("lines", lines)?;
+                Ok(item)
+            })
+            .collect()
+    }
+
+    /// Case-insensitive substring search. Each occurrence has a quadrilateral for each line it
+    /// covers. Corners are top-left, top-right, bottom-left, bottom-right in the writing direction.
+    #[pyo3(signature = (page_index, needle, annotations = false))]
+    fn search(
+        &self,
+        py: Python<'_>,
+        page_index: usize,
+        needle: &str,
+        annotations: bool,
+    ) -> PyResult<Vec<Vec<SearchQuad>>> {
+        let hits = run(py, || {
+            Ok(pdf::text::search(
+                &self.inner,
+                page_index,
+                needle,
+                annotations,
+            )?)
+        })?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| {
+                hit.into_iter()
+                    .map(|quad| {
+                        let [tl, tr, bl, br] = quad.map(|[x, y]| (x, y));
+                        (tl, tr, bl, br)
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+
     /// The glyphs page `page_index` (from 0) draws, in the order of its content (forms and
     /// Type 3 glyphs included), then with `annotations` those its annotations' appearances draw
     /// (as MuPDF's text includes them), each a dict in the page's default user space
@@ -1984,6 +2065,28 @@ fn open_sources(
         sources.push(doc);
     }
     Ok(sources)
+}
+
+type SearchPoint = (f64, f64);
+type SearchQuad = (SearchPoint, SearchPoint, SearchPoint, SearchPoint);
+
+fn text_box([x1, y1, x2, y2]: pdf::text::Bounds) -> (f64, f64, f64, f64) {
+    (x1, y1, x2, y2)
+}
+
+fn word_dicts(py: Python<'_>, words: Vec<pdf::text::Word>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    words
+        .into_iter()
+        .map(|word| {
+            let item = PyDict::new(py);
+            item.set_item(intern!(py, "text"), word.text)?;
+            item.set_item(intern!(py, "bbox"), text_box(word.bbox))?;
+            item.set_item(intern!(py, "block"), word.block)?;
+            item.set_item(intern!(py, "line"), word.line)?;
+            item.set_item(intern!(py, "word"), word.word)?;
+            Ok(item)
+        })
+        .collect()
 }
 
 fn field_dict<'py>(py: Python<'py>, field: &pdf::annots::Field) -> PyResult<Bound<'py, PyDict>> {

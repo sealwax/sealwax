@@ -1,6 +1,6 @@
 //! The glyphs a page draws, in the order of its content: what each means, where it is, how large,
-//! in which font. The primitive of text extraction: words, lines and reading order are built from
-//! it by the caller.
+//! in which font. [`crate::words`], [`crate::text_blocks`] and [`crate::search`] consume the same
+//! stream with its transformed metric corners.
 //!
 //! Interpreting the content with hayro gives each glyph's position, size and meaning, not the font
 //! it was drawn with. So the content is first read operator by operator, following `q`/`Q` and
@@ -28,7 +28,7 @@ use hayro_interpret::hayro_syntax::object::{
 };
 use hayro_interpret::hayro_syntax::page::Resources;
 use hayro_interpret::hayro_syntax::xref::XRef;
-use hayro_interpret::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
+use hayro_interpret::kurbo::{Affine, BezPath, Point, Rect, Shape as _, Vec2};
 use hayro_interpret::{
     BlendMode, CacheKey as _, ClipPath, Context, Device, DrawMode, DrawProps, Image,
     ImageDrawProps, InterpreterCache, InterpreterSettings, SoftMask, interpret,
@@ -59,15 +59,16 @@ const MAX_FORM_DEPTH: usize = 8;
 pub struct TextGlyph {
     /// What it means (`ToUnicode`, its encoding or its name), a ligature's letters included.
     pub text: Option<String>,
-    /// Where its origin lands.
+    /// Its writing position. For vertical CID fonts this is the vertical pen position before
+    /// the font displaces the outline to its horizontal glyph origin.
     pub origin: [f64; 2],
     /// Where the next glyph's origin would land without spacing (its advance): between two
     /// glyphs, the gap a word space or a `TJ` adjustment leaves.
     pub end: [f64; 2],
-    /// The box from its origin to its end, from its font's descent to its ascent, at least an
+    /// For horizontal writing, the box from its origin to its end, its font's descent to its ascent, at least an
     /// em tall, as MuPDF reads them: the font descriptor's, else the font's TrueType program's,
     /// else those of the font a standard font is drawn with, else 0.2 and 0.8 em (see
-    /// `metrics.rs` for the whole of it).
+    /// `metrics.rs` for the whole of it). Vertical boxes span the writing advance and the glyph cell's width.
     pub bbox: Bounds,
     /// The box of its outline, when it has one (a space has none, nor a Type 3 glyph here).
     pub ink: Option<Bounds>,
@@ -76,7 +77,7 @@ pub struct TextGlyph {
     /// it). An em stretched or squeezed along one axis (`Tz`, a text matrix `0.8 0 0 1`) is
     /// drawn at less than the font size.
     pub size: f64,
-    /// The direction of its baseline, a unit vector.
+    /// The direction of writing as a unit vector, including top-to-bottom vertical CID text.
     pub direction: [f64; 2],
     /// The font's `/BaseFont` as written (subset prefix included), when known.
     pub font: Option<String>,
@@ -109,14 +110,33 @@ pub fn glyphs(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Vec<TextGlyph>> {
+    let mut found = Vec::new();
+    visit_glyphs(doc, page_index, annotations, true, &mut |glyph, _, _| {
+        found.push(glyph);
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+type Visitor<'a> = dyn FnMut(TextGlyph, [Point; 4], Option<&Key>) -> sealwax_core::Result<()> + 'a;
+
+/// Visit each glyph with its transformed metric corners and the identity of its replacement.
+/// Layout only needs the metrics, so it skips loading outlines and collecting font names.
+pub(crate) fn visit_glyphs(
+    doc: &Document,
+    page_index: usize,
+    annotations: bool,
+    details: bool,
+    visitor: &mut Visitor<'_>,
+) -> sealwax_core::Result<()> {
     if page_index >= doc.hayro().pages().len() {
         return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
     }
     doc.check_page(page_index)?;
-    let glyphs = with_cache(doc, |pdf, cache| {
+    with_cache(doc, |pdf, cache| {
         let pages = pdf.pages();
         let Some(page) = pages.get(page_index) else {
-            return Vec::new();
+            return Ok(());
         };
         let content = page.page_stream().unwrap_or_default();
         let resources = page.resources();
@@ -125,7 +145,9 @@ pub fn glyphs(
         let mut collector = Collector {
             fonts,
             open: Vec::new(),
-            glyphs: Vec::new(),
+            visitor,
+            details,
+            error: None,
             last_run: None,
             shown: None,
             structure: Structure::new(pdf.xref()),
@@ -166,10 +188,9 @@ pub fn glyphs(
                 }
             }
         }));
-        collector.glyphs
-    });
-    doc.check_time()?;
-    Ok(glyphs)
+        collector.error.map_or(Ok(()), Err)
+    })?;
+    doc.check_time()
 }
 
 /// Where the glyphs of a page are looked for: anywhere.
@@ -266,7 +287,7 @@ fn draw_annotation<'a>(
     xref: &'a XRef,
     off: &HashSet<ObjectIdentifier>,
     reader: &FontReader<'a>,
-    collector: &mut Collector<'a>,
+    collector: &mut Collector<'a, '_>,
 ) {
     if annotation.get::<u32>(b"F").unwrap_or(0) & (HIDDEN | NO_VIEW) != 0 {
         return;
@@ -317,6 +338,8 @@ fn draw_annotation<'a>(
     let (instrumented, fonts) = instrument(&data, resources, reader);
     // The indexes the page's content gave its fonts mean nothing in the appearance.
     collector.fonts = fonts;
+    collector.shown = None;
+    collector.last_run = None;
     collector.found_in.clear();
     collector.open.clear();
     let mut context = Context::new(
@@ -345,7 +368,7 @@ struct Font<'a> {
     metrics: Metrics,
     /// hayro's reading of it, for a font not embedded (hayro stretches each glyph of the font
     /// it draws it with to the width the font gives it) and for one of several a form draws
-    /// with (to tell which a glyph is drawn in).
+    /// with (to tell which a glyph is drawn in), or for a vertical font's writing metrics.
     hayro: Option<hayro_font::Font<'a>>,
 }
 
@@ -368,9 +391,13 @@ impl<'a> FontReader<'a> {
             key: dict.cache_key(),
             name: base_font(dict),
             metrics: metrics::of_font(dict),
-            hayro: metrics::is_substituted(dict)
-                .then(|| self.hayro(dict))
-                .flatten(),
+            hayro: (metrics::is_substituted(dict)
+                || dict
+                    .get::<HayroName<'_>>(b"Encoding")
+                    .is_some_and(|n| n.ends_with(b"-V"))
+                || dict.get::<Stream<'_>>(b"Encoding").is_some())
+            .then(|| self.hayro(dict))
+            .flatten(),
         }
     }
 
@@ -563,15 +590,17 @@ struct Open {
     replacement: Option<Replacement>,
 }
 
-struct Collector<'a> {
+struct Collector<'a, 'v> {
     /// The fonts the sequences of the content read name.
     fonts: Vec<Font<'a>>,
     open: Vec<Open>,
-    glyphs: Vec<TextGlyph>,
-    /// The glyphs of the last run, to skip the stroke run of a text both filled and stroked.
+    visitor: &'v mut Visitor<'v>,
+    details: bool,
+    error: Option<sealwax_core::Error>,
+    /// The preceding fill run in this marked sequence, to skip its matching stroke.
     last_run: Option<usize>,
-    /// The last glyph not overdrawn, by index.
-    shown: Option<usize>,
+    /// Text and placement of the last glyph not overdrawn.
+    shown: Option<(String, Point, f64)>,
     structure: Structure<'a>,
     /// The page's `/StructParents`.
     page_parents: Option<i64>,
@@ -585,7 +614,7 @@ struct Collector<'a> {
     found_in: HashMap<GlyphIdentifier, Option<usize>>,
 }
 
-impl<'f> Collector<'f> {
+impl<'f> Collector<'f, '_> {
     /// The font the innermost of our sequences names, when it is known; else the fonts of the
     /// form it encloses, when that draws with several.
     fn font(&self) -> (Option<Font<'f>>, Vec<usize>) {
@@ -623,16 +652,17 @@ impl<'f> Collector<'f> {
     }
 
     /// What the next glyph reads as, when an `/ActualText` covers it: the outermost one.
-    fn actual_text(&mut self) -> Option<String> {
+    fn actual_text(&mut self) -> Option<Replacement> {
         let (key, text) = self
             .open
             .iter()
             .find_map(|open| open.replacement.as_ref())?;
-        Some(if self.replaced.insert(key.clone()) {
+        let value = if self.replaced.insert(key.clone()) {
             text.clone()
         } else {
             String::new()
-        })
+        };
+        Some((key.clone(), value))
     }
 }
 
@@ -646,6 +676,20 @@ fn bounds(points: &[Point]) -> Option<Bounds> {
     found.iter().all(|v| v.is_finite()).then_some(found)
 }
 
+fn outline_bounds(outline: &hayro_font::OutlineGlyph, drawn: Affine) -> Option<Bounds> {
+    let path = outline.outline();
+    if path.elements().is_empty() {
+        return None;
+    }
+    let rect = path.bounding_box();
+    bounds(&[
+        drawn * Point::new(rect.x0, rect.y0),
+        drawn * Point::new(rect.x1, rect.y0),
+        drawn * Point::new(rect.x0, rect.y1),
+        drawn * Point::new(rect.x1, rect.y1),
+    ])
+}
+
 fn text(unicode: BfString) -> String {
     match unicode {
         BfString::Char(c) => c.to_string(),
@@ -653,7 +697,7 @@ fn text(unicode: BfString) -> String {
     }
 }
 
-impl<'a> Device<'a> for Collector<'_> {
+impl<'a> Device<'a> for Collector<'_, '_> {
     fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
 
     fn push_clip_path(&mut self, _: &ClipPath) {}
@@ -661,30 +705,30 @@ impl<'a> Device<'a> for Collector<'_> {
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
 
     fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, mode: &DrawMode) {
+        if self.error.is_some() {
+            return;
+        }
         // A text filled then stroked comes as two runs of the same glyphs.
         let identity = run.glyphs().as_ptr() as usize;
         if matches!(mode, DrawMode::Stroke(_)) && self.last_run == Some(identity) {
             return;
         }
-        self.last_run = Some(identity);
+        self.last_run = matches!(mode, DrawMode::Fill(_)).then_some(identity);
         let invisible = matches!(mode, DrawMode::Invisible);
         let (named_font, candidates) = self.font();
         let vertical = matches!(run.writing_mode(), WritingMode::Vertical);
         for glyph in run.glyphs() {
-            let marked = match (&named_font, &**glyph) {
-                (Some(font), _) => Some(font.clone()),
+            let in_form = match (&named_font, &**glyph) {
                 (None, HayroGlyph::Outline(outline)) if !candidates.is_empty() => {
                     self.drawn_in(&candidates, outline)
                 }
                 _ => None,
             };
+            let marked = named_font.as_ref().or(in_form.as_ref());
             let drawn = props.transform * glyph.transform();
             // hayro stretches the glyph a font not embedded is drawn with to the width the font
             // gives it: its outline, not its em.
-            let stretch = match (
-                &**glyph,
-                marked.as_ref().and_then(|font| font.hayro.as_ref()),
-            ) {
+            let stretch = match (&**glyph, marked.and_then(|font| font.hayro.as_ref())) {
                 (HayroGlyph::Outline(outline), Some(font)) => {
                     font.glyph_stretch(outline.glyph_id(), outline.char_code())
                 }
@@ -698,37 +742,34 @@ impl<'a> Device<'a> for Collector<'_> {
             let origin = transform * Point::ZERO;
             let up = transform * Point::new(0.0, UNITS_PER_EM) - origin;
             let mut program = None;
-            let (advance, ink, named) = match &**glyph {
+            let (advance, ink) = match &**glyph {
                 HayroGlyph::Outline(outline) => {
-                    let path = outline.outline();
-                    let ink = (!path.elements().is_empty())
-                        .then(|| path.bounding_box())
-                        .and_then(|rect| {
-                            bounds(&[
-                                drawn * Point::new(rect.x0, rect.y0),
-                                drawn * Point::new(rect.x1, rect.y0),
-                                drawn * Point::new(rect.x0, rect.y1),
-                                drawn * Point::new(rect.x1, rect.y1),
-                            ])
-                        });
-                    let data = outline.font_data();
-                    let named = data.as_ref().and_then(|data| data.postscript_name.clone());
-                    program = data;
-                    (outline.advance_width().map(f64::from), ink, named)
+                    let ink = if self.details {
+                        outline_bounds(outline, drawn)
+                    } else {
+                        None
+                    };
+                    if marked.is_none()
+                        || (self.details && marked.is_some_and(|f| f.name.is_none()))
+                    {
+                        program = outline.font_data();
+                    }
+                    (outline.advance_width().map(f64::from), ink)
                 }
-                HayroGlyph::Type3(type3) => (type3.advance_width().map(f64::from), None, None),
+                HayroGlyph::Type3(type3) => (type3.advance_width().map(f64::from), None),
             };
             let advance = advance.unwrap_or(0.0);
-            let end = if vertical {
-                transform * Point::new(0.0, -advance)
-            } else {
-                transform * Point::new(advance, 0.0)
-            };
-            let baseline = transform * Point::new(UNITS_PER_EM, 0.0) - origin;
+            let right = transform * Point::new(UNITS_PER_EM, 0.0) - origin;
+            let baseline = if vertical { -up } else { right };
             let length = baseline.hypot();
             let [a, b, c, d, _, _] = transform.as_coeffs();
             let size = (a * d - b * c).abs().sqrt() * UNITS_PER_EM;
-            if !(origin.x.is_finite() && origin.y.is_finite() && size.is_finite() && length > 0.0) {
+            if !(origin.x.is_finite()
+                && origin.y.is_finite()
+                && size.is_finite()
+                && length.is_finite()
+                && length > 0.0)
+            {
                 continue;
             }
             let direction = [baseline.x / length, baseline.y / length];
@@ -742,26 +783,65 @@ impl<'a> Device<'a> for Collector<'_> {
                 (None, None) => Metrics::USUAL,
             };
             let (below, above) = metrics.span();
-            let (down, top) = (up * below, up * above);
-            let Some(bbox) = bounds(&[origin + down, origin + top, end + down, end + top]) else {
+            let (origin, end, corners) = if vertical {
+                // The interpreter's transform places the horizontal glyph origin. Undo
+                // the vertical font's origin displacement to recover the writing position.
+                let font = marked.and_then(|f| f.hayro.as_ref());
+                let code = glyph.char_code();
+                let displacement = font.map_or(Vec2::new(-UNITS_PER_EM / 2.0, -880.0), |f| {
+                    f.origin_displacement(code)
+                });
+                let step = font.map_or(-UNITS_PER_EM, |f| f.code_advance(code).y);
+                let pen = transform * Point::new(-displacement.x, -displacement.y);
+                let step = up * (step / UNITS_PER_EM);
+                let left = transform * Point::new(0.0, -displacement.y);
+                // The usual vertical origin is centred in its glyph cell. For a
+                // custom origin on the edge, use one em for the missing cross-size.
+                let width = if displacement.x < 0.0 {
+                    -2.0 * displacement.x
+                } else {
+                    UNITS_PER_EM
+                };
+                let right = transform * Point::new(width, -displacement.y);
+                (pen, pen + step, [right, right + step, left, left + step])
+            } else {
+                let end = transform * Point::new(advance, 0.0);
+                let (down, top) = (up * below, up * above);
+                (
+                    origin,
+                    end,
+                    [origin + top, end + top, origin + down, end + down],
+                )
+            };
+            let Some(bbox) = bounds(&corners) else {
                 continue;
             };
-            let font = marked.as_ref().and_then(|font| font.name.clone()).or(named);
+            let font = if self.details {
+                marked
+                    .and_then(|f| f.name.clone())
+                    .or_else(|| program.and_then(|p| p.postscript_name))
+            } else {
+                None
+            };
             let text = glyph.as_unicode().map(text);
-            let actual_text = self.actual_text();
-            let overdrawn = self
-                .shown
-                .and_then(|index| self.glyphs.get(index))
-                .is_some_and(|shown| {
-                    text.is_some()
-                        && shown.text == text
-                        && (shown.origin[0] - origin.x).hypot(shown.origin[1] - origin.y)
-                            < shown.size * OVERDRAWN
-                });
+            let overdrawn = text.as_ref().is_some_and(|text| {
+                self.shown.as_ref().is_some_and(|(last, place, em)| {
+                    last == text && origin.distance(*place) < em * OVERDRAWN
+                })
+            });
             if !overdrawn {
-                self.shown = Some(self.glyphs.len());
+                match &text {
+                    Some(text) => {
+                        let (last, place, em) = self.shown.get_or_insert_with(Default::default);
+                        last.clone_from(text);
+                        *place = origin;
+                        *em = size;
+                    }
+                    None => self.shown = None,
+                }
             }
-            self.glyphs.push(TextGlyph {
+            let (key, actual_text) = self.actual_text().unzip();
+            let glyph = TextGlyph {
                 text,
                 origin: [origin.x, origin.y],
                 end: [end.x, end.y],
@@ -774,7 +854,11 @@ impl<'a> Device<'a> for Collector<'_> {
                 overdrawn,
                 actual_text,
                 annotation: self.annotation,
-            });
+            };
+            if let Err(error) = (self.visitor)(glyph, corners, key.as_ref()) {
+                self.error = Some(error);
+                return;
+            }
         }
     }
 
@@ -785,6 +869,7 @@ impl<'a> Device<'a> for Collector<'_> {
     fn pop_transparency_group(&mut self) {}
 
     fn begin_marked_content(&mut self, tag: &[u8], properties: Option<&Dict<'_>>) {
+        self.last_run = None;
         let mut open = Open {
             font: None,
             candidates: Vec::new(),
@@ -823,6 +908,7 @@ impl<'a> Device<'a> for Collector<'_> {
     }
 
     fn end_marked_content(&mut self) {
+        self.last_run = None;
         self.open.pop();
     }
 }

@@ -83,6 +83,24 @@ class Glyph(TypedDict):
     actual_text: str | None
     annotation: bool
 
+class Word(TypedDict):
+    text: str
+    bbox: tuple[float, float, float, float]
+    block: int
+    line: int
+    word: int
+
+class TextLine(TypedDict):
+    bbox: tuple[float, float, float, float]
+    direction: tuple[float, float]
+    words: list[Word]
+
+class TextBlock(TypedDict):
+    bbox: tuple[float, float, float, float]
+    lines: list[TextLine]
+
+type TextQuad = tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]
+
 class Drawings(TypedDict):
     lines: list[tuple[float, float, float, float]]
     rectangles: list[tuple[float, float, float, float]]
@@ -388,6 +406,9 @@ class Document:
     def add_photo_pages(self, photos: list[bytes]) -> PhotoPages: ...
     def field_values(self) -> dict[str, list[str]]: ...
     def glyphs(self, page_index: int, annotations: bool = False) -> list[Glyph]: ...
+    def words(self, page_index: int, annotations: bool = False) -> list[Word]: ...
+    def text_blocks(self, page_index: int, annotations: bool = False) -> list[TextBlock]: ...
+    def search(self, page_index: int, needle: str, annotations: bool = False) -> list[list[TextQuad]]: ...
     def render_png(
         self, page_index: int, scale: float, quarter_turns: int = 0, *, clip: tuple[int, int, int, int] | None = None
     ) -> bytes: ...

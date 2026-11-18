@@ -6,6 +6,18 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Page text extraction in Rust, Python and WebAssembly. `words` returns each word
+  with its box and position within its block and line. `text_blocks` (`textBlocks`
+  in JavaScript) returns the hierarchy. `search` returns oriented highlight
+  quadrilaterals grouped by occurrence, including matches that span lines.
+
+### Fixed
+
+- For vertical CID fonts, `glyphs` now reports the vertical writing origin,
+  direction and advance in page coordinates.
+
 ## [0.7.0] - 2026-11-18
 
 ### Added

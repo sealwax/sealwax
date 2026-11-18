@@ -9,7 +9,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use sealwax_core::{Document, OpenOptions, Rect, SaveOptions};
-use sealwax_text::{RedactOptions, extract_image, glyphs, images, redact, text_census};
+use sealwax_text::{
+    RedactOptions, extract_image, glyphs, images, redact, search, text_blocks, text_census, words,
+};
 
 fuzz_target!(|data: &[u8]| {
     let options = OpenOptions::default().max_file_bytes(4 << 20);
@@ -21,6 +23,20 @@ fuzz_target!(|data: &[u8]| {
         assert!(text.private_use_with_actual_text <= text.private_use);
     }
     for page in 0..document.page_count().min(4) {
+        if let Ok(words) = words(&document, page, true) {
+            if let Some(word) = words.first() {
+                let _ = search(&document, page, &word.text, true);
+            }
+            if let Ok(blocks) = text_blocks(&document, page, true) {
+                assert!(
+                    blocks
+                        .iter()
+                        .flat_map(|block| &block.lines)
+                        .flat_map(|line| &line.words)
+                        .eq(&words)
+                );
+            }
+        }
         if let Ok(pictures) = images(&document, page) {
             for picture in &pictures {
                 assert!(picture.bbox[0] <= picture.bbox[2] || picture.bbox[0].is_nan());
@@ -44,7 +60,9 @@ fuzz_target!(|data: &[u8]| {
         let mut redacted = document;
         let middle = Rect::from_corners(100.0, 100.0, 400.0, 500.0);
         if redact(&mut redacted, 0, &[middle], &RedactOptions::default()).is_ok() {
-            let saved = redacted.save(&SaveOptions::default()).expect("a page redacted saves");
+            let saved = redacted
+                .save(&SaveOptions::default())
+                .expect("a page redacted saves");
             Document::open(saved, &OpenOptions::default()).expect("and reads back");
         }
     }
