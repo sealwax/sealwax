@@ -96,6 +96,7 @@ class OutlineEntry(TypedDict):
 class Metadata(TypedDict):
     version: str
     encrypted: bool
+    encryption: str | None
     linearized: bool
     has_forms: bool
     has_signatures: bool
