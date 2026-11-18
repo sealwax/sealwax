@@ -1,6 +1,6 @@
 [package]
 name = "sealwax"
-description = "A PDF library: reading, flattening, PDF/A-3a conversion and PAdES signatures."
+description = "A PDF library: reading, rendering, text, forms and annotations, redaction, PDF/A-3, new documents and PAdES signatures."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

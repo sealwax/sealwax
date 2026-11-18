@@ -1,6 +1,6 @@
 [package]
 name = "sealwax-text"
-description = "Text drawn by the content of PDF pages: which glyphs map to Unicode, for PDF/A level a and u."
+description = "What PDF pages draw: glyphs with their text and boxes, lines and rectangles; and redaction."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
