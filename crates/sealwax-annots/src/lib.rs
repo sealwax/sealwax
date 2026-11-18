@@ -17,6 +17,7 @@ mod annotate;
 mod create;
 mod draw;
 mod drawing;
+mod edit;
 mod fields;
 mod flatten;
 mod font;
@@ -40,6 +41,7 @@ use sealwax_core::{Dict, Document, ObjId, Object, PageGeometry, Rect};
 pub use annotate::{AnnotationKind, NewAnnotation, add_annotation};
 pub use create::{FIELD_FONT_SIZES, NewField, NewFieldKind, add_field};
 pub use drawing::{Shape, add_link, draw_shapes};
+pub use edit::{remove_field_appearances, rename_button_state, set_field_label};
 pub use fields::{
     Field, FieldChoice, FieldKind, FieldValue, FillOptions, FillValue, Filled, Written,
     field_values, fields, fill_fields, fill_fields_with, name_text, unfill_fields,

@@ -17,6 +17,12 @@ All notable changes to sealwax are recorded here. The format follows
   it back), the document information (`set_info`) and an XMP packet (`set_xmp`). In Rust,
   `Document::add_page`, `set_crop_box`, `set_outline`, `set_info`, `set_xmp`, and
   `sealwax_annots::draw_shapes` and `add_link`.
+- `add_field` creates combo boxes (`combobox`, its options exported values and labels) and
+  signature fields, gives any field the name shown to users (`label`, `/TU`) and a text field
+  its maximum length (`max_length`). Fields a form has can be retouched: the name shown
+  changed (`set_field_label`), a check box's checked state renamed, to a name of any bytes
+  (`rename_button_state`), the appearances of a field's widgets taken away
+  (`remove_field_appearances`).
 
 - `metadata()` describes how a document is encrypted (`encryption`): its security handler, `/V`
   and `/R`, the length of its key and how its streams are encrypted (RC4, AES, none), as a
