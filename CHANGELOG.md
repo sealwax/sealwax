@@ -16,6 +16,13 @@ All notable changes to sealwax are recorded here. The format follows
   side is three lines of one subpath. In Rust, `Drawings` gains `lines_painted`,
   `rectangles_painted` and `quads_painted` (`Painted`), and `lines_subpath`. Python's `drawings`
   is unchanged.
+- `add_widget` gives a field a form has another widget (`addWidget` in WebAssembly,
+  `sealwax_annots::add_widget` in Rust): the same field shown on several pages, or twice on one,
+  one value for all, as real forms repeat a name or a date. A text field, combo or list box, or
+  check box; the field keeps what it is (its kind, flags, value, maximum length, label, options),
+  the widget takes the look of its first one, turned with its own page, and shows the field's
+  value. A field that is one dictionary with its widget becomes that widget's parent, where it
+  was in the form.
 
 ## [0.5.0] - 2026-11-18
 

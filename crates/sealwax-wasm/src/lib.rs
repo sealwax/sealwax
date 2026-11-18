@@ -1285,6 +1285,32 @@ impl Document {
             .map_err(|error| annots_error(&error))
     }
 
+    /// Give the field named `name` (its full name) another widget on page `pageIndex` (from 0),
+    /// at `rect` on the page as it shows (as `addField` takes it): the same field shown twice, on
+    /// one page or two, one value for both. The field keeps its kind, flags, value, maximum
+    /// length, label and choices; the widget takes the look of its first one, turned with its
+    /// own page.
+    ///
+    /// # Errors
+    /// A `RangeError` when no widget belongs to a field of that name, for a field that is no
+    /// text field, combo box, list box or check box, a page the document does not have, or a
+    /// rectangle without area.
+    #[wasm_bindgen(js_name = addWidget)]
+    pub fn add_widget(
+        &mut self,
+        name: &str,
+        page_index: usize,
+        #[wasm_bindgen(unchecked_param_type = "Box")] rect: Array,
+    ) -> Result<(), JsValue> {
+        let numbers: Vec<f64> = rect.iter().filter_map(|v| v.as_f64()).collect();
+        let [x1, y1, x2, y2] = numbers[..] else {
+            return Err(argument("rect must be [x1, y1, x2, y2]"));
+        };
+        sealwax_annots::add_widget(&mut self.inner, name, page_index, [x1, y1, x2, y2])
+            .map(|_| ())
+            .map_err(|error| annots_error(&error))
+    }
+
     /// Add a page for each photo of `photos` (JPEG or PNG), in order, after the document's
     /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of
     /// margin, the photo centered and fitted without being stretched; a JPEG embedded as it is,

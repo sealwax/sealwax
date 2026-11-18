@@ -301,7 +301,7 @@ fn text_of(doc: &Document, value: &Object) -> Result<Option<String>> {
 }
 
 /// The names of a widget's normal appearances, in the order of their bytes.
-fn states(doc: &Document, widget: &Dict) -> Result<Vec<Vec<u8>>> {
+pub(crate) fn states(doc: &Document, widget: &Dict) -> Result<Vec<Vec<u8>>> {
     Ok(match flatten::normal_appearance(doc, widget)? {
         Some(Normal::States(states)) => states
             .iter()
@@ -585,36 +585,13 @@ pub fn fill_fields_with(
                     if field_id != widget_id {
                         remove_key(doc, widget_id, "V")?;
                     }
-                    let Some(Object::Dict(dict)) = doc.object(widget_id)? else {
-                        continue;
-                    };
-                    let Some(rect) = pdf::rect(dict.get(b"Rect")) else {
-                        continue;
-                    };
                     let choice = kind != FieldKind::Text;
-                    let field = flatten::text_field(doc, &acro_form, &dict, choice)?;
-                    // Drawn in the widget's own frame: turned by `/MK /R`, its sides swap.
-                    let turns = flatten::widget_turns(doc, &dict)?;
-                    let (mut width, mut height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
-                    if turns % 2 == 1 {
-                        (width, height) = (height, width);
-                    }
-                    let (drawing, replaced) = draw::text_field(&field, width, height);
-                    filled.characters_replaced += replaced;
-                    let font_id = match font {
-                        Some(id) => id,
-                        None => *font.insert(doc.add_object(flatten::font_dict(Font::Helvetica))?),
+                    let Some(replaced) =
+                        draw_text_widget(doc, &acro_form, widget_id, choice, &mut font)?
+                    else {
+                        continue;
                     };
-                    let mut fonts = Dict::new();
-                    fonts.insert("Helv", Object::Ref(font_id));
-                    let mut resources = Dict::new();
-                    resources.insert("Font", fonts);
-                    let form = doc.add_object(flatten::turned_form_stream(
-                        &drawing, width, height, resources, turns,
-                    ))?;
-                    let mut appearances = Dict::new();
-                    appearances.insert("N", Object::Ref(form));
-                    set_key(doc, widget_id, "AP", Object::Dict(appearances))?;
+                    filled.characters_replaced += replaced;
                 }
                 _ => continue,
             }
@@ -622,6 +599,48 @@ pub fn fill_fields_with(
         }
     }
     Ok(filled)
+}
+
+/// Draw the appearance of widget `widget_id` of a text field (or of a choice field, `choice`)
+/// showing its field's value (`/V`, inherited), in the form's default appearance, in Helvetica
+/// (`font`, added once); returns the characters drawn as `?`, or `None` for a widget without a
+/// rectangle.
+pub(crate) fn draw_text_widget(
+    doc: &mut Document,
+    acro_form: &Dict,
+    widget_id: ObjId,
+    choice: bool,
+    font: &mut Option<ObjId>,
+) -> Result<Option<usize>> {
+    let Some(Object::Dict(dict)) = doc.object(widget_id)? else {
+        return Ok(None);
+    };
+    let Some(rect) = pdf::rect(dict.get(b"Rect")) else {
+        return Ok(None);
+    };
+    let field = flatten::text_field(doc, acro_form, &dict, choice)?;
+    // Drawn in the widget's own frame: turned by `/MK /R`, its sides swap.
+    let turns = flatten::widget_turns(doc, &dict)?;
+    let (mut width, mut height) = (rect.x2 - rect.x1, rect.y2 - rect.y1);
+    if turns % 2 == 1 {
+        (width, height) = (height, width);
+    }
+    let (drawing, replaced) = draw::text_field(&field, width, height);
+    let font_id = match *font {
+        Some(id) => id,
+        None => *font.insert(doc.add_object(flatten::font_dict(Font::Helvetica))?),
+    };
+    let mut fonts = Dict::new();
+    fonts.insert("Helv", Object::Ref(font_id));
+    let mut resources = Dict::new();
+    resources.insert("Font", fonts);
+    let form = doc.add_object(flatten::turned_form_stream(
+        &drawing, width, height, resources, turns,
+    ))?;
+    let mut appearances = Dict::new();
+    appearances.insert("N", Object::Ref(form));
+    set_key(doc, widget_id, "AP", Object::Dict(appearances))?;
+    Ok(Some(replaced))
 }
 
 /// Give each field `written` names the value it held before, unless it was changed since (its
