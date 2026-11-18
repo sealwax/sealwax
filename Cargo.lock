@@ -1388,6 +1388,7 @@ dependencies = [
  "flate2",
  "hayro-font",
  "hayro-interpret",
+ "png",
  "sealwax-core",
  "self_cell",
  "serde",

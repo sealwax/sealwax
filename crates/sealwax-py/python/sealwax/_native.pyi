@@ -93,6 +93,24 @@ class OutlineEntry(TypedDict):
     title: str
     page_number: int | None
 
+class PageImage(TypedDict):
+    bbox: tuple[float, float, float, float]
+    transform: tuple[float, float, float, float, float, float]
+    width: int
+    height: int
+    xref: int | None
+    color_space: str | None
+    bits_per_component: int | None
+    filters: list[str]
+    stencil: bool
+    masked: bool
+
+class ExtractedImage(TypedDict):
+    ext: Literal["jpeg", "jpx", "png"]
+    image: bytes
+    width: int
+    height: int
+
 class Link(TypedDict):
     rect: tuple[float, float, float, float]
     kind: Literal["page", "uri", "file", "named", "unknown"]
@@ -355,6 +373,8 @@ class Document:
     def drawings(self, page_index: int, annotations: bool = False) -> Drawings: ...
     def outline(self) -> list[OutlineEntry]: ...
     def links(self, page_index: int) -> list[Link]: ...
+    def images(self, page_index: int) -> list[PageImage]: ...
+    def extract_image(self, page_index: int, index: int) -> ExtractedImage: ...
     def page_labels(self) -> list[str] | None: ...
     def metadata(self) -> Metadata: ...
     def extract_pages(self, start: int, stop: int) -> bytes: ...

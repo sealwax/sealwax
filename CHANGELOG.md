@@ -8,6 +8,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- The images a page draws (`sealwax_text::images`; `images` in Python and WebAssembly), in the
+  order of its content, forms and inline images included: the box and matrix they are drawn
+  with, their size in pixels, object, colour space family, bits per component, filters, and
+  whether they are a stencil mask or masked. One extracted (`extract_image`; `extract_image` in
+  Python, `extractImage` in WebAssembly): the JPEG or JPEG 2000 file it is stored as when it has
+  no mask, decode array or other filter, else a PNG of its pixels with its soft mask as alpha.
+  On a corpus of 98 documents, boxes are PyMuPDF's on every image compared; PyMuPDF also counts
+  shadings and the images of soft masks, which are not images a page draws.
 - A page's user unit set (`Document::set_user_unit`; `set_user_unit` in Python), on a document
   built or opened: `/UserUnit` written on the page, 1 taking it away; `geometry` reports it at
   once.

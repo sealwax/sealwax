@@ -2,9 +2,12 @@
 and documents processed from several threads."""
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from conftest import build, stream
 from test_fields import encrypted_form
+
+import pytest
 
 import sealwax
 
@@ -194,3 +197,31 @@ def test_links_say_where_they_lead_and_pages_their_labels():
     assert links[0]["rect"] == (10, 20, 110, 40)
     assert document.links(1) == []
     assert document.page_labels() == ["i", "A-1"]
+
+
+def test_images_are_listed_and_extracted():
+    jpeg = (Path(__file__).parents[2] / "sealwax-text" / "tests" / "data" / "scan-16x16.jpg").read_bytes()
+    content = b"q 160 0 0 160 100 500 cm /J Do Q q 20 0 0 10 300 300 cm /P Do Q"
+    document = sealwax.Document.from_bytes(build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R "
+        "/Resources << /XObject << /J 5 0 R /P 6 0 R >> >> >>",
+        stream("", content),
+        stream("/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB "
+               "/BitsPerComponent 8 /Filter /DCTDecode", jpeg),
+        stream("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB "
+               "/BitsPerComponent 8 /Filter /ASCIIHexDecode", b"FF000000FF00>"),
+    ]))
+    found = document.images(0)
+    assert [(image["xref"], image["bbox"], image["filters"]) for image in found] == [
+        (5, (100.0, 500.0, 260.0, 660.0), ["DCTDecode"]),
+        (6, (300.0, 300.0, 320.0, 310.0), ["ASCIIHexDecode"]),
+    ]
+    assert found[0]["color_space"] == "DeviceRGB" and not found[0]["masked"]
+    stored = document.extract_image(0, 0)
+    assert (stored["ext"], stored["image"], stored["width"]) == ("jpeg", jpeg, 16)
+    decoded = document.extract_image(0, 1)
+    assert decoded["ext"] == "png" and decoded["image"].startswith(b"\x89PNG")
+    with pytest.raises(ValueError):
+        document.extract_image(0, 2)
