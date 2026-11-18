@@ -31,6 +31,7 @@ worker.
 | **Optimization** | Lossless size reduction: unfiltered streams compressed, unreachable objects dropped |
 | **Building** | A new document from nothing, as test fixtures are: pages of a given size, crop box and user unit, text in the standard fonts, lines, rectangles, links, fields, outline, information and XMP. Photos (JPEG, PNG) made pages, as a phone's photos are printed |
 | **Composition** | A new document written from pages another engine laid out: glyphs placed one by one, paths, clips, gradients, pictures, links; fonts (TrueType or CFF, from a file or a collection) embedded as subsets whose text reads back; tagged content and its structure tree, bookmarks |
+| **Conversion** | Word documents (DOCX) converted to PDF, in the Python package (`docx_to_pdf`): laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by the composition above with Word's structure tagged and its fonts embedded as subsets; what the PDF could not hold, and what the layout drew that sealwax does not take yet, counted. The older binary `.doc` format is not read: save it as DOCX first. Convert documents you do not trust with `sealwax.isolated` |
 | **Python** | Bindings for all of the above (Python 3.12+, `abi3`). The interpreter lock is released while sealwax works. An `isolated` helper runs an operation in a process of its own |
 | **WebAssembly** | The npm package `sealwax`, for browsers, web views, workers and Node: forms, annotations, rendering, text and drawings, redaction, pages, photos made PDF. It works on bytes in memory and never reaches the network ([its README](crates/sealwax-wasm/README.md)) |
 
@@ -107,6 +108,7 @@ limits = sealwax.Limits(timeout=60)
 pages = sealwax.read_geometry(data, max_pages=1000, limits=limits)
 archived, report = sealwax.pdfa_convert(data, level="3a", limits=limits)
 flattened = sealwax.flatten_bytes(data, limits=limits)
+converted, left_out = sealwax.docx_to_pdf(open("in.docx", "rb").read(), limits=limits)
 
 document = sealwax.Document.from_bytes(data, limits=limits)
 image = document.render_png(0, scale=150 / 72)  # PNG bytes, 150 dpi
