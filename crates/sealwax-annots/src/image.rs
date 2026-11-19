@@ -67,9 +67,14 @@ pub(crate) fn decode_within(png: &[u8], max_pixels: u64) -> Result<Decoded, Pict
         return Err(PictureError::NotPng);
     }
     let unreadable = |_| PictureError::Unreadable;
-    // An RGBA picture of `max_pixels` and its rows.
-    let bytes = usize::try_from(max_pixels.saturating_mul(5)).unwrap_or(usize::MAX);
+    // In addition to the rows, even a one-pixel PNG can have 256 RGB palette entries
+    // and 256 alpha entries. Allow space to buffer and retain those tables.
+    let bytes = usize::try_from(max_pixels.saturating_mul(5))
+        .unwrap_or(usize::MAX)
+        .saturating_add(2 * 256 * 4);
     let mut decoder = Decoder::new_with_limits(Cursor::new(png), Limits { bytes });
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(true);
     decoder.set_transformations(Transformations::normalize_to_color8());
     let header = decoder.read_header_info().map_err(unreadable)?;
     let (width, height) = (header.width, header.height);

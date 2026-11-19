@@ -8,6 +8,9 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Added
 
+- Draw a JPEG or PNG on an existing page with `insert_image` in Rust and Python or
+  `insertImage` in WebAssembly. The image fits inside a rectangle in default PDF user
+  space and can also be stretched to fill it. JPEG bytes and PNG transparency are preserved.
 - Python signing, verification, document timestamps and validation data accept `limits`.
   The timeout covers local processing and excludes calls to key providers and network services.
 

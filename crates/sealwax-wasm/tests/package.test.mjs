@@ -304,6 +304,25 @@ test("a field is given another widget, on another page, one value for both", () 
   assert.throws(() => doc.addWidget("name", 1, [20, 20]), RangeError);
 });
 
+test("an existing page accepts a fitted or stretched image within its pixel budget", () => {
+  const png = new Uint8Array(readFileSync(new URL("../../sealwax-annots/tests/data/photo-12x10-alpha.png", import.meta.url)));
+  const pdf = build([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+  ]);
+  const doc = Document.fromBytes(pdf);
+  doc.insertImage(0, [10, 20, 130, 140], png);
+  doc.insertImage(0, [10, 20, 130, 140], png, false);
+  const images = Document.fromBytes(doc.save()).images(0);
+  assert.deepEqual(images.map((i) => i.bbox), [[10, 30, 130, 130], [10, 20, 130, 140]]);
+  assert.ok(images.every((i) => i.masked));
+  assert.throws(() => doc.insertImage(0, [1, 2, 3], png), RangeError);
+  const limited = Document.fromBytes(pdf, { limits: { maxImagePixels: 119 } });
+  assert.throws(() => limited.insertImage(0, [0, 0, 40, 30], png), PdfLimitError);
+  assert.deepEqual(limited.images(0), []);
+});
+
 test("photos become pages, those that cannot be read are named", () => {
   const data = new URL("../../sealwax-annots/tests/data/", import.meta.url);
   const jpeg = new Uint8Array(readFileSync(new URL("photo-40x20-exif6.jpg", data)));

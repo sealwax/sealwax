@@ -1363,6 +1363,35 @@ impl Document {
         run(py, || Ok(inner.set_xmp(&packet)?))
     }
 
+    /// Draw JPEG or PNG bytes in (left, bottom, right, top) in default PDF user space.
+    /// The image is centered and fitted by default. Set keep_proportion=False to stretch it.
+    #[pyo3(signature = (page_index, rect, data, *, keep_proportion=true))]
+    fn insert_image(
+        &mut self,
+        py: Python<'_>,
+        page_index: usize,
+        rect: (f64, f64, f64, f64),
+        data: &[u8],
+        keep_proportion: bool,
+    ) -> PyResult<()> {
+        let rect = pdf::Rect {
+            x1: rect.0,
+            y1: rect.1,
+            x2: rect.2,
+            y2: rect.3,
+        };
+        let inner = &mut self.inner;
+        run(py, || {
+            Ok(pdf::annots::insert_image(
+                inner,
+                page_index,
+                rect,
+                data,
+                keep_proportion,
+            )?)
+        })
+    }
+
     /// Add a page for each photo of `photos` (JPEG or PNG bytes), in order, after the document's
     /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of margin,
     /// the photo centered and fitted without being stretched. A JPEG is embedded as it is, never

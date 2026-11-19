@@ -42,6 +42,7 @@ export async function use(bytes: Uint8Array): Promise<number> {
   const files: Attachment[] = doc.attachments();
   const first: Uint8Array | null = files.length > 0 ? doc.attachmentData(0) : null;
   const pictures: PageImage[] = doc.images(0);
+  doc.insertImage(0, [10, 20, 110, 80], bytes);
   const picture: ExtractedImage | null = pictures.length > 0 ? doc.extractImage(0, 0) : null;
   const boxes = drawn.rectangles.filter((r) => r.stroked && !r.filled).map((r) => r.box);
   const glyphs: Glyph[] = doc.glyphs(0);

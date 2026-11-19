@@ -40,3 +40,9 @@ Invisible OCR text inside these bounds remains searchable.
 a keyword-only `limits` argument. Explicit limits are checked before contacting a key
 provider or network service. The deadline counts local PDF processing, including hashing.
 Configure network and HSM timeouts on those clients.
+
+`doc.insert_image(0, (36, 36, 180, 108), image_bytes)` draws a JPEG or PNG over the
+first page. The rectangle gives the left, bottom, right and top edges in default PDF
+user space, before page rotation. The image is centered and keeps its proportions.
+Pass `keep_proportion=False` to fill the rectangle. JPEG orientation and PNG transparency
+are honored, and the document's `max_image_pixels` applies.

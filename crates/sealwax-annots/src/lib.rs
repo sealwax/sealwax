@@ -49,7 +49,7 @@ pub use fields::{
 pub use flatten::Flattened;
 pub use font::TextFonts;
 pub use image::{MAX_PIXELS, PictureError};
-pub use photos::{PhotoPages, add_photo_pages, photos_document};
+pub use photos::{PhotoPages, add_photo_pages, insert_image, photos_document};
 pub use redactions::{Redactions, apply_redactions};
 pub use template::{Cleared, TemplateContent, TemplateOptions, clear_template, template_content};
 
