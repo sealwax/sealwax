@@ -14,11 +14,12 @@ publish = false
 [dependencies]
 sealwax-core.workspace = true
 sealwax-compose.workspace = true
-# DOCX laid out to a display list (Apache-2.0), proposed upstream in sverrejb/docxide-pdf#168;
-# here with its marked content, structure tree, outline and PDF/UA claim. Branch `sealwax-crate`
-# of the fork holds snapshots of the files docxide-pdf publishes on crates.io, taken from its
-# branch `sealwax`, without the repository's history (1.4 GB with its fixtures).
-docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "c7ab58b16605b3f4a3678e3b0588e9aa6d00686b", default-features = false }
+# DOCX laid out to a display list (Apache-2.0): upstream since sverrejb/docxide-pdf#168, not yet
+# released; here with its marked content, structure tree, outline and PDF/UA claim, to be proposed
+# upstream from the fork's branch `display-tags`. Branch `sealwax-crate` of the fork holds snapshots
+# of the files docxide-pdf publishes on crates.io, without the repository's history (1.4 GB with
+# its fixtures).
+docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "52246292e6c14afe294e7606de7d7d3770f1e101", default-features = false }
 thiserror.workspace = true
 # The archive's parts and their sizes, read before the layout: the same crate docxide-pdf reads
 # them with, so both see the same parts.

@@ -4,9 +4,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use sealwax_convert::{DocxOptions, Error, docx_to_pdf, layout_docx};
+use sealwax_convert::{DocxOptions, Error, composition, display, docx_to_pdf, layout_docx};
 use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, OutlineEntry, SaveOptions};
 
 const TWO_PAGES: &[u8] = include_bytes!("data/two-pages.docx");
@@ -123,6 +124,24 @@ fn a_plain_document_is_described_and_written_whole() {
     let converted = docx_to_pdf(TWO_PAGES, &DocxOptions::default(), &Limits::default()).unwrap();
     assert!(converted.not_described.is_empty());
     assert_eq!(converted.composed.skipped.iter().count(), 0);
+}
+
+#[test]
+fn what_the_layout_does_not_describe_is_reported_by_name() {
+    let mut laid_out = display::Document::default();
+    laid_out
+        .unsupported
+        .insert(display::Unsupported::Pattern, 2);
+    laid_out
+        .unsupported
+        .insert(display::Unsupported::MarkedContent, 1);
+    assert_eq!(
+        composition(&laid_out).not_described,
+        BTreeMap::from([
+            ("marked content not described", 1),
+            ("pattern not described", 2)
+        ])
+    );
 }
 
 #[test]
