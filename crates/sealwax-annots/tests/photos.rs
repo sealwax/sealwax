@@ -3,8 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use sealwax_annots::{add_photo_pages, photos_document};
-use sealwax_core::{Document, Limits, Object, OpenOptions, SaveOptions};
+use sealwax_annots::{add_photo_pages, insert_image, photos_document};
+use sealwax_core::{Document, Error, Limits, Object, OpenOptions, Rect, SaveOptions};
 
 const LANDSCAPE_EXIF6: &[u8] = include_bytes!("data/photo-40x20-exif6.jpg");
 const CMYK: &[u8] = include_bytes!("data/photo-8x8-cmyk.jpg");
@@ -93,4 +93,82 @@ fn the_limits_apply_and_no_photo_read_is_no_document() {
     let report = add_photo_pages(&mut doc, &[ALPHA, ALPHA]).unwrap();
     assert_eq!(report.added, 2);
     assert_eq!(reopened(&doc).page_count(), 3);
+}
+
+#[test]
+fn inserting_images_keeps_the_existing_page_and_its_images() {
+    let (original, _) = photos_document(&[CMYK], Limits::default()).unwrap();
+    let mut doc = reopened(&original);
+    let geometry = doc.geometry();
+    let before = sealwax_text::images(&doc, 0).unwrap();
+    let rect = Rect::from_corners(10.0, 20.0, 130.0, 100.0);
+    insert_image(&mut doc, 0, rect, LANDSCAPE_EXIF6, true).unwrap();
+    insert_image(&mut doc, 0, rect, ALPHA, false).unwrap();
+    let doc = Document::open(doc.save_incremental().unwrap(), &OpenOptions::default()).unwrap();
+    assert_eq!(doc.geometry(), geometry);
+    let images = sealwax_text::images(&doc, 0).unwrap();
+    assert_eq!(&images[..1], before.as_slice());
+    assert_eq!(images.len(), 3);
+    assert_eq!(images[1].bbox, [50.0, 20.0, 90.0, 100.0]);
+    assert_eq!(images[1].filters, ["DCTDecode"]);
+    assert_eq!(
+        sealwax_text::extract_image(&doc, 0, 1).unwrap().data,
+        LANDSCAPE_EXIF6
+    );
+    assert_eq!(images[2].bbox, [10.0, 20.0, 130.0, 100.0]);
+    assert!(images[2].masked);
+}
+
+#[test]
+fn a_refused_image_leaves_the_page_unchanged_and_the_pixel_limit_is_inclusive() {
+    for (data, pixels) in [(LANDSCAPE_EXIF6, 800), (ALPHA, 120)] {
+        let mut limits = Limits::default();
+        limits.max_image_pixels = pixels - 1;
+        let mut doc = Document::empty_with(limits).unwrap();
+        doc.add_page(200.0, 200.0).unwrap();
+        let before = doc.save(&SaveOptions::default()).unwrap();
+        let rect = Rect::from_corners(2.0, 3.0, 15.0, 17.0);
+        assert!(matches!(
+            insert_image(&mut doc, 0, rect, data, true),
+            Err(sealwax_annots::Error::Pdf(Error::LimitExceeded {
+                what: "max_image_pixels"
+            }))
+        ));
+        assert!(insert_image(&mut doc, 0, rect, b"", true).is_err());
+        assert!(insert_image(&mut doc, 1, rect, data, true).is_err());
+        assert_eq!(doc.save(&SaveOptions::default()).unwrap(), before);
+        limits.max_image_pixels = pixels;
+        let mut doc = Document::open(before, &OpenOptions::default().limits(limits)).unwrap();
+        insert_image(&mut doc, 0, rect, data, true).unwrap();
+    }
+}
+
+#[test]
+fn a_single_palette_pixel_keeps_its_transparency_at_the_limit() {
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 1, 1);
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_palette(vec![127; 256 * 3]);
+        encoder.set_trns(vec![128; 256]);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[0])
+            .unwrap();
+    }
+    let mut limits = Limits::default();
+    limits.max_image_pixels = 1;
+    let mut doc = Document::empty_with(limits).unwrap();
+    doc.add_page(10.0, 10.0).unwrap();
+    insert_image(
+        &mut doc,
+        0,
+        Rect::from_corners(0.0, 0.0, 5.0, 5.0),
+        &png,
+        true,
+    )
+    .unwrap();
+    assert!(sealwax_text::images(&doc, 0).unwrap()[0].masked);
 }

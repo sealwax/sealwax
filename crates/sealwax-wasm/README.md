@@ -127,6 +127,12 @@ page and omit character boxes outside the page crop or the bounding boxes of act
 clipping paths, including form and annotation appearance boxes. Invisible OCR text
 inside these bounds remains searchable.
 
+`doc.insertImage(0, [36, 36, 180, 108], imageBytes)` draws JPEG or PNG bytes over the
+first page. The rectangle gives the left, bottom, right and top edges in default PDF
+user space, before page rotation. The image is centered and keeps its proportions.
+Pass `false` as the fourth argument to fill the rectangle. JPEG orientation and PNG
+transparency are honored, and the document's `maxImagePixels` applies.
+
 ## Limits and panics
 
 Every operation runs within bounds (operators, image pixels, decoded bytes, annotations, rendered

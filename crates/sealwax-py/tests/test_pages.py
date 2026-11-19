@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from conftest import build, stream
 
 import sealwax
@@ -56,6 +57,48 @@ def test_documents_are_inserted_and_merged_with_their_forms_renamed():
 
 
 PHOTOS = Path(__file__).resolve().parents[2] / "sealwax-annots" / "tests" / "data"
+
+
+def test_insert_image_on_a_rotated_page_with_shared_resources():
+    original = build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [10 20 250 220] "
+        "/CropBox [20 30 220 190] /Rotate 90 /Resources << /XObject 6 0 R >> >>",
+        "<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>",
+        "<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>",
+        stream("", b"1 0 0 1 55 30 cm /SwFlat1 Do 0 0 1 1 re W n"),
+        "<< /SwFlat1 7 0 R >>",
+        stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+               bytes([255, 0, 0])),
+    ])
+    doc = sealwax.Document.from_bytes(original)
+    png = (PHOTOS / "photo-12x10-alpha.png").read_bytes()
+    before = doc.images(1)
+    original_pixels = doc.render_rgba(0, 1)[2]
+    doc.insert_image(0, (30, 40, 150, 160), png)
+    assert doc.render_rgba(0, 1)[2] != original_pixels
+    saved = doc.save_incremental()
+    assert saved.startswith(original)
+    doc = sealwax.Document.from_bytes(saved)
+    assert doc.page_count == 2 and doc.geometry()[0].rotation == 90
+    assert doc.images(1) == before
+    first, added = doc.images(0)
+    assert first == before[0]
+    assert added["bbox"] == pytest.approx((30, 50, 150, 150))
+    assert added["masked"]
+
+
+def test_insert_image_can_stretch_and_refuses_invalid_rectangles():
+    doc = sealwax.Document.new()
+    doc.add_page(200, 200)
+    jpeg = (PHOTOS / "photo-40x20-exif6.jpg").read_bytes()
+    for rect in [(1, 1, 1, 2), (3, 4, 1, 2), (0, 0, float("nan"), 2)]:
+        with pytest.raises(ValueError):
+            doc.insert_image(0, rect, jpeg)
+    doc.insert_image(0, (20, 30, 100, 50), jpeg, keep_proportion=False)
+    image, = doc.images(0)
+    assert image["transform"] == pytest.approx((0, -20, 80, 0, 20, 50))
+    assert doc.extract_image(0, 0)["image"] == jpeg
 
 
 def test_photos_become_pages_turned_as_they_show():

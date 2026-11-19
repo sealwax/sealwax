@@ -1422,6 +1422,43 @@ impl Document {
             .map_err(|error| annots_error(&error))
     }
 
+    /// Draw JPEG or PNG bytes in [left, bottom, right, top] in default PDF user space.
+    /// Fits and centers the image. Pass false as the fourth argument to stretch it.
+    ///
+    /// # Errors
+    /// A `RangeError` for invalid arguments or a `PdfLimitError` past the pixel budget.
+    #[wasm_bindgen(js_name = insertImage)]
+    pub fn insert_image(
+        &mut self,
+        page_index: usize,
+        #[wasm_bindgen(unchecked_param_type = "Box")] rect: Array,
+        data: &[u8],
+        keep_proportion: Option<bool>,
+    ) -> Result<(), JsValue> {
+        if !Array::is_array(&rect) || rect.length() != 4 {
+            return Err(argument("rect must be [left, bottom, right, top]"));
+        }
+        let coord = |i| {
+            rect.get(i)
+                .as_f64()
+                .ok_or_else(|| argument("rect coordinates must be numbers"))
+        };
+        let rect = Rect {
+            x1: coord(0)?,
+            y1: coord(1)?,
+            x2: coord(2)?,
+            y2: coord(3)?,
+        };
+        sealwax_annots::insert_image(
+            &mut self.inner,
+            page_index,
+            rect,
+            data,
+            keep_proportion.unwrap_or(true),
+        )
+        .map_err(|error| annots_error(&error))
+    }
+
     /// Add a page for each photo of `photos` (JPEG or PNG), in order, after the document's
     /// pages: a US Letter sheet, portrait or landscape as the photo shows, half an inch of
     /// margin, the photo centered and fitted without being stretched; a JPEG embedded as it is,
