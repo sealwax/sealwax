@@ -49,6 +49,7 @@ mod tsp;
 mod verify;
 
 use der::asn1::SetOfVec;
+use sealwax_core::{Document, Limits, OpenOptions};
 use sha2::Digest;
 use x509_cert::attr::Attribute;
 
@@ -89,7 +90,7 @@ pub enum Error {
     Timestamp(#[from] TimestampError),
     /// The validation data of a signature could not be gathered.
     #[error(transparent)]
-    Validation(ValidationError),
+    Validation(#[from] ValidationError),
     /// A signature of the document is not intact ([`verify_signatures`]): nothing is added over
     /// it.
     #[error("the signature in field {field:?} is not intact: {problem}")]
@@ -281,6 +282,32 @@ pub struct Prepared {
     certificates: Vec<x509_cert::Certificate>,
 }
 
+/// A PDF opened for signing or verification. Explicit limits are checked before any external
+/// service is called. Keep one deadline across reading, hashing and writing the revision.
+#[derive(Debug)]
+pub struct SigningInput {
+    doc: Document,
+}
+
+impl SigningInput {
+    /// Open the original bytes and check the pages when the caller requests processing limits.
+    pub fn open(bytes: Vec<u8>, limits: Option<Limits>) -> Result<Self> {
+        let doc = Document::open(
+            bytes,
+            &OpenOptions::default().limits(limits.unwrap_or_default()),
+        )?;
+        if limits.is_some() {
+            doc.check_pages()?;
+        }
+        Ok(Self { doc })
+    }
+
+    /// Exclude a caller's key-provider lookup from the local processing deadline.
+    pub fn external_call<T>(&mut self, call: impl FnOnce() -> T) -> T {
+        self.doc.external_call(call)
+    }
+}
+
 /// Lay out the signature's revision of `pdf` for the signer whose certificate (DER) is
 /// `certificate`, with the rest of its chain `chain` (intermediates, the root if wanted).
 ///
@@ -295,32 +322,48 @@ pub fn prepare(
     algorithm: Algorithm,
     options: &Options,
 ) -> Result<Prepared> {
-    if !options.allow_broken_signatures {
-        refuse_broken(pdf)?;
+    SigningInput::open(pdf.to_vec(), None)?.prepare(certificate, chain, algorithm, options)
+}
+
+impl SigningInput {
+    fn prepare(
+        &mut self,
+        certificate: &[u8],
+        chain: &[Vec<u8>],
+        algorithm: Algorithm,
+        options: &Options,
+    ) -> Result<Prepared> {
+        if !options.allow_broken_signatures {
+            self.refuse_broken()?;
+        }
+        let signer = cms::certificate(certificate)?;
+        let mut certificates = vec![signer.clone()];
+        for der in chain {
+            certificates.push(cms::certificate(der)?);
+        }
+        let time = options.signing_time.unwrap_or_else(date::now);
+        let laid = pdf::lay_out(&mut self.doc, options, &pdf_date(time))?;
+        let digest_algorithm = algorithm.digest_algorithm();
+        let mut hasher = digest_algorithm.hasher();
+        for part in laid.signed_parts() {
+            for chunk in part.chunks(256 * 1024) {
+                self.doc.check_time()?;
+                hasher.update(chunk);
+            }
+        }
+        self.doc.check_time()?;
+        let message_digest = hasher.finish();
+        let attributes = cms::signed_attributes(&message_digest, &signer, certificate)?;
+        let digest = cms::digest_to_sign(&attributes, digest_algorithm)?;
+        Ok(Prepared {
+            laid,
+            attributes,
+            digest,
+            algorithm,
+            signer,
+            certificates,
+        })
     }
-    let signer = cms::certificate(certificate)?;
-    let mut certificates = vec![signer.clone()];
-    for der in chain {
-        certificates.push(cms::certificate(der)?);
-    }
-    let time = options.signing_time.unwrap_or_else(date::now);
-    let laid = pdf::lay_out(pdf, options, &pdf_date(time))?;
-    let digest_algorithm = algorithm.digest_algorithm();
-    let mut hasher = digest_algorithm.hasher();
-    for part in laid.signed_parts() {
-        hasher.update(part);
-    }
-    let message_digest = hasher.finish();
-    let attributes = cms::signed_attributes(&message_digest, &signer, certificate)?;
-    let digest = cms::digest_to_sign(&attributes, digest_algorithm)?;
-    Ok(Prepared {
-        laid,
-        attributes,
-        digest,
-        algorithm,
-        signer,
-        certificates,
-    })
 }
 
 impl Prepared {
@@ -352,16 +395,24 @@ impl Prepared {
     /// # Errors
     /// [`Error::ContentsTooLarge`] when the signature does not fit; [`Error::Timestamp`] for a
     /// token that is not DER; [`Error::Signer`] for an ECDSA value that is neither form.
-    pub fn finalize(mut self, signature: &[u8], timestamp_token: Option<&[u8]>) -> Result<Vec<u8>> {
-        let signature = if self.algorithm.is_ecdsa() {
-            cms::ecdsa_der(signature, &self.signer)?
+    pub fn finalize(self, signature: &[u8], timestamp_token: Option<&[u8]>) -> Result<Vec<u8>> {
+        let signature = self.encoded_signature(signature)?;
+        self.finish(&signature, timestamp_token)
+    }
+
+    fn encoded_signature(&self, signature: &[u8]) -> Result<Vec<u8>> {
+        if self.algorithm.is_ecdsa() {
+            cms::ecdsa_der(signature, &self.signer)
         } else {
-            signature.to_vec()
-        };
+            Ok(signature.to_vec())
+        }
+    }
+
+    fn finish(mut self, signature: &[u8], timestamp_token: Option<&[u8]>) -> Result<Vec<u8>> {
         let cms = cms::signed_data(
             self.attributes,
             self.algorithm,
-            &signature,
+            signature,
             &self.signer,
             &self.certificates,
             timestamp_token,
@@ -440,15 +491,19 @@ impl Prepared {
     /// # Errors
     /// As [`TimestampRequest::new`].
     pub fn timestamp_request(&self, signature: &[u8]) -> Result<TimestampRequest> {
-        TimestampRequest::new(signature)
+        TimestampRequest::new(&self.encoded_signature(signature)?)
     }
 }
 
-fn timestamp(signature: &[u8], timestamping: &Timestamping<'_>) -> Result<Timestamp> {
+fn timestamp(
+    doc: &mut Document,
+    signature: &[u8],
+    timestamping: &Timestamping<'_>,
+) -> Result<Timestamp> {
     let request = TimestampRequest::new(signature)?;
-    let response = timestamping
-        .client
-        .timestamp(request.to_der())
+    doc.check_time()?;
+    let response = doc
+        .external_call(|| timestamping.client.timestamp(request.to_der()))
         .map_err(TimestampError::Client)?;
     Ok(request.check_response(&response, timestamping.trust)?)
 }
@@ -464,43 +519,61 @@ pub fn sign(
     options: &Options,
     timestamping: Option<&Timestamping<'_>>,
 ) -> Result<Signed> {
-    let prepared = prepare(
-        pdf,
-        signer.certificate(),
-        signer.chain(),
-        signer.algorithm(),
-        options,
-    )?;
-    let value = signer
-        .sign(&prepared.message()?, prepared.digest())
-        .map_err(Error::Signer)?;
-    let (timestamp, timestamp_error) = match timestamping {
-        None => (None, None),
-        Some(timestamping) => match (timestamp(&value, timestamping), timestamping.policy) {
-            (Ok(timestamp), _) => (Some(timestamp), None),
-            (Err(Error::Timestamp(error)), Policy::BestEffort) => (None, Some(error)),
-            (Err(error), _) => return Err(error),
-        },
-    };
-    let pdf = prepared.finalize(&value, timestamp.as_ref().map(|t| t.token.as_slice()))?;
-    Ok(Signed {
-        pdf,
-        timestamp,
-        timestamp_error,
-    })
+    SigningInput::open(pdf.to_vec(), None)?.sign(signer, options, timestamping)
 }
 
-/// [`Error::BrokenSignature`] for the first signature of `pdf` that is not intact.
-fn refuse_broken(pdf: &[u8]) -> Result<()> {
-    for check in verify_signatures(pdf)? {
-        if let Integrity::Broken(problem) = check.integrity {
-            return Err(Error::BrokenSignature {
-                field: check.field,
-                problem,
-            });
-        }
+impl SigningInput {
+    /// Sign the checked document with the given external key.
+    pub fn sign(
+        mut self,
+        signer: &dyn Signer,
+        options: &Options,
+        timestamping: Option<&Timestamping<'_>>,
+    ) -> Result<Signed> {
+        self.doc.check_time()?;
+        let (certificate, chain, algorithm) = self
+            .doc
+            .external_call(|| (signer.certificate(), signer.chain(), signer.algorithm()));
+        let prepared = self.prepare(certificate, chain, algorithm, options)?;
+        let message = prepared.message()?;
+        self.doc.check_time()?;
+        let raw = self
+            .doc
+            .external_call(|| signer.sign(&message, prepared.digest()))
+            .map_err(Error::Signer)?;
+        let value = prepared.encoded_signature(&raw)?;
+        let (timestamp, timestamp_error) = match timestamping {
+            None => (None, None),
+            Some(timestamping) => match (
+                timestamp(&mut self.doc, &value, timestamping),
+                timestamping.policy,
+            ) {
+                (Ok(timestamp), _) => (Some(timestamp), None),
+                (Err(Error::Timestamp(error)), Policy::BestEffort) => (None, Some(error)),
+                (Err(error), _) => return Err(error),
+            },
+        };
+        let pdf = prepared.finish(&value, timestamp.as_ref().map(|t| t.token.as_slice()))?;
+        self.doc.check_time()?;
+        Ok(Signed {
+            pdf,
+            timestamp,
+            timestamp_error,
+        })
     }
-    Ok(())
+
+    /// [`Error::BrokenSignature`] for the first signature of `pdf` that is not intact.
+    fn refuse_broken(&self) -> Result<()> {
+        for check in self.verify_signatures()? {
+            if let Integrity::Broken(problem) = check.integrity {
+                return Err(Error::BrokenSignature {
+                    field: check.field,
+                    problem,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The room a document timestamp's token gets at first: a token with its authority's
@@ -527,25 +600,47 @@ pub fn add_document_timestamp(
     client: &dyn TimestampClient,
     trust: &Trust,
 ) -> Result<(Vec<u8>, Timestamp)> {
-    refuse_broken(pdf)?;
-    let mut reserved = TIMESTAMP_RESERVED;
-    for _ in 0..2 {
-        let mut laid = pdf::lay_out_timestamp(pdf, field_name, reserved)?;
-        let request = TimestampRequest::over_parts(&laid.signed_parts())?;
-        let response = client
-            .timestamp(request.to_der())
-            .map_err(TimestampError::Client)?;
-        let timestamp = request.check_response(&response, trust)?;
-        match pdf::fill(&mut laid, &timestamp.token) {
-            Ok(()) => return Ok((laid.data, timestamp)),
-            Err(Error::ContentsTooLarge { needed, .. }) => reserved = needed + 1024,
-            Err(error) => return Err(error),
+    SigningInput::open(pdf.to_vec(), None)?.add_document_timestamp(field_name, client, trust)
+}
+
+impl SigningInput {
+    /// Append a timestamp over the new revision, excluding the authority's response time.
+    pub fn add_document_timestamp(
+        mut self,
+        field_name: &str,
+        client: &dyn TimestampClient,
+        trust: &Trust,
+    ) -> Result<(Vec<u8>, Timestamp)> {
+        self.refuse_broken()?;
+        let mut reserved = TIMESTAMP_RESERVED;
+        for _ in 0..2 {
+            let mut laid = pdf::lay_out_timestamp(&mut self.doc, field_name, reserved)?;
+            let request = TimestampRequest::over_parts(&laid.signed_parts(), self.doc.limits())?;
+            let response = self
+                .doc
+                .external_call(|| client.timestamp(request.to_der()))
+                .map_err(TimestampError::Client)?;
+            let timestamp = request.check_response(&response, trust)?;
+            match pdf::fill(&mut laid, &timestamp.token) {
+                Ok(()) => {
+                    self.doc.check_time()?;
+                    return Ok((laid.data, timestamp));
+                }
+                Err(Error::ContentsTooLarge { needed, .. }) => {
+                    reserved = needed + 1024;
+                    self.doc = Document::open(
+                        self.doc.hayro().data().as_ref().to_vec(),
+                        &OpenOptions::default().limits(*self.doc.limits()),
+                    )?;
+                }
+                Err(error) => return Err(error),
+            }
         }
+        Err(Error::ContentsTooLarge {
+            needed: reserved,
+            reserved,
+        })
     }
-    Err(Error::ContentsTooLarge {
-        needed: reserved,
-        reserved,
-    })
 }
 
 /// For fuzzing only: `data` read as a certificate, its issuer's certificate, then an OCSP

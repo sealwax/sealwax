@@ -42,6 +42,15 @@ pub(crate) fn sign_error(py: Python<'_>, error: pdf::sign::Error) -> PyErr {
     }
 }
 
+fn signing_input(
+    py: Python<'_>,
+    bytes: Vec<u8>,
+    limits: Option<PyRef<'_, crate::Limits>>,
+) -> PyResult<pdf::sign::SigningInput> {
+    let limits = limits.as_deref().map(crate::Limits::counted_from_now);
+    run(py, || Ok(pdf::sign::SigningInput::open(bytes, limits)?))
+}
+
 /// The first exception a Python object raised while Rust code called it.
 #[derive(Default)]
 struct Raised(Mutex<Option<PyErr>>);
@@ -322,6 +331,7 @@ impl Signed {
     signing_time=None,
     timestamp=None,
     allow_broken_signatures=false,
+    limits=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn sign<'py>(
@@ -336,8 +346,10 @@ fn sign<'py>(
     signing_time: Option<i64>,
     timestamp: Option<PyRef<'py, Timestamping>>,
     allow_broken_signatures: bool,
+    limits: Option<PyRef<'py, crate::Limits>>,
 ) -> PyResult<Signed> {
-    let signer = PySigner::new(signer)?;
+    let mut input = signing_input(py, pdf_content, limits)?;
+    let signer = input.external_call(|| PySigner::new(signer))?;
     let kind = if certify {
         pdf::sign::Kind::certification()
     } else {
@@ -373,7 +385,7 @@ fn sign<'py>(
                     trust,
                     policy: *policy,
                 });
-        let signed = pdf::sign::sign(&pdf_content, &signer, &options, timestamping.as_ref());
+        let signed = input.sign(&signer, &options, timestamping.as_ref());
         // What a Python object raised goes out as it was raised.
         if let Some(error) = signer.raised.take() {
             return Err(Failure::Python(error));
@@ -410,7 +422,8 @@ fn sign<'py>(
 /// Returns the PDF and what was added: `certificates`, `ocsp_responses`, `crls`. Raises
 /// ValidationError when a certificate is revoked, untrusted, or nothing tells whether it is.
 #[pyfunction]
-#[pyo3(signature = (pdf_content, field, *, fetcher, roots, intermediates=Vec::new(), time=None))]
+#[pyo3(signature = (pdf_content, field, *, fetcher, roots, intermediates=Vec::new(), time=None, limits=None))]
+#[allow(clippy::too_many_arguments)]
 fn add_validation_data<'py>(
     py: Python<'py>,
     pdf_content: Vec<u8>,
@@ -419,7 +432,9 @@ fn add_validation_data<'py>(
     roots: Vec<Vec<u8>>,
     intermediates: Vec<Vec<u8>>,
     time: Option<i64>,
+    limits: Option<PyRef<'py, crate::Limits>>,
 ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyDict>)> {
+    let input = signing_input(py, pdf_content, limits)?;
     let trust = trust(&roots, &intermediates)?;
     let fetcher = PyFetcher { object: fetcher };
     let (data, coverage) = run(py, || {
@@ -428,11 +443,7 @@ fn add_validation_data<'py>(
             trust: &trust,
             time,
         };
-        Ok(pdf::sign::add_validation_data(
-            &pdf_content,
-            &field,
-            &validation,
-        )?)
+        Ok(input.add_validation_data(&field, &validation)?)
     })?;
     let dict = PyDict::new(py);
     dict.set_item("certificates", coverage.certificates)?;
@@ -452,20 +463,22 @@ fn add_validation_data<'py>(
 /// timestamp is had or the one had is not accepted, SignatureError otherwise; an exception the
 /// client raises is raised as is.
 #[pyfunction]
-#[pyo3(signature = (pdf_content, timestamp, *, field="DocTimeStamp1".to_owned()))]
+#[pyo3(signature = (pdf_content, timestamp, *, field="DocTimeStamp1".to_owned(), limits=None))]
 fn add_document_timestamp(
     py: Python<'_>,
     pdf_content: Vec<u8>,
     timestamp: PyRef<'_, Timestamping>,
     field: String,
+    limits: Option<PyRef<'_, crate::Limits>>,
 ) -> PyResult<Signed> {
+    let input = signing_input(py, pdf_content, limits)?;
     let client = PyClient {
         object: timestamp.client.clone_ref(py),
         raised: Raised::default(),
     };
     let trust = trust(&timestamp.roots, &timestamp.intermediates)?;
     let (data, stamp) = run(py, || {
-        match pdf::sign::add_document_timestamp(&pdf_content, &field, &client, &trust) {
+        match input.add_document_timestamp(&field, &client, &trust) {
             Err(pdf::sign::Error::Timestamp(error)) => {
                 let cause = client.raised.take();
                 Err(Failure::Python(Python::attach(|py| {
@@ -496,11 +509,14 @@ fn add_document_timestamp(
 /// after the one it signed), `integrity` ("intact", "broken", "unchecked") and `detail` (why it
 /// is not intact, or None).
 #[pyfunction]
+#[pyo3(signature = (pdf_content, *, limits=None))]
 fn verify_signatures<'py>(
     py: Python<'py>,
     pdf_content: Vec<u8>,
+    limits: Option<PyRef<'py, crate::Limits>>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let checks = run(py, || Ok(pdf::sign::verify_signatures(&pdf_content)?))?;
+    let input = signing_input(py, pdf_content, limits)?;
+    let checks = run(py, || Ok(input.verify_signatures()?))?;
     checks
         .into_iter()
         .map(|check| {

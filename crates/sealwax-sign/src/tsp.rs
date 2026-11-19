@@ -28,6 +28,9 @@ const SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TimestampError {
+    /// The local deadline passed while hashing the document.
+    #[error("timestamp processing timed out")]
+    Timeout,
     /// The client could not get an answer from the authority.
     #[error("timestamp authority unreachable: {0}")]
     Client(String),
@@ -141,12 +144,18 @@ impl TimestampRequest {
 
     /// A request over `parts`, one after the other (the bytes a document timestamp covers),
     /// with a random nonce.
-    pub(crate) fn over_parts(parts: &[&[u8]]) -> Result<Self, Error> {
+    pub(crate) fn over_parts(
+        parts: &[&[u8]],
+        limits: &sealwax_core::Limits,
+    ) -> Result<Self, Error> {
         let mut random = [0u8; 8];
         SystemRandom::new()
             .fill(&mut random)
             .map_err(|_| TimestampError::Client("no randomness for the nonce".to_owned()))?;
-        Self::over_digest(Hash::Sha256.digest_parts(parts), u64::from_be_bytes(random))
+        Self::over_digest(
+            Hash::Sha256.digest_parts(parts, limits)?,
+            u64::from_be_bytes(random),
+        )
     }
 
     fn over_digest(data_digest: Vec<u8>, nonce: u64) -> Result<Self, Error> {
@@ -221,7 +230,7 @@ impl TimestampRequest {
 /// under the token's own hash algorithm, or this SHA-256 digest (the request's).
 #[derive(Clone, Copy)]
 pub(crate) enum Imprint<'a> {
-    Data(&'a [&'a [u8]]),
+    Data(&'a [&'a [u8]], &'a sealwax_core::Limits),
     Digest(&'a [u8]),
 }
 
@@ -235,7 +244,12 @@ pub fn check_timestamp_token(
     data: &[u8],
     trust: &Trust,
 ) -> Result<Timestamp, TimestampError> {
-    check_token(token, Imprint::Data(&[data]), None, Some(trust))
+    check_token(
+        token,
+        Imprint::Data(&[data], &sealwax_core::Limits::default()),
+        None,
+        Some(trust),
+    )
 }
 
 /// The fields of a `TSTInfo` checked here.
@@ -315,10 +329,14 @@ pub(crate) fn check_token(
     let tst = tst_info(tst_bytes).ok_or(Malformed("TSTInfo"))?;
     let imprint_ok = match imprint {
         Imprint::Digest(digest) => tst.imprint_algorithm == SHA256 && tst.imprint == digest,
-        Imprint::Data(parts) => match Hash::from_oid(tst.imprint_algorithm) {
+        Imprint::Data(parts, limits) => match Hash::from_oid(tst.imprint_algorithm) {
             // An imprint this crate does not check is no proof either way.
             None | Some(Hash::Sha1) => return Err(TimestampError::Unsupported),
-            Some(hash) => hash.digest_parts(parts) == tst.imprint,
+            Some(hash) => {
+                hash.digest_parts(parts, limits)
+                    .map_err(|_| TimestampError::Timeout)?
+                    == tst.imprint
+            }
         },
     };
     if !imprint_ok {

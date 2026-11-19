@@ -278,3 +278,52 @@ fn nothing_of_what_was_redacted_is_left_anywhere() {
         .collect();
     assert!(kept.contains("KEEP"), "{kept}");
 }
+
+#[test]
+fn applying_an_annotation_only_mark_requires_a_full_save() {
+    let mut doc = build(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R 5 0 R] >>".into(),
+            "<< /Type /Annot /Subtype /Redact /Rect [5 5 30 30] >>".into(),
+            "<< /Type /Annot /Subtype /Link /Rect [10 10 20 20] >>".into(),
+        ],
+        "",
+    );
+    let done = apply_redactions(&mut doc, &RedactOptions::default()).unwrap();
+    assert_eq!(done.links_removed, 1);
+    assert_eq!(done.redacted, Default::default());
+    assert!(doc.is_redacted());
+    assert!(doc.save_incremental().is_err());
+    assert!(doc.save(&SaveOptions::default()).is_ok());
+}
+
+#[test]
+fn an_incomplete_mark_application_preserves_the_input_and_prior_edits() {
+    let mut doc = marked();
+    doc.set_info(&[("Title".into(), "Revision".into())].into())
+        .unwrap();
+    let page = doc.page_ids()[0].unwrap();
+    let mut dict = doc
+        .object(page)
+        .unwrap()
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .clone();
+    let mut stream_dict = sealwax_core::Dict::new();
+    stream_dict.insert("Filter", sealwax_core::Name::from("UnavailableDecoder"));
+    let contents = doc
+        .add_object(sealwax_core::Object::Stream(sealwax_core::Stream {
+            dict: stream_dict,
+            data: vec![],
+        }))
+        .unwrap();
+    dict.insert("Contents", contents);
+    doc.set_object(page, sealwax_core::Object::Dict(dict));
+    let before = doc.save_incremental().unwrap();
+    assert!(apply_redactions(&mut doc, &RedactOptions::default()).is_err());
+    assert!(doc.has_redaction_marks().unwrap());
+    assert_eq!(doc.save_incremental().unwrap(), before);
+}

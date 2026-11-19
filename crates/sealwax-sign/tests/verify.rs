@@ -98,3 +98,24 @@ fn a_changed_document_breaks_its_signatures_and_is_refused() {
     let approval = checks.iter().find(|c| c.field == "A").unwrap();
     assert_eq!(approval.integrity, Integrity::Broken(Broken::ByteRange));
 }
+
+#[test]
+fn revision_counts_follow_the_trailers_when_an_object_contains_pdf_text() {
+    let (_, bytes) = certified_then_approved();
+    let mut doc =
+        sealwax_core::Document::open(bytes, &sealwax_core::OpenOptions::default()).unwrap();
+    doc.set_info(
+        &[(
+            "Title".to_owned(),
+            "Documenting the %%EOF marker".to_owned(),
+        )]
+        .into(),
+    )
+    .unwrap();
+    let checks = verify_signatures(&doc.save_incremental().unwrap()).unwrap();
+    assert_eq!(
+        checks.iter().map(|s| s.later_revisions).collect::<Vec<_>>(),
+        [2, 1]
+    );
+    assert!(checks.iter().all(|s| s.is_intact()));
+}

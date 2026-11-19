@@ -70,6 +70,31 @@ impl BaseTrailer {
         }
     }
 
+    pub(crate) fn revisions_after(
+        &self,
+        data: &[u8],
+        end: usize,
+        limits: &Limits,
+    ) -> crate::Result<Option<usize>> {
+        let Some(signed) = data.get(..end).and_then(startxref) else {
+            return Ok(None);
+        };
+        let mut offset = self.startxref;
+        let mut seen = HashSet::new();
+        while let Some(at) = offset {
+            limits.check_time()?;
+            if at == signed {
+                return Ok(Some(seen.len()));
+            }
+            if at < end || !seen.insert(at) || seen.len() > MAX_SECTIONS {
+                break;
+            }
+            offset = section_at(data, at)
+                .and_then(|(_, dict)| usize::try_from(dict.get(b"Prev")?.as_i64()?).ok());
+        }
+        Ok(None)
+    }
+
     pub(crate) fn info(&self) -> Option<ObjId> {
         self.dict.get(b"Info").and_then(Object::as_ref_id)
     }

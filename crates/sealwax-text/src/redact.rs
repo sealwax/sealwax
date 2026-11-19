@@ -18,6 +18,7 @@
 //! marked-content sequences it was in (readers read them in its place), and of the structure
 //! elements those are tied to, with their ancestors.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::ops::Range;
@@ -31,7 +32,7 @@ use hayro_interpret::font::GlyphRun;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::hayro_syntax::content::TypedIter;
 use hayro_interpret::hayro_syntax::object::{
-    Array, Dict as HayroDict, ObjectIdentifier, Stream as HayroStream,
+    Array, Dict as HayroDict, Object as HayroObject, ObjectIdentifier, Stream as HayroStream,
 };
 use hayro_interpret::hayro_syntax::page::Resources;
 use hayro_interpret::kurbo::BezPath;
@@ -180,7 +181,7 @@ pub fn redact(
             what: "redaction area",
         });
     }
-    doc.check_page(page_index)?;
+    doc.check_time()?;
     let areas: Vec<KurboRect> = areas
         .iter()
         .map(|a| KurboRect::new(a.x1, a.y1, a.x2, a.y2).abs())
@@ -198,14 +199,17 @@ pub fn redact(
     } else {
         doc
     };
+    reader.check_page(page_index)?;
     let content = page_content(reader, page_id)?;
     let plan = plan(reader, page_index, &content, &areas, *options)?;
-    let done = write(doc, page_id, &content, plan)?;
-    // What was taken out is still in the bytes the document was opened from.
-    if done != Redacted::default() {
-        doc.mark_redacted();
+    if plan.shown.is_empty() && plan.cuts.is_empty() && plan.images.is_empty() {
+        return Ok(Redacted::default());
     }
-    Ok(done)
+    doc.try_edit(|doc| {
+        let done = write(doc, page_id, &content, plan)?;
+        doc.mark_redacted();
+        Ok(done)
+    })
 }
 
 /// The properties written in `BDC` operator `op`.
@@ -243,36 +247,64 @@ fn inline_properties(content: &[u8], op: &Op) -> Properties {
     Properties::Inline { mcid, stripped }
 }
 
-/// The decoded data of stream `id`, as hayro reads it.
-fn decoded(reader: &Document, id: ObjId) -> Option<Vec<u8>> {
-    let identifier = ObjectIdentifier {
-        obj_number: id.number,
-        gen_number: i32::from(id.generation),
+/// A content stream can be rewritten only if every declared filter was understood.
+fn decoded_content<'a>(stream: &HayroStream<'a>) -> sealwax_core::Result<Cow<'a, [u8]>> {
+    let dict = stream.dict();
+    if dict.contains_key(b"F") {
+        return Err(sealwax_core::Error::Unsupported {
+            what: "redacting external stream content",
+        });
+    }
+    let declared = match dict.get::<HayroObject<'_>>(b"Filter") {
+        None if !dict.contains_key(b"Filter") => 0,
+        Some(HayroObject::Null(_)) => 0,
+        Some(HayroObject::Name(_)) => 1,
+        Some(HayroObject::Array(filters)) => filters.raw_iter().count(),
+        _ => return Err(sealwax_core::Error::Malformed),
     };
-    reader
-        .hayro()
-        .xref()
-        .get::<HayroStream<'_>>(identifier)
-        .and_then(|stream| stream.decoded().ok().map(|data| data.into_owned()))
+    if declared != stream.filters().len() {
+        return Err(sealwax_core::Error::Unsupported {
+            what: "redacting a stream with an unknown filter",
+        });
+    }
+    stream
+        .decoded_data()
+        .map_err(|_| sealwax_core::Error::Malformed)
 }
 
 /// The page's content: its streams decoded, joined by line feeds.
 fn page_content(doc: &Document, page: ObjId) -> sealwax_core::Result<Vec<u8>> {
     let Some(Object::Dict(dict)) = doc.object(page)? else {
-        return Ok(Vec::new());
+        return Err(sealwax_core::Error::Malformed);
+    };
+    let stream_ids = |items: &[Object]| {
+        items
+            .iter()
+            .map(Object::as_ref_id)
+            .collect::<Option<Vec<_>>>()
+            .ok_or(sealwax_core::Error::Malformed)
     };
     let ids: Vec<ObjId> = match dict.get(b"Contents") {
         Some(Object::Ref(id)) => match doc.object(*id)? {
-            Some(Object::Array(items)) => items.iter().filter_map(Object::as_ref_id).collect(),
+            Some(Object::Array(items)) => stream_ids(&items)?,
             _ => vec![*id],
         },
-        Some(Object::Array(items)) => items.iter().filter_map(Object::as_ref_id).collect(),
-        _ => Vec::new(),
+        Some(Object::Array(items)) => stream_ids(items)?,
+        Some(Object::Null) | None => Vec::new(),
+        _ => return Err(sealwax_core::Error::Malformed),
     };
     let mut out = Vec::new();
     for id in ids {
         // A stream that cannot be read would be lost from the content written anew.
-        let data = decoded(doc, id).ok_or(sealwax_core::Error::Malformed)?;
+        let stream = doc
+            .hayro()
+            .xref()
+            .get::<HayroStream<'_>>(ObjectIdentifier {
+                obj_number: id.number,
+                gen_number: i32::from(id.generation),
+            })
+            .ok_or(sealwax_core::Error::Malformed)?;
+        let data = decoded_content(&stream)?;
         out.extend_from_slice(&data);
         out.push(b'\n');
     }
@@ -501,7 +533,7 @@ fn plan(
         marked: Vec::new(),
         taken: 0,
     };
-    walker.walk(Source::Page, content, page.resources(), State::default(), 0);
+    walker.walk(Source::Page, content, page.resources(), State::default(), 0)?;
     let mut plan = walker.plan;
     for (source, ops) in walker.shown {
         let mut kept: Vec<(Range<usize>, Shown)> = ops
@@ -541,7 +573,7 @@ impl<'a> Walker<'a, '_> {
         resources: &Resources<'a>,
         initial: State<'a>,
         depth: usize,
-    ) {
+    ) -> sealwax_core::Result<()> {
         let mut state = initial;
         let mut stack: Vec<State<'a>> = Vec::new();
         let mut tm = Affine::IDENTITY;
@@ -823,15 +855,12 @@ impl<'a> Walker<'a, '_> {
                     }
                 }
                 b"Do" => {
-                    if depth >= MAX_DEPTH {
-                        continue;
-                    }
                     let Some(Operand::Name(name)) = args.first() else {
-                        continue;
+                        return Err(sealwax_core::Error::Malformed);
                     };
                     let Some(stream) = resources.x_objects.get::<HayroStream<'a>>(name.as_slice())
                     else {
-                        continue;
+                        return Err(sealwax_core::Error::Malformed);
                     };
                     let dict = stream.dict();
                     let subtype =
@@ -848,12 +877,17 @@ impl<'a> Walker<'a, '_> {
                         continue;
                     }
                     if subtype.is_none_or(|subtype| subtype.as_ref() != b"Form") {
-                        continue;
+                        return Err(sealwax_core::Error::Unsupported {
+                            what: "redacting an unknown XObject",
+                        });
                     }
                     let id = object_id(stream.obj_id());
-                    let Ok(data) = stream.decoded() else {
-                        continue;
-                    };
+                    if depth >= MAX_DEPTH {
+                        return Err(sealwax_core::Error::LimitExceeded {
+                            what: "redaction form depth",
+                        });
+                    }
+                    let data = decoded_content(&stream)?;
                     self.plan.forms.entry(id).or_insert_with(|| data.to_vec());
                     let matrix = dict
                         .get::<Array<'a>>(b"Matrix")
@@ -872,7 +906,7 @@ impl<'a> Walker<'a, '_> {
                     });
                     let resources = own.as_ref().unwrap_or(resources);
                     let before = self.taken;
-                    self.walk(Source::Draw(draw), &data, resources, inner, depth + 1);
+                    self.walk(Source::Draw(draw), &data, resources, inner, depth + 1)?;
                     if self.taken != before {
                         self.plan.struct_parents.extend(tied);
                     }
@@ -881,6 +915,7 @@ impl<'a> Walker<'a, '_> {
             }
         }
         self.marked.truncate(base);
+        Ok(())
     }
 
     /// Content of the sequences open was taken out.
@@ -1519,7 +1554,7 @@ fn write(
         let form = plan.draws[draw].form;
         let (Some(Object::Stream(stream)), Some(data)) = (doc.object(form)?, plan.forms.get(&form))
         else {
-            continue;
+            return Err(sealwax_core::Error::Malformed);
         };
         let source = Source::Draw(draw);
         let resources = if plan.draws[draw].own_resources {

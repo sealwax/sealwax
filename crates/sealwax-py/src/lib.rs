@@ -1097,8 +1097,7 @@ impl Document {
     }
 
     /// A new document without pages, to build: add pages with `add_page`, then draw on them,
-    /// add fields, an outline, information. `save` needs a page at least; what a page added
-    /// shows (`glyphs`, `drawings`, rendering) reads once the document is saved and opened again.
+    /// add fields, an outline, information. Page readers see edits in memory. Saving needs at least one page.
     #[staticmethod]
     #[pyo3(signature = (*, limits=None))]
     fn new(py: Python<'_>, limits: Option<PyRef<'_, Limits>>) -> PyResult<Self> {
@@ -1801,7 +1800,8 @@ impl Document {
     }
 
     /// Words in page content order, with their boxes and zero-based block, line and word indices.
-    /// Coordinates are in unrotated PDF user space, y up. Set `annotations` to read appearances too.
+    /// Coordinates are in unrotated PDF user space, y up. Character boxes outside the page crop
+    /// or the bounds of a graphics clip are omitted. Set `annotations` to read appearances too.
     #[pyo3(signature = (page_index, annotations = false))]
     fn words<'py>(
         &self,

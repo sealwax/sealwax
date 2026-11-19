@@ -29,8 +29,7 @@ impl Document {
     /// Add a blank page of `width` by `height` points after the others; returns its index.
     ///
     /// A page added is part of the document's pages ([`Document::page_count`],
-    /// [`Document::geometry`]), and is drawn on as any other; reading what it shows (text,
-    /// rendering) needs the document saved and opened again.
+    /// [`Document::geometry`]). Text extraction and rendering include edits made to it.
     ///
     /// # Errors
     /// [`Error::InvalidArgument`] for a side that is not a number between 1 and 14,400 points.

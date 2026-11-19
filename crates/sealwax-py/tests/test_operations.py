@@ -239,3 +239,13 @@ def test_a_passed_deadline_is_a_timeout():
     time.sleep(0.6)
     with pytest.raises(sealwax.PdfTimeoutError):
         doc.check_pages()
+
+
+def test_grayscale_honours_the_requested_output_pixel_budget():
+    doc = sealwax.Document.new()
+    doc.add_page(100, 100)
+    data = doc.save()
+    with pytest.raises(sealwax.PdfLimitError) as error:
+        sealwax.grayscale(data, dpi=72, limits=sealwax.Limits(max_render_pixels=9999))
+    assert error.value.limit == "max_render_pixels"
+    assert sealwax.grayscale(data, dpi=72, limits=sealwax.Limits(max_render_pixels=10000))

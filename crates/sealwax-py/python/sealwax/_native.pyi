@@ -552,9 +552,12 @@ def sign(
     signing_time: int | None = None,
     timestamp: Timestamping | None = None,
     allow_broken_signatures: bool = False,
+    limits: Limits | None = None,
 ) -> Signed: ...
-def add_document_timestamp(pdf_content: bytes, timestamp: Timestamping, *, field: str = "DocTimeStamp1") -> Signed: ...
-def verify_signatures(pdf_content: bytes) -> list[SignatureCheck]: ...
+def add_document_timestamp(
+    pdf_content: bytes, timestamp: Timestamping, *, field: str = "DocTimeStamp1", limits: Limits | None = None
+) -> Signed: ...
+def verify_signatures(pdf_content: bytes, *, limits: Limits | None = None) -> list[SignatureCheck]: ...
 def add_validation_data(
     pdf_content: bytes,
     field: str,
@@ -563,4 +566,5 @@ def add_validation_data(
     roots: list[bytes],
     intermediates: list[bytes] = ...,
     time: int | None = None,
+    limits: Limits | None = None,
 ) -> tuple[bytes, Coverage]: ...

@@ -5,7 +5,7 @@
 //! ([`crate::add_validation_data`] gathers them).
 
 use const_oid::ObjectIdentifier;
-use sealwax_core::{Document, Object, OpenOptions};
+use sealwax_core::{Limits, Object};
 
 use crate::pki::{self, Fault, Hash};
 use crate::tsp::{self, Imprint};
@@ -98,96 +98,107 @@ impl SignatureCheck {
 /// # Errors
 /// [`crate::Error::Pdf`] when the document does not open.
 pub fn verify_signatures(pdf: &[u8]) -> Result<Vec<SignatureCheck>> {
-    let doc = Document::open(pdf.to_vec(), &OpenOptions::default())?;
-    let certification = pdf::certification(&doc)?;
-    let encrypted = doc.is_encrypted();
-    let mut checks: Vec<(usize, SignatureCheck)> = Vec::new();
-    for (field, id, value) in pdf::signatures(&doc)? {
-        doc.check_time()?;
-        let sub_filter = value
-            .get(b"SubFilter")
-            .and_then(Object::as_name)
-            .map(|name| String::from_utf8_lossy(name).into_owned())
-            .unwrap_or_default();
-        let timestamp = value.get(b"Type").and_then(Object::as_name) == Some(b"DocTimeStamp")
-            || sub_filter == "ETSI.RFC3161";
-        let kind = if timestamp {
-            SignatureKind::DocumentTimestamp
-        } else if id.is_some() && id == certification {
-            SignatureKind::Certification
-        } else {
-            SignatureKind::Approval
-        };
-        let mut check = SignatureCheck {
-            field,
-            kind,
-            sub_filter: sub_filter.clone(),
-            signer: None,
-            timestamp_time: None,
-            later_revisions: 0,
-            integrity: Integrity::Intact,
-        };
-        let range = value
-            .get(b"ByteRange")
-            .and_then(Object::as_array)
-            .and_then(|range| {
-                range
-                    .iter()
-                    .map(|n| n.as_i64().and_then(|n| usize::try_from(n).ok()))
-                    .collect::<Option<Vec<usize>>>()
-            });
-        let contents = match value.get(b"Contents") {
-            Some(Object::String(contents)) => Some(contents.as_slice()),
-            _ => None,
-        };
-        let (Some(range), Some(contents)) = (range, contents) else {
-            check.integrity = Integrity::Broken(Broken::Malformed);
-            checks.push((usize::MAX, check));
-            continue;
-        };
-        let order = match range.as_slice() {
-            [_, _, start, length] => start.saturating_add(*length),
-            _ => usize::MAX,
-        };
-        let (parts, contents) = match covered(pdf, &range, contents, encrypted) {
-            Some(covered) => {
-                check.later_revisions = covered.later;
-                (covered.parts, covered.value)
-            }
-            None => {
-                check.integrity = Integrity::Broken(Broken::ByteRange);
-                checks.push((order, check));
+    crate::SigningInput::open(pdf.to_vec(), None)?.verify_signatures()
+}
+
+impl crate::SigningInput {
+    /// Verify each signature against its revision under the input's processing limits.
+    pub fn verify_signatures(&self) -> Result<Vec<SignatureCheck>> {
+        let doc = &self.doc;
+        let pdf = doc.hayro().data().as_ref();
+        let certification = pdf::certification(doc)?;
+        let encrypted = doc.is_encrypted();
+        let mut checks: Vec<(usize, SignatureCheck)> = Vec::new();
+        for (field, id, value) in pdf::signatures(doc)? {
+            doc.check_time()?;
+            let sub_filter = value
+                .get(b"SubFilter")
+                .and_then(Object::as_name)
+                .map(|name| String::from_utf8_lossy(name).into_owned())
+                .unwrap_or_default();
+            let timestamp = value.get(b"Type").and_then(Object::as_name) == Some(b"DocTimeStamp")
+                || sub_filter == "ETSI.RFC3161";
+            let kind = if timestamp {
+                SignatureKind::DocumentTimestamp
+            } else if id.is_some() && id == certification {
+                SignatureKind::Certification
+            } else {
+                SignatureKind::Approval
+            };
+            let mut check = SignatureCheck {
+                field,
+                kind,
+                sub_filter: sub_filter.clone(),
+                signer: None,
+                timestamp_time: None,
+                later_revisions: 0,
+                integrity: Integrity::Intact,
+            };
+            let range = value
+                .get(b"ByteRange")
+                .and_then(Object::as_array)
+                .and_then(|range| {
+                    range
+                        .iter()
+                        .map(|n| n.as_i64().and_then(|n| usize::try_from(n).ok()))
+                        .collect::<Option<Vec<usize>>>()
+                });
+            let contents = match value.get(b"Contents") {
+                Some(Object::String(contents)) => Some(contents.as_slice()),
+                _ => None,
+            };
+            let (Some(range), Some(contents)) = (range, contents) else {
+                check.integrity = Integrity::Broken(Broken::Malformed);
+                checks.push((usize::MAX, check));
                 continue;
-            }
-        };
-        check.integrity = match sub_filter.as_str() {
-            "ETSI.RFC3161" => document_timestamp(&contents, &parts, &mut check),
-            "ETSI.CAdES.detached" | "adbe.pkcs7.detached" if !timestamp => {
-                detached(&contents, &parts, &mut check)
-            }
-            _ => Integrity::Unchecked("a signature format this crate does not check"),
-        };
-        checks.push((order, check));
+            };
+            let order = match range.as_slice() {
+                [_, _, start, length] => start.saturating_add(*length),
+                _ => usize::MAX,
+            };
+            let (parts, contents) = match covered(pdf, &range, contents, encrypted) {
+                Some(covered) => {
+                    let Some(later) = doc.revisions_after(order)? else {
+                        check.integrity = Integrity::Broken(Broken::ByteRange);
+                        checks.push((order, check));
+                        continue;
+                    };
+                    check.later_revisions = later;
+                    (covered.parts, covered.value)
+                }
+                None => {
+                    check.integrity = Integrity::Broken(Broken::ByteRange);
+                    checks.push((order, check));
+                    continue;
+                }
+            };
+            check.integrity = match sub_filter.as_str() {
+                "ETSI.RFC3161" => document_timestamp(&contents, &parts, &mut check, doc.limits())?,
+                "ETSI.CAdES.detached" | "adbe.pkcs7.detached" if !timestamp => {
+                    detached(&contents, &parts, &mut check, doc.limits())?
+                }
+                _ => Integrity::Unchecked("a signature format this crate does not check"),
+            };
+            checks.push((order, check));
+        }
+        checks.sort_by_key(|(order, _)| *order);
+        let checks = checks.into_iter().map(|(_, check)| check).collect();
+        doc.check_time()?;
+        Ok(checks)
     }
-    checks.sort_by_key(|(order, _)| *order);
-    Ok(checks.into_iter().map(|(_, check)| check).collect())
 }
 
 /// What a byte range covers.
 struct Covered<'a> {
     /// The two parts of the file signed.
     parts: [&'a [u8]; 2],
-    /// The revisions appended after.
-    later: usize,
     /// The signature's value, as the gap between the parts holds it.
     value: Vec<u8>,
 }
 
-/// The two parts of `pdf` that `range` covers, when it covers a whole revision but `/Contents`,
-/// the revisions after it, and the signature's value as the gap between them holds it. The gap
-/// must be `/Contents` (`contents`, its value as read), with or without its brackets, and
-/// nothing else. In
-/// an encrypted document the value is the gap's alone: signature values are not encrypted, but
+/// The two signed parts of a revision and the signature value in the gap. The gap must hold
+/// only `/Contents` (`contents`, its value as read), with or without its brackets. In an
+/// encrypted document the value is the gap's alone: signature values are not encrypted, but
 /// readers decrypt every string they read.
 fn covered<'a>(
     pdf: &'a [u8],
@@ -238,33 +249,37 @@ fn covered<'a>(
     if !trimmed.ends_with(b"%%EOF") || signed.len() - trimmed.len() > 2 {
         return None;
     }
-    let rest = pdf.get(end..)?;
-    let later = rest.windows(5).filter(|window| *window == b"%%EOF").count();
     Some(Covered {
         parts: [pdf.get(..first_length)?, pdf.get(second_start..end)?],
-        later,
         value,
     })
 }
 
 /// A CMS signature (`ETSI.CAdES.detached`, `adbe.pkcs7.detached`) over `parts`.
-fn detached(contents: &[u8], parts: &[&[u8]; 2], check: &mut SignatureCheck) -> Integrity {
+fn detached(
+    contents: &[u8],
+    parts: &[&[u8]; 2],
+    check: &mut SignatureCheck,
+    limits: &Limits,
+) -> Result<Integrity> {
     let Ok(signed) = signed_data::read(contents, true) else {
-        return Integrity::Broken(Broken::Malformed);
+        return Ok(Integrity::Broken(Broken::Malformed));
     };
     let signer = &signed.signer;
     let Some(digest) = Hash::from_oid(signer.digest_algorithm) else {
-        return Integrity::Unchecked("a digest algorithm this crate does not check");
+        return Ok(Integrity::Unchecked(
+            "a digest algorithm this crate does not check",
+        ));
     };
     if digest == Hash::Sha1 {
-        return Integrity::Unchecked("SHA-1");
+        return Ok(Integrity::Unchecked("SHA-1"));
     }
     // What the value signs: the signed attributes, whose `messageDigest` is that of the signed
     // bytes; or, without them (PKCS #7), the signed bytes themselves.
     let message = match signer.signed_attributes {
         Some(signed_attributes) => {
             let Some(attributes) = signed_data::attributes(signed_attributes) else {
-                return Integrity::Broken(Broken::Malformed);
+                return Ok(Integrity::Broken(Broken::Malformed));
             };
             let value = |oid| {
                 attributes
@@ -276,14 +291,15 @@ fn detached(contents: &[u8], parts: &[&[u8]; 2], check: &mut SignatureCheck) -> 
                 .and_then(|value| der::Decode::from_der(value.whole).ok())
                 .map(|oid: ObjectIdentifier| oid == ID_DATA);
             if content_type == Some(false) {
-                return Integrity::Broken(Broken::Malformed);
+                return Ok(Integrity::Broken(Broken::Malformed));
             }
             let signed_digest =
                 value(ID_MESSAGE_DIGEST).filter(|value| value.tag == crate::tlv::OCTET_STRING);
             match signed_digest {
-                Some(signed_digest) if signed_digest.content == digest.digest_parts(parts) => {}
-                Some(_) => return Integrity::Broken(Broken::Digest),
-                None => return Integrity::Broken(Broken::Malformed),
+                Some(signed_digest)
+                    if signed_digest.content == digest.digest_parts(parts, limits)? => {}
+                Some(_) => return Ok(Integrity::Broken(Broken::Digest)),
+                None => return Ok(Integrity::Broken(Broken::Malformed)),
             }
             crate::tlv::encode(crate::tlv::SET, signed_attributes)
         }
@@ -294,7 +310,7 @@ fn detached(contents: &[u8], parts: &[&[u8]; 2], check: &mut SignatureCheck) -> 
         .iter()
         .find(|cert| signed_data::identifies(&signer.sid, cert))
     else {
-        return Integrity::Broken(Broken::Signature);
+        return Ok(Integrity::Broken(Broken::Signature));
     };
     check.signer = Some(certificate.subject());
     match pki::verify(
@@ -306,9 +322,11 @@ fn detached(contents: &[u8], parts: &[&[u8]; 2], check: &mut SignatureCheck) -> 
     ) {
         Ok(()) => {}
         Err(Fault::Unsupported) => {
-            return Integrity::Unchecked("a signature algorithm this crate does not check");
+            return Ok(Integrity::Unchecked(
+                "a signature algorithm this crate does not check",
+            ));
         }
-        Err(Fault::Invalid) => return Integrity::Broken(Broken::Signature),
+        Err(Fault::Invalid) => return Ok(Integrity::Broken(Broken::Signature)),
     }
     // Its timestamp, when it has one: over the signature value, its own signature intact.
     let token = signer
@@ -321,18 +339,26 @@ fn detached(contents: &[u8], parts: &[&[u8]; 2], check: &mut SignatureCheck) -> 
                 .map(|(_, value)| value.whole)
         });
     if let Some(token) = token {
-        match tsp::check_token(token, Imprint::Data(&[signer.signature]), None, None) {
+        match tsp::check_token(
+            token,
+            Imprint::Data(&[signer.signature], limits),
+            None,
+            None,
+        ) {
+            Err(TimestampError::Timeout) => return Err(sealwax_core::Error::Timeout.into()),
             Ok(timestamp) => check.timestamp_time = Some(timestamp.time),
             Err(TimestampError::Unsupported) => {
-                return Integrity::Unchecked("a timestamp algorithm this crate does not check");
+                return Ok(Integrity::Unchecked(
+                    "a timestamp algorithm this crate does not check",
+                ));
             }
             Err(TimestampError::Certificate) => {
-                return Integrity::Unchecked(TIMESTAMP_CERTIFICATE);
+                return Ok(Integrity::Unchecked(TIMESTAMP_CERTIFICATE));
             }
-            Err(_) => return Integrity::Broken(Broken::Timestamp),
+            Err(_) => return Ok(Integrity::Broken(Broken::Timestamp)),
         }
     }
-    Integrity::Intact
+    Ok(Integrity::Intact)
 }
 
 /// A document timestamp (`ETSI.RFC3161`): a token whose imprint is the digest of `parts`.
@@ -340,23 +366,27 @@ fn document_timestamp(
     contents: &[u8],
     parts: &[&[u8]; 2],
     check: &mut SignatureCheck,
-) -> Integrity {
+    limits: &Limits,
+) -> Result<Integrity> {
     // The token is padded with zeros: the one element it starts with.
     let Some((element, _)) = crate::tlv::element(contents) else {
-        return Integrity::Broken(Broken::Malformed);
+        return Ok(Integrity::Broken(Broken::Malformed));
     };
-    match tsp::check_token(element.whole, Imprint::Data(parts), None, None) {
-        Ok(timestamp) => {
-            check.signer = Some(timestamp.authority);
-            check.timestamp_time = Some(timestamp.time);
-            Integrity::Intact
-        }
-        Err(TimestampError::Imprint) => Integrity::Broken(Broken::Digest),
-        Err(TimestampError::Signature) => Integrity::Broken(Broken::Signature),
-        Err(TimestampError::Certificate) => Integrity::Unchecked(TIMESTAMP_CERTIFICATE),
-        Err(TimestampError::Unsupported) => {
-            Integrity::Unchecked("a timestamp algorithm this crate does not check")
-        }
-        Err(_) => Integrity::Broken(Broken::Malformed),
-    }
+    Ok(
+        match tsp::check_token(element.whole, Imprint::Data(parts, limits), None, None) {
+            Err(TimestampError::Timeout) => return Err(sealwax_core::Error::Timeout.into()),
+            Ok(timestamp) => {
+                check.signer = Some(timestamp.authority);
+                check.timestamp_time = Some(timestamp.time);
+                Integrity::Intact
+            }
+            Err(TimestampError::Imprint) => Integrity::Broken(Broken::Digest),
+            Err(TimestampError::Signature) => Integrity::Broken(Broken::Signature),
+            Err(TimestampError::Certificate) => Integrity::Unchecked(TIMESTAMP_CERTIFICATE),
+            Err(TimestampError::Unsupported) => {
+                Integrity::Unchecked("a timestamp algorithm this crate does not check")
+            }
+            Err(_) => Integrity::Broken(Broken::Malformed),
+        },
+    )
 }

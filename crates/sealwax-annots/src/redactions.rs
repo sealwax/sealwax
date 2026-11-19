@@ -51,7 +51,6 @@ struct Mark {
 /// # Errors
 /// As [`redact`] and flattening.
 pub fn apply_redactions(doc: &mut Document, options: &RedactOptions) -> Result<Redactions> {
-    let mut applied = Redactions::default();
     let pages = doc.page_ids();
     let mut marked = Vec::new();
     for (index, page) in pages.iter().enumerate() {
@@ -64,8 +63,18 @@ pub fn apply_redactions(doc: &mut Document, options: &RedactOptions) -> Result<R
         }
     }
     if marked.is_empty() {
-        return Ok(applied);
+        return Ok(Redactions::default());
     }
+    doc.try_edit(|doc| apply_marks(doc, options, marked))
+}
+
+fn apply_marks(
+    doc: &mut Document,
+    options: &RedactOptions,
+    marked: Vec<(usize, sealwax_core::ObjId, Vec<Mark>)>,
+) -> Result<Redactions> {
+    let mut applied = Redactions::default();
+    doc.mark_redacted();
     flatten::flatten_scope(doc, Scope::AllButRedactions)?;
     let mut handed_down = pdf::HandedDown::default();
     for (index, page_id, marks) in marked {

@@ -9,9 +9,7 @@
 
 use std::ops::Range;
 
-use sealwax_core::{
-    Dict, Document, Name, ObjId, Object, OpenOptions, decode_text_string, encode_text_string,
-};
+use sealwax_core::{Dict, Document, Name, ObjId, Object, decode_text_string, encode_text_string};
 
 use crate::{Error, Kind, Options, Result};
 
@@ -74,8 +72,12 @@ pub(crate) fn fields(doc: &Document, form: &Dict) -> Result<Vec<(String, Dict)>>
         top.into_iter().map(|f| (f, String::new(), 0)).collect();
     let mut seen = std::collections::HashSet::new();
     while let Some((value, parent, depth)) = stack.pop() {
-        if depth > 32 || found.len() > 100_000 {
-            break;
+        doc.check_time()?;
+        if depth > 32 || found.len() >= 100_000 {
+            return Err(sealwax_core::Error::LimitExceeded {
+                what: "signature field tree",
+            }
+            .into());
         }
         if let Object::Ref(id) = value
             && !seen.insert(id)
@@ -127,6 +129,7 @@ pub(crate) fn signatures(doc: &Document) -> Result<Vec<(String, Option<ObjId>, D
     };
     let mut found = Vec::new();
     for (name, field) in fields(doc, &form)? {
+        doc.check_time()?;
         if !is_signed(&field) {
             continue;
         }
@@ -160,6 +163,7 @@ pub(crate) fn signature_contents(doc: &Document, name: &str) -> Result<Option<Ve
         return Ok(None);
     };
     for (full_name, field) in fields(doc, &form)? {
+        doc.check_time()?;
         if full_name != name || !is_signed(&field) {
             continue;
         }
@@ -179,7 +183,7 @@ pub(crate) fn signature_contents(doc: &Document, name: &str) -> Result<Option<Ve
 
 /// Append the signature's revision to `pdf`, its dictionary waiting for
 /// `options.reserved_contents_bytes` bytes of signature.
-pub(crate) fn lay_out(pdf: &[u8], options: &Options, time: &str) -> Result<Laid> {
+pub(crate) fn lay_out(doc: &mut Document, options: &Options, time: &str) -> Result<Laid> {
     let mut signature = Dict::new();
     signature.insert("Type", Name::from("Sig"));
     signature.insert("Filter", Name::from("Adobe.PPKLite"));
@@ -207,7 +211,7 @@ pub(crate) fn lay_out(pdf: &[u8], options: &Options, time: &str) -> Result<Laid>
         signature.insert("Reference", vec![Object::Dict(reference)]);
     }
     append(
-        pdf,
+        doc,
         &options.field_name,
         signature,
         options.reserved_contents_bytes,
@@ -217,19 +221,23 @@ pub(crate) fn lay_out(pdf: &[u8], options: &Options, time: &str) -> Result<Laid>
 
 /// Append a document timestamp's revision to `pdf` (ISO 32000-2, 12.8.5; PAdES B-LTA): its
 /// dictionary (`/DocTimeStamp`, `ETSI.RFC3161`) waiting for `reserved` bytes of token.
-pub(crate) fn lay_out_timestamp(pdf: &[u8], field_name: &str, reserved: usize) -> Result<Laid> {
+pub(crate) fn lay_out_timestamp(
+    doc: &mut Document,
+    field_name: &str,
+    reserved: usize,
+) -> Result<Laid> {
     let mut timestamp = Dict::new();
     timestamp.insert("Type", Name::from("DocTimeStamp"));
     timestamp.insert("Filter", Name::from("Adobe.PPKLite"));
     timestamp.insert("SubFilter", Name::from("ETSI.RFC3161"));
-    append(pdf, field_name, timestamp, reserved, false)
+    append(doc, field_name, timestamp, reserved, false)
 }
 
 /// Append to `pdf` a revision with the signature field `field_name` whose value is `signature`
 /// (completed with its byte range and its `/Contents`, `reserved` bytes of zeros), and for a
 /// certification the catalog's `/Perms`.
 fn append(
-    pdf: &[u8],
+    doc: &mut Document,
     field_name: &str,
     mut signature: Dict,
     reserved: usize,
@@ -238,20 +246,20 @@ fn append(
     if field_name.is_empty() || field_name.contains('.') {
         return Err(Error::FieldName(field_name.to_owned()));
     }
-    let mut doc = Document::open(pdf.to_vec(), &OpenOptions::default())?;
+    let base = doc.hayro().data().as_ref().len();
     let catalog_id = doc.catalog_id();
     let Some(Object::Dict(mut catalog)) = doc.object(catalog_id)? else {
         return Err(Error::Pdf(sealwax_core::Error::Malformed));
     };
-    let form = dict_of(&doc, catalog.get(b"AcroForm"))?;
+    let form = dict_of(doc, catalog.get(b"AcroForm"))?;
     let existing = match &form {
-        Some((_, form)) => fields(&doc, form)?,
+        Some((_, form)) => fields(doc, form)?,
         None => Vec::new(),
     };
     if existing.iter().any(|(name, _)| name == field_name) {
         return Err(Error::FieldExists(field_name.to_owned()));
     }
-    let certified = dict_of(&doc, catalog.get(b"Perms"))?
+    let certified = dict_of(doc, catalog.get(b"Perms"))?
         .is_some_and(|(_, perms)| perms.contains_key(b"DocMDP"));
     if certification && (certified || existing.iter().any(|(_, field)| is_signed(field))) {
         return Err(Error::NotFirstSignature);
@@ -316,11 +324,11 @@ fn append(
     let mut catalog_changed = false;
     match form {
         Some((Some(form_id), mut form)) => {
-            add_field(&mut doc, &mut form, field_id)?;
+            add_field(doc, &mut form, field_id)?;
             doc.set_object(form_id, Object::Dict(form));
         }
         Some((None, mut form)) => {
-            add_field(&mut doc, &mut form, field_id)?;
+            add_field(doc, &mut form, field_id)?;
             catalog.insert("AcroForm", form);
             catalog_changed = true;
         }
@@ -344,7 +352,6 @@ fn append(
     }
 
     let data = doc.save_incremental()?;
-    let base = pdf.len();
     locate(data, base, signature_id, reserved)
 }
 

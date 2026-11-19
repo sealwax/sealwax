@@ -184,3 +184,37 @@ def test_a_document_timestamp_that_fails_is_a_timestamp_error():
     with pytest.raises(sealwax.TimestampError) as raised:
         sealwax.add_document_timestamp(signed, timestamping)
     assert isinstance(raised.value.__cause__, Unreachable)
+
+
+def test_signing_limits_are_checked_before_external_calls():
+    data = text_page()
+    signer = KeySigner()
+    limits = sealwax.Limits(max_shown_bytes=1)
+
+    class Unused:
+        def __getattr__(self, name):
+            pytest.fail(f"unexpected external lookup {name}")
+
+    stamping = sealwax.Timestamping(Unused(), roots=[signer.certificate()])
+    operations = (
+        lambda: sealwax.sign(data, Unused(), field="Approval", limits=limits),
+        lambda: sealwax.verify_signatures(data, limits=limits),
+        lambda: sealwax.add_document_timestamp(data, stamping, limits=limits),
+        lambda: sealwax.add_validation_data(data, "Approval", fetcher=Unused(), roots=[], limits=limits),
+    )
+    for call in operations:
+        with pytest.raises(sealwax.PdfLimitError) as raised:
+            call()
+        assert raised.value.limit == "max_shown_bytes"
+
+
+def test_hsm_wait_is_excluded_from_the_signing_timeout():
+    import time
+
+    class SlowSigner(KeySigner):
+        def sign_digest(self, digest):
+            time.sleep(0.4)
+            return super().sign_digest(digest)
+
+    signed = sealwax.sign(text_page(), SlowSigner(), field="Approval", limits=sealwax.Limits(timeout=0.25))
+    assert sealwax.verify_signatures(signed.pdf, limits=sealwax.Limits(timeout=3))[0]["integrity"] == "intact"

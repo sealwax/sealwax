@@ -374,6 +374,18 @@ impl Document {
         Ok(walker.peaks)
     }
 
+    /// Count the updates linked by the trailer to the revision ending at this byte offset.
+    /// Returns `None` if the signed revision cannot be traced from the current trailer.
+    pub fn revisions_after(&self, end: usize) -> Result<Option<usize>> {
+        self.trailer.revisions_after(self.data(), end, &self.limits)
+    }
+
+    /// Exclude time spent in a caller-supplied external service from the document deadline.
+    #[doc(hidden)]
+    pub fn external_call<T>(&mut self, call: impl FnOnce() -> T) -> T {
+        self.limits.external_call(call)
+    }
+
     /// The document catalog (`/Root`).
     pub fn catalog_id(&self) -> ObjId {
         document_root(&self.pdf)
@@ -453,9 +465,8 @@ impl Document {
         Ok(order)
     }
 
-    /// Whether an object was replaced or added since the document was opened. Reading pages does
-    /// not see such changes: a process that reads them (a PDF/A conversion) needs the document
-    /// saved and opened again.
+    /// Whether an object was replaced or added since the document was opened. Consumers of
+    /// the underlying parser can read the current pages with [`Document::reopened_if_modified`].
     pub fn is_modified(&self) -> bool {
         !self.overlay.is_empty()
     }
@@ -540,6 +551,37 @@ impl Document {
     /// ([`Document::mark_redacted`]).
     pub fn is_redacted(&self) -> bool {
         self.redacted
+    }
+
+    /// Stage a compound edit against the same input and commit it only after every step succeeds.
+    #[doc(hidden)]
+    pub fn try_edit<T, E>(
+        &mut self,
+        edit: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let mut staged = Self {
+            pdf: Arc::clone(&self.pdf),
+            trailer: self.trailer.clone(),
+            overlay: self.overlay.clone(),
+            page_index: self.page_index.clone(),
+            catalog: self.catalog.clone(),
+            appended: self.appended.clone(),
+            rotations: self.rotations.clone(),
+            crop_boxes: self.crop_boxes.clone(),
+            user_units: self.user_units.clone(),
+            info: self.info,
+            next_number: self.next_number,
+            highest_defined: self.highest_defined.clone(),
+            geometry: self.geometry.clone(),
+            limits: self.limits,
+            checked: Mutex::default(),
+            streams: Mutex::default(),
+            view: Mutex::default(),
+            redacted: self.redacted,
+        };
+        let result = edit(&mut staged)?;
+        *self = staged;
+        Ok(result)
     }
 
     /// Replace an indirect object, or create it under that identifier.
