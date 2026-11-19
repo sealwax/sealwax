@@ -16,6 +16,10 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
+- Subsetting a TrueType font returns an error if its glyph count exceeds the OpenType limit.
+  CFF fonts can use all 256 font dictionaries. If a font is refused, `applyXfdf` leaves the
+  document intact and other open WebAssembly documents stay usable.
+
 - Redaction reports an error when a form cannot be fully inspected. Applying marks is atomic
   and disables incremental saving, including when a mark removes only annotations.
 - ECDSA signature timestamps use the encoded signature written to the PDF. Signature

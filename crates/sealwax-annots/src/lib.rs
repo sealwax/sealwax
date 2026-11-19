@@ -324,8 +324,28 @@ pub fn apply_xfdf_with(
         };
         prepared.push((page, item));
     }
+    doc.try_edit(|doc| {
+        apply_prepared(
+            doc,
+            prepared,
+            changed,
+            &programs,
+            options,
+            command.deleted.len(),
+        )
+    })
+}
+
+fn apply_prepared(
+    doc: &mut Document,
+    prepared: Vec<(ObjId, Prepared)>,
+    mut changed: BTreeSet<usize>,
+    programs: &font::ReadFonts,
+    options: &ApplyOptions,
+    deletions_ignored: usize,
+) -> Result<Applied> {
     let mut applied = Applied {
-        deletions_ignored: command.deleted.len(),
+        deletions_ignored,
         ..Applied::default()
     };
     if options.flatten || options.remove_annotations {

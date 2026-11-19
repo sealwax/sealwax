@@ -647,6 +647,30 @@ test("a font that is no TrueType program is refused before anything changes", ()
   assert.equal(doc.applyXfdf(xfdf).charactersReplaced, 1);
 });
 
+test("a font subsetting error leaves open documents usable", () => {
+  const font = readFileSync(new URL("../../sealwax-compose/tests/data/boxes-cff.otf", import.meta.url));
+  const incomplete = Buffer.from(font);
+  // Keep the outlines and metrics intact, but truncate the name table to its version field.
+  const nameRecord = incomplete.indexOf("name", 12, "ascii");
+  assert.ok(nameRecord >= 12 && (nameRecord - 12) % 16 === 0);
+  incomplete.writeUInt32BE(2, nameRecord + 12);
+
+  const xfdf = sealwax.xfdfFor([
+    { kind: "freetext", pageIndex: 0, rect: [100, 600, 300, 630], name: "t1", text: "Hi!" },
+  ]);
+  const doc = Document.fromBytes(form());
+  const other = Document.fromBytes(form());
+  const fields = doc.fields();
+  assert.throws(() => doc.applyXfdf(xfdf, { defaultFont: incomplete }), RangeError);
+  assert.equal(sealwax.isCrashed(), false);
+  assert.equal(doc.isModified(), false);
+  assert.deepEqual(doc.fields(), fields);
+  assert.equal(other.pageCount(), 1);
+  const applied = doc.applyXfdf(xfdf, { defaultFont: font });
+  assert.equal(applied.texts, 1);
+  assert.equal(applied.charactersReplaced, 0);
+});
+
 test("a drawn signature is written and drawn", () => {
   const xfdf = sealwax.xfdfFor([
     { kind: "ink", pageIndex: 0, name: "i1", strokes: [[[100, 600], [120, 630], [150, 615]], [[160, 605]]], width: 1.5 },
