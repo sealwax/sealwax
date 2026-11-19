@@ -335,7 +335,7 @@ dependencies = [
 [[package]]
 name = "docxide-pdf"
 version = "0.21.4"
-source = "git+https://github.com/sboily/docxide-pdf?rev=c7ab58b16605b3f4a3678e3b0588e9aa6d00686b#c7ab58b16605b3f4a3678e3b0588e9aa6d00686b"
+source = "git+https://github.com/sboily/docxide-pdf?rev=52246292e6c14afe294e7606de7d7d3770f1e101#52246292e6c14afe294e7606de7d7d3770f1e101"
 dependencies = [
  "image",
  "log",

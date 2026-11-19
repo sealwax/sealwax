@@ -34,7 +34,8 @@ fuzz_target!(init: tolerate_layout_panics(), |data: &[u8]| {
         return;
     };
     // What compose returns as an error is a bound of the limits passed: no failure.
-    let Ok(composed) = sealwax_compose::compose(&composition(&laid_out), &Limits::default()) else {
+    let translated = composition(&laid_out);
+    let Ok(composed) = sealwax_compose::compose(&translated.composition, &Limits::default()) else {
         return;
     };
     let saved = composed
