@@ -40,6 +40,9 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# docxide-pdf with its display list, from a fork until it publishes one: sealwax-convert only,
-# which is not published.
-allow-git = ["https://github.com/sboily/docxide-pdf"]
+allow-git = [
+    # The DOCX display list in sealwax-convert.
+    "https://github.com/sboily/docxide-pdf",
+    # Font subsetting until typst/subsetter#42 is released.
+    "https://github.com/sboily/subsetter",
+]
