@@ -6,6 +6,8 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-19
+
 ### Added
 
 - Draw a JPEG or PNG on an existing page with `insert_image` in Rust and Python or
@@ -489,7 +491,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sealwax/sealwax/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sealwax/sealwax/compare/v0.6.1...v0.8.0
 [0.6.1]: https://github.com/sealwax/sealwax/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
