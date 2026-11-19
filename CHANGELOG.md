@@ -6,6 +6,14 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Subsetting a TrueType font returns an error if its glyph count exceeds the OpenType limit.
+  CFF fonts can use all 256 font dictionaries. If a font is refused, `applyXfdf` leaves the
+  document intact and other open WebAssembly documents stay usable.
+
+## [0.9.0] - 2026-11-19
+
 ### Added
 
 - Draw a JPEG or PNG on an existing page with `insert_image` in Rust and Python or
@@ -15,10 +23,6 @@ All notable changes to sealwax are recorded here. The format follows
   The timeout covers local processing and excludes calls to key providers and network services.
 
 ### Fixed
-
-- Subsetting a TrueType font returns an error if its glyph count exceeds the OpenType limit.
-  CFF fonts can use all 256 font dictionaries. If a font is refused, `applyXfdf` leaves the
-  document intact and other open WebAssembly documents stay usable.
 
 - Redaction reports an error when a form cannot be fully inspected. Applying marks is atomic
   and disables incremental saving, including when a mark removes only annotations.
@@ -493,7 +497,8 @@ The first release.
   for hostile inputs and output validation, with comparisons against PyMuPDF's text, drawings
   and speed, and PDFium's rendering.
 
-[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sealwax/sealwax/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sealwax/sealwax/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sealwax/sealwax/compare/v0.6.1...v0.8.0
 [0.6.1]: https://github.com/sealwax/sealwax/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/sealwax/sealwax/compare/v0.5.0...v0.6.0
