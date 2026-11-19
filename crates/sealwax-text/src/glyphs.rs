@@ -110,15 +110,18 @@ pub fn glyphs(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Vec<TextGlyph>> {
+    let current = doc.reopened_if_modified()?;
+    let doc = current.as_deref().unwrap_or(doc);
     let mut found = Vec::new();
-    visit_glyphs(doc, page_index, annotations, true, &mut |glyph, _, _| {
+    visit_glyphs(doc, page_index, annotations, true, &mut |glyph, _, _, _| {
         found.push(glyph);
         Ok(())
     })?;
     Ok(found)
 }
 
-type Visitor<'a> = dyn FnMut(TextGlyph, [Point; 4], Option<&Key>) -> sealwax_core::Result<()> + 'a;
+type Visitor<'a> =
+    dyn FnMut(TextGlyph, [Point; 4], Option<&Key>, Option<Rect>) -> sealwax_core::Result<()> + 'a;
 
 /// Visit each glyph with its transformed metric corners and the identity of its replacement.
 /// Layout only needs the metrics, so it skips loading outlines and collecting font names.
@@ -154,6 +157,7 @@ pub(crate) fn visit_glyphs(
             page_parents: page.raw().get::<i64>(b"StructParents"),
             replaced: HashSet::new(),
             annotation: false,
+            clips: Vec::new(),
             programs: HashMap::new(),
             found_in: HashMap::new(),
         };
@@ -342,6 +346,10 @@ fn draw_annotation<'a>(
     collector.last_run = None;
     collector.found_in.clear();
     collector.open.clear();
+    collector.clips.clear();
+    if !collector.details {
+        collector.clips.push(target.abs());
+    }
     let mut context = Context::new(
         fit * matrix,
         EVERYWHERE,
@@ -610,6 +618,7 @@ struct Collector<'a, 'v> {
     annotation: bool,
     /// The metrics of the programs glyphs were drawn from without a known font, by their key.
     programs: HashMap<u128, Metrics>,
+    clips: Vec<Rect>,
     /// The font among a form's several each glyph drawn there was found in.
     found_in: HashMap<GlyphIdentifier, Option<usize>>,
 }
@@ -700,7 +709,16 @@ fn text(unicode: BfString) -> String {
 impl<'a> Device<'a> for Collector<'_, '_> {
     fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
 
-    fn push_clip_path(&mut self, _: &ClipPath) {}
+    fn push_clip_path(&mut self, clip: &ClipPath) {
+        if !self.details {
+            let bounds = clip.path.bounding_box();
+            self.clips.push(
+                self.clips
+                    .last()
+                    .map_or(bounds, |outer| outer.intersect(bounds)),
+            );
+        }
+    }
 
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
 
@@ -816,6 +834,14 @@ impl<'a> Device<'a> for Collector<'_, '_> {
             let Some(bbox) = bounds(&corners) else {
                 continue;
             };
+            let clip = self.clips.last().copied();
+            let clipped = clip.is_some_and(|clip| {
+                clip.is_zero_area()
+                    || bbox[2] < clip.x0
+                    || bbox[0] > clip.x1
+                    || bbox[3] < clip.y0
+                    || bbox[1] > clip.y1
+            });
             let font = if self.details {
                 marked
                     .and_then(|f| f.name.clone())
@@ -829,7 +855,7 @@ impl<'a> Device<'a> for Collector<'_, '_> {
                     last == text && origin.distance(*place) < em * OVERDRAWN
                 })
             });
-            if !overdrawn {
+            if !overdrawn && !clipped {
                 match &text {
                     Some(text) => {
                         let (last, place, em) = self.shown.get_or_insert_with(Default::default);
@@ -855,7 +881,7 @@ impl<'a> Device<'a> for Collector<'_, '_> {
                 actual_text,
                 annotation: self.annotation,
             };
-            if let Err(error) = (self.visitor)(glyph, corners, key.as_ref()) {
+            if let Err(error) = (self.visitor)(glyph, corners, key.as_ref(), clip) {
                 self.error = Some(error);
                 return;
             }
@@ -864,7 +890,9 @@ impl<'a> Device<'a> for Collector<'_, '_> {
 
     fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
 
-    fn pop_clip(&mut self) {}
+    fn pop_clip(&mut self) {
+        self.clips.pop();
+    }
 
     fn pop_transparency_group(&mut self) {}
 

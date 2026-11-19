@@ -29,3 +29,14 @@ pdf, report = sealwax.isolated(sealwax.docx_to_pdf, docx, timeout=60, memory=2 <
 ```
 
 Licensed under MIT OR Apache-2.0, at your option.
+
+
+`Document.words`, `Document.text_blocks` and `Document.search` read the current page,
+including pending edits. They omit character boxes outside the page crop or the bounding
+boxes of active clipping paths, including form and annotation appearance boxes.
+Invisible OCR text inside these bounds remains searchable.
+
+`sign`, `verify_signatures`, `add_document_timestamp` and `add_validation_data` accept
+a keyword-only `limits` argument. Explicit limits are checked before contacting a key
+provider or network service. The deadline counts local PDF processing, including hashing.
+Configure network and HSM timeouts on those clients.

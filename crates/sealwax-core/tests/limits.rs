@@ -449,3 +449,24 @@ fn a_page_is_checked_once_when_within_the_limits_and_every_time_when_not() {
         ));
     }
 }
+
+#[test]
+fn shared_forms_are_measured_with_each_drawing_sites_resources() {
+    let shared = form("/Shape Do", "").replace("/Resources <<  >>", "");
+    let a = form("/Shared Do", "/XObject << /Shared 12 0 R /Shape 13 0 R >>");
+    let b = form("/Shared Do", "/XObject << /Shared 12 0 R /Shape 14 0 R >>");
+    let small = form("q Q", "");
+    let large = form("q Q q Q", "");
+    let data = page(
+        "/A Do /B Do",
+        "/XObject << /A 10 0 R /B 11 0 R >>",
+        &[
+            (10, &a),
+            (11, &b),
+            (12, &shared),
+            (13, &small),
+            (14, &large),
+        ],
+    );
+    assert_eq!(check(data, Limits::default()).unwrap().page_cost, 12);
+}

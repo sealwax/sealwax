@@ -198,7 +198,7 @@ pub(crate) fn full(doc: &Document, options: &SaveOptions) -> Result<Vec<u8>> {
         );
     }
 
-    let second_id = digest(&out);
+    let second_id = digest(&out, doc.limits())?;
     let first_id = match &security {
         Some((_, id, _)) => id.clone(),
         None => known_id.unwrap_or_else(|| second_id.clone()),
@@ -251,13 +251,67 @@ pub(crate) fn incremental(doc: &Document) -> Result<Vec<u8>> {
         out.push(b'\n');
     }
 
+    let mut changed = doc
+        .overlay()
+        .iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut pages = Vec::new();
+    if !doc.appended.is_empty() {
+        let invalid = || Error::Unsupported {
+            what: "appending pages to a damaged page tree",
+        };
+        let catalog = doc.object(doc.catalog_id())?.ok_or_else(invalid)?;
+        let root = catalog
+            .as_dict()
+            .and_then(|d| d.get(b"Pages"))
+            .and_then(Object::as_ref_id)
+            .ok_or_else(invalid)?;
+        let Some(Object::Dict(mut tree)) = doc.object(root)? else {
+            return Err(invalid());
+        };
+        let children = match tree.get(b"Kids") {
+            Some(Object::Ref(id)) => doc.object(*id)?,
+            other => other.cloned(),
+        };
+        let Some(Object::Array(mut kids)) = children else {
+            return Err(invalid());
+        };
+        for (id, geometry) in &doc.appended {
+            doc.check_time()?;
+            let Some(Object::Dict(mut page)) = doc.object(*id)? else {
+                return Err(invalid());
+            };
+            page.insert("Parent", root);
+            // The new page's geometry and resources were set independently of this tree.
+            if tree.contains_key(b"CropBox") && !page.contains_key(b"CropBox") {
+                let media = page.get(b"MediaBox").cloned().ok_or_else(invalid)?;
+                page.insert("CropBox", media);
+            }
+            if tree.contains_key(b"Rotate") && !page.contains_key(b"Rotate") {
+                page.insert("Rotate", i64::from(geometry.rotation.degrees()));
+            }
+            if tree.contains_key(b"Resources") && !page.contains_key(b"Resources") {
+                page.insert("Resources", Dict::new());
+            }
+            kids.push(Object::Ref(*id));
+            pages.push((*id, Object::Dict(page)));
+        }
+        tree.insert("Kids", Object::Array(kids));
+        tree.insert(
+            "Count",
+            i64::try_from(doc.page_count()).map_err(|_| invalid())?,
+        );
+        pages.push((root, Object::Dict(tree)));
+        changed.extend(pages.iter().map(|(id, object)| (id, object)));
+    }
     let mut entries = Vec::new();
-    for (id, object) in doc.overlay() {
+    for (id, object) in changed {
+        doc.check_time()?;
         entries.push((id.number, Entry::InFile(out.len(), id.generation)));
         serialize::indirect(&mut out, *id, object, &SameRefs);
     }
 
-    let second_id = digest(&out);
+    let second_id = digest(&out, doc.limits())?;
     let first_id = base
         .id()
         .map_or_else(|| second_id.clone(), |(first, _)| first);
@@ -353,9 +407,7 @@ pub(crate) fn keeping_numbers(doc: &Document) -> Result<Vec<u8>> {
 /// the input's pages and geometry. On a damaged input a broken output would otherwise go
 /// unnoticed until a reader, or a signature, fails on it.
 ///
-/// An incremental update never changes the page count either: the revisions sealwax appends
-/// (signatures, validation data, annotations) do not touch the page tree, and DocMDP would not
-/// allow it after a certification.
+/// An incremental update must have the current page count, including any appended pages.
 ///
 /// The document's deadline holds for this reading too, and is checked once more before the save
 /// is returned.
@@ -808,8 +860,14 @@ fn deflate(data: &[u8]) -> Vec<u8> {
 }
 
 /// 16 bytes identifying this version of the file: the start of its SHA-256.
-fn digest(data: &[u8]) -> Vec<u8> {
-    Sha256::digest(data)[..16].to_vec()
+fn digest(data: &[u8], limits: &Limits) -> Result<Vec<u8>> {
+    let mut hash = Sha256::new();
+    for chunk in data.chunks(256 * 1024) {
+        limits.check_time()?;
+        hash.update(chunk);
+    }
+    limits.check_time()?;
+    Ok(hash.finalize()[..16].to_vec())
 }
 
 #[cfg(test)]

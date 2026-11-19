@@ -336,6 +336,9 @@ fn png_rgb(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
 /// [`Error::Unrenderable`], also when the renderer fails on a page. Past the limits' deadline,
 /// [`sealwax_core::Error::Timeout`].
 pub fn grayscale(data: &[u8], dpi: f32, options: &OpenOptions) -> Result<Vec<u8>> {
+    if !(dpi.is_finite() && dpi > 0.0) {
+        return Err(sealwax_core::Error::InvalidArgument { what: "dpi" }.into());
+    }
     let mut doc = Document::open(data.to_vec(), options)?;
     // The renderer has no bounds of its own.
     doc.check_pages()?;
@@ -346,7 +349,7 @@ pub fn grayscale(data: &[u8], dpi: f32, options: &OpenOptions) -> Result<Vec<u8>
     if pdf.pages().len() != geometry.len() {
         return Err(Error::Unrenderable);
     }
-    let mut out = Document::empty()?;
+    let mut out = Document::empty_with(*doc.limits())?;
     let cache = RenderCache::new();
     for (page, page_geometry) in pdf.pages().iter().zip(&geometry) {
         doc.check_time()?;
@@ -386,6 +389,17 @@ pub fn grayscale(data: &[u8], dpi: f32, options: &OpenOptions) -> Result<Vec<u8>
             y_scale: axis(shown_height),
             ..PixmapSettings::default()
         };
+        // Use the dimensions of the actual raster allocation, including the renderer's rounding.
+        let (width, height) = page.render_dimensions();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let pixels = u64::from((width * settings.x_scale) as u16)
+            * u64::from((height * settings.y_scale) as u16);
+        if pixels > doc.limits().max_render_pixels {
+            return Err(sealwax_core::Error::LimitExceeded {
+                what: "max_render_pixels",
+            }
+            .into());
+        }
         // A panic of the renderer is an error of this page, not of the process.
         let pixmap = catch_unwind(AssertUnwindSafe(|| {
             render_page(

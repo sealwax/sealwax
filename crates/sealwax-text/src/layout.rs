@@ -1,6 +1,6 @@
 //! Words and lines in PDF painting order, measured in the writing direction of each run.
 
-use hayro_interpret::kurbo::{Point, Vec2};
+use hayro_interpret::kurbo::{Point, Rect, Vec2};
 use sealwax_core::{Document, Error, Result};
 
 use crate::actual::Key;
@@ -39,7 +39,8 @@ pub struct TextBlock {
     pub lines: Vec<TextLine>,
 }
 
-/// Extract the page's words in content order, optionally including annotation appearances.
+/// Extract the current page's words in content order, optionally including annotation appearances.
+/// Character boxes outside the page crop or the bounds of a graphics clip are omitted.
 ///
 /// # Errors
 /// Returns page index, document limit and deadline errors.
@@ -51,17 +52,20 @@ pub fn words(doc: &Document, page: usize, annotations: bool) -> Result<Vec<Word>
         .collect())
 }
 
-/// Extract the page's blocks, lines and words, including invisible text and replacements.
+/// Extract blocks, lines and words with the same clipping as [`words`], including invisible
+/// OCR text and replacements within the clipping bounds.
 ///
 /// # Errors
 /// Returns page index, document limit and deadline errors.
 pub fn text_blocks(doc: &Document, page: usize, annotations: bool) -> Result<Vec<TextBlock>> {
+    let current = doc.reopened_if_modified()?;
+    let doc = current.as_deref().unwrap_or(doc);
     Ok(layout(doc, page, annotations, false)?.blocks)
 }
 
 /// Find non-overlapping occurrences of a phrase, ignoring case and folding whitespace.
-/// Search omits a hyphen that wraps between lines of a block. Each occurrence
-/// has a highlight for each of its lines, covering the matching parts of words.
+/// Search uses the same clipping as [`words`] and omits a hyphen that wraps between lines of a
+/// block. Each occurrence has a highlight for each of its lines, covering the matching text.
 ///
 /// # Errors
 /// Returns page index, document limit and deadline errors.
@@ -71,6 +75,8 @@ pub fn search(
     needle: &str,
     annotations: bool,
 ) -> Result<Vec<Vec<TextQuad>>> {
+    let current = doc.reopened_if_modified()?;
+    let doc = current.as_deref().unwrap_or(doc);
     let layout = layout(doc, page, annotations, true)?;
     layout.index.find(doc, needle)
 }
@@ -200,14 +206,16 @@ struct Replacement {
 }
 
 struct Row {
+    clip: Rect,
     place: Placement,
     area: Envelope,
     glyphs: usize,
 }
 
 impl Replacement {
-    fn push(&mut self, place: Placement, corners: Corners) {
+    fn push(&mut self, place: Placement, corners: Corners, clip: Rect) {
         if let Some(row) = self.rows.last_mut()
+            && row.clip == clip
             && row.place.gap(place) < Break::Line
         {
             row.glyphs += 1;
@@ -215,6 +223,7 @@ impl Replacement {
             row.place.end = place.end;
         } else {
             self.rows.push(Row {
+                clip,
                 place,
                 area: Envelope::new(corners, place.direction),
                 glyphs: 1,
@@ -226,7 +235,7 @@ impl Replacement {
 
 struct Layout<'d> {
     doc: &'d Document,
-    crop: Bounds,
+    crop: Rect,
     blocks: Vec<TextBlock>,
     index: SearchIndex,
     searching: bool,
@@ -246,7 +255,7 @@ fn layout(doc: &Document, page: usize, annotations: bool, searching: bool) -> Re
         .intersected_crop_box();
     let mut layout = Layout {
         doc,
-        crop: [crop.x0, crop.y0, crop.x1, crop.y1],
+        crop: Rect::new(crop.x0, crop.y0, crop.x1, crop.y1),
         blocks: Vec::new(),
         index: SearchIndex::default(),
         searching,
@@ -256,16 +265,27 @@ fn layout(doc: &Document, page: usize, annotations: bool, searching: bool) -> Re
         next_break: Break::Block,
         characters: 0,
     };
-    visit_glyphs(doc, page, annotations, false, &mut |glyph, corners, key| {
-        layout.glyph(glyph, corners, key)
-    })?;
+    visit_glyphs(
+        doc,
+        page,
+        annotations,
+        false,
+        &mut |glyph, corners, key, clip| layout.glyph(glyph, corners, key, clip),
+    )?;
     layout.finish_replacement()?;
     doc.check_time()?;
     Ok(layout)
 }
 
 impl Layout<'_> {
-    fn glyph(&mut self, glyph: TextGlyph, corners: Corners, key: Option<&Key>) -> Result<()> {
+    fn glyph(
+        &mut self,
+        glyph: TextGlyph,
+        corners: Corners,
+        key: Option<&Key>,
+        clip: Option<Rect>,
+    ) -> Result<()> {
+        let clip = clip.map_or(self.crop, |c| c.intersect(self.crop));
         let place = Placement::from_glyph(&glyph);
         if self
             .replacement
@@ -286,12 +306,12 @@ impl Layout<'_> {
             if let Some(r) = &mut self.replacement
                 && (!glyph.overdrawn || r.glyphs == 0)
             {
-                r.push(place, corners);
+                r.push(place, corners, clip);
             }
         } else if !glyph.overdrawn
             && let Some(text) = glyph.text
         {
-            self.run(place, corners, &text)?;
+            self.run(place, corners, &text, clip)?;
         }
         Ok(())
     }
@@ -311,7 +331,7 @@ impl Layout<'_> {
                     end = at + ch.len_utf8();
                 }
                 if end > start {
-                    self.run(row.place, row.area.corners(), &r.text[start..end])?;
+                    self.run(row.place, row.area.corners(), &r.text[start..end], row.clip)?;
                 }
                 used = until;
                 start = end;
@@ -320,7 +340,7 @@ impl Layout<'_> {
         Ok(())
     }
 
-    fn run(&mut self, place: Placement, corners: Corners, text: &str) -> Result<()> {
+    fn run(&mut self, place: Placement, corners: Corners, text: &str, clip: Rect) -> Result<()> {
         let mut visible = false;
         let count = text.chars().count();
         // A ToUnicode or ActualText can expand one painted glyph to a long string.
@@ -348,8 +368,12 @@ impl Layout<'_> {
                 ]
             };
             let bbox = bounds(cell);
-            let [left, bottom, right, top] = self.crop;
-            if bbox[2] < left || bbox[3] < bottom || bbox[0] > right || bbox[1] > top {
+            if clip.is_zero_area()
+                || bbox[2] < clip.x0
+                || bbox[3] < clip.y0
+                || bbox[0] > clip.x1
+                || bbox[1] > clip.y1
+            {
                 continue;
             }
             if !visible {

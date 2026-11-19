@@ -87,23 +87,33 @@ impl Hash {
         }
     }
 
-    pub(crate) fn digest(self, data: &[u8]) -> Vec<u8> {
-        self.digest_parts(&[data])
-    }
-
-    /// The digest of `parts` one after the other.
-    pub(crate) fn digest_parts(self, parts: &[&[u8]]) -> Vec<u8> {
-        let algorithm = match self {
+    fn algorithm(self) -> &'static digest::Algorithm {
+        match self {
             Self::Sha1 => &digest::SHA1_FOR_LEGACY_USE_ONLY,
             Self::Sha256 => &digest::SHA256,
             Self::Sha384 => &digest::SHA384,
             Self::Sha512 => &digest::SHA512,
-        };
-        let mut context = digest::Context::new(algorithm);
-        for part in parts {
-            context.update(part);
         }
-        context.finish().as_ref().to_vec()
+    }
+
+    pub(crate) fn digest(self, data: &[u8]) -> Vec<u8> {
+        digest::digest(self.algorithm(), data).as_ref().to_vec()
+    }
+
+    pub(crate) fn digest_parts(
+        self,
+        parts: &[&[u8]],
+        limits: &sealwax_core::Limits,
+    ) -> sealwax_core::Result<Vec<u8>> {
+        let mut context = digest::Context::new(self.algorithm());
+        for part in parts {
+            for chunk in part.chunks(256 * 1024) {
+                limits.check_time()?;
+                context.update(chunk);
+            }
+        }
+        limits.check_time()?;
+        Ok(context.finish().as_ref().to_vec())
     }
 }
 

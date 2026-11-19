@@ -173,6 +173,16 @@ impl Limits {
         }
     }
 
+    pub(crate) fn external_call<T>(&mut self, call: impl FnOnce() -> T) -> T {
+        let Some(deadline) = self.deadline else {
+            return call();
+        };
+        let start = Instant::now();
+        let value = call();
+        self.deadline = deadline.checked_add(start.elapsed()).or(Some(deadline));
+        value
+    }
+
     /// [`Error::Timeout`] once the deadline has passed.
     ///
     /// # Errors
@@ -214,16 +224,33 @@ fn exceeded(what: &'static str) -> Error {
     Error::LimitExceeded { what }
 }
 
+// Resource dictionaries borrow immutable input bytes throughout one walk. Distinguish the
+// dictionaries a form or Type 3 glyph procedure inherits at different drawing sites.
+type CostKey = (ObjectIdentifier, Option<[usize; 7]>);
+
+fn resource_key(resources: &Resources<'_>) -> [usize; 7] {
+    [
+        &resources.fonts,
+        &resources.x_objects,
+        &resources.ext_g_states,
+        &resources.patterns,
+        &resources.shadings,
+        &resources.properties,
+        &resources.color_spaces,
+    ]
+    .map(|d| d.data().as_ptr() as usize)
+}
+
 /// Walks what drawing pages reads, each stream once, and adds up what drawing them costs.
 pub(crate) struct Walker<'a> {
     limits: Limits,
     /// What drawing each form, tiling pattern or appearance costs, once known.
-    costs: HashMap<ObjectIdentifier, u64>,
+    costs: HashMap<CostKey, u64>,
     /// Those being walked: one drawn again before its walk is done draws itself.
     open: HashSet<ObjectIdentifier>,
     /// What drawing one glyph of each font checked costs: its glyph procedures' for a Type 3
     /// font, none for another.
-    fonts: HashMap<ObjectIdentifier, u64>,
+    fonts: HashMap<CostKey, u64>,
     /// The bytes each stream decoded to, once counted: what a stream decodes to depends on it
     /// alone, so a document keeps these from one page to the next (a font program used on
     /// every page is decoded once).
@@ -449,7 +476,9 @@ impl<'a> Walker<'a> {
     /// those of what draws it when it has none.
     fn form(&mut self, stream: &Stream<'a>, inherited: Option<&Resources<'a>>) -> Result<u64> {
         let id = stream.dict().obj_id();
-        if let Some(cost) = id.and_then(|id| self.costs.get(&id)) {
+        let own = stream.dict().get::<Dict<'a>>(b"Resources");
+        let key = id.map(|id| (id, inherited.filter(|_| own.is_none()).map(resource_key)));
+        if let Some(cost) = key.and_then(|key| self.costs.get(&key)) {
             return Ok(*cost);
         }
         if let Some(id) = id
@@ -457,10 +486,7 @@ impl<'a> Walker<'a> {
         {
             return Err(exceeded("forms drawing themselves"));
         }
-        let own = stream
-            .dict()
-            .get::<Dict<'a>>(b"Resources")
-            .map(Resources::new);
+        let own = own.map(Resources::new);
         let empty;
         let resources = match (&own, inherited) {
             (Some(own), _) => own,
@@ -486,8 +512,8 @@ impl<'a> Walker<'a> {
             self.open.remove(&id);
         }
         let cost = cost?;
-        if let Some(id) = id {
-            self.costs.insert(id, cost);
+        if let Some(key) = key {
+            self.costs.insert(key, cost);
         }
         Ok(cost)
     }
@@ -555,10 +581,13 @@ impl<'a> Walker<'a> {
     /// interpreter would build from it.
     fn font(&mut self, font: &Dict<'a>, resources: &Resources<'a>) -> Result<u64> {
         let id = font.obj_id();
-        if let Some(cost) = id.and_then(|id| self.fonts.get(&id)) {
+        let subtype = font.get::<Name<'a>>(b"Subtype");
+        let inherits =
+            subtype.as_deref() == Some(b"Type3") && font.get::<Dict<'a>>(b"Resources").is_none();
+        let key = id.map(|id| (id, inherits.then(|| resource_key(resources))));
+        if let Some(cost) = key.and_then(|key| self.fonts.get(&key)) {
             return Ok(*cost);
         }
-        let subtype = font.get::<Name<'a>>(b"Subtype");
         let bound = self.limits.max_stream_bytes;
         for key in [&b"ToUnicode"[..], b"Encoding"] {
             if let Some(cmap) = font.get::<Stream<'a>>(key) {
@@ -604,8 +633,8 @@ impl<'a> Walker<'a> {
             }
             _ => 0,
         };
-        if let Some(id) = id {
-            self.fonts.insert(id, cost);
+        if let Some(key) = key {
+            self.fonts.insert(key, cost);
         }
         Ok(cost)
     }

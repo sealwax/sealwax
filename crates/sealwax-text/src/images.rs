@@ -128,6 +128,8 @@ fn walk<'d>(
     page_index: usize,
     device: &mut (impl for<'a> Device<'a> + 'd),
 ) -> sealwax_core::Result<()> {
+    let current = doc.reopened_if_modified()?;
+    let doc = current.as_deref().unwrap_or(doc);
     if page_index >= doc.hayro().pages().len() {
         return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
     }

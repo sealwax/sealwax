@@ -154,3 +154,58 @@ def test_documents_read_in_turn_never_mix_their_fonts():
     # Read again after the thread let go of what it kept: the same.
     sealwax.release_cache()
     assert [g["text"] for g in first.glyphs(0)] == ["A", "B"]
+
+
+@pytest.mark.parametrize(("setup", "extra"), [
+    (b"0 0 100 100 re W n", ""),
+    (b"2 0 0 2 0 0 cm 0 0 100 100 re W n", ""),
+    (b"0 0 100 100 re W n", "/Rotate 90"),
+    (b"BT /F1 50 Tf 7 Tr 10 10 Td (Window) Tj ET", ""),
+])
+def test_layout_respects_graphics_clips_and_their_scope(setup, extra):
+    data = page(b"q " + setup + b" BT /F1 12 Tf 210 110 Td (Outside) Tj ET Q "
+                b"BT /F1 12 Tf 210 110 Td (After) Tj ET", extra=extra)
+    doc = sealwax.Document.from_bytes(data)
+    assert "Outside" not in [w["text"] for w in doc.words(0)]
+    assert "After" in [w["text"] for w in doc.words(0)]
+    assert not doc.search(0, "Outside")
+    assert len(doc.search(0, "After")) == 1
+    assert all(w["text"] != "Outside" for b in doc.text_blocks(0) for line in b["lines"] for w in line["words"])
+
+
+@pytest.mark.parametrize("annotation", [False, True])
+def test_layout_respects_form_and_annotation_appearance_boxes(annotation):
+    data = build([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R "
+        "/Resources << /XObject << /Form 5 0 R >> >> /Annots [6 0 R] >>",
+        stream("", b"" if annotation else b"/Form Do"),
+        stream("/Type /XObject /Subtype /Form /BBox [0 0 80 40] "
+               "/Resources << /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>",
+               b"BT /F 12 Tf 5 15 Td (Inside) Tj 150 0 Td (Outside) Tj ET"),
+        "<< /Type /Annot /Subtype /Stamp /Rect [50 100 130 140] /F 4 /AP << /N 5 0 R >> >>",
+    ])
+    doc = sealwax.Document.from_bytes(data)
+    assert [w["text"] for w in doc.words(0, annotation)] == ["Inside"]
+    assert not doc.search(0, "Outside", annotation)
+
+
+def test_actual_text_intersects_the_clip_for_each_character():
+    doc = sealwax.Document.from_bytes(page(
+        b"0 0 100 100 re W n /Span << /ActualText (AB) >> BDC "
+        b"BT /F1 12 Tf 10 15 Td (x) Tj 190 0 Td (y) Tj ET EMC"
+    ))
+    assert [w["text"] for w in doc.words(0)] == ["A"]
+    assert not doc.search(0, "B")
+
+
+def test_text_reads_the_current_revision():
+    doc = sealwax.Document.new()
+    doc.add_page(150, 150)
+    doc.insert_text(0, (10, 25), "Alpha")
+    assert [w["text"] for w in doc.words(0)] == ["Alpha"]
+    doc = sealwax.Document.from_bytes(doc.save())
+    doc.insert_text(0, (10, 50), "Beta")
+    assert len(doc.search(0, "Beta")) == 1
+    assert [w["text"] for w in doc.words(0)] == ["Alpha", "Beta"]

@@ -6,6 +6,22 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Python signing, verification, document timestamps and validation data accept `limits`.
+  The timeout covers local processing and excludes calls to key providers and network services.
+
+### Fixed
+
+- Redaction reports an error when a form cannot be fully inspected. Applying marks is atomic
+  and disables incremental saving, including when a mark removes only annotations.
+- ECDSA signature timestamps use the encoded signature written to the PDF. Signature
+  verification counts later revisions through their cross-reference chain.
+- Incremental saves attach appended pages to the page tree. Page text, drawings and images
+  reflect pending edits. Word extraction and search respect the bounding boxes of clipping paths.
+- Grayscale conversion enforces the configured pixel budget. Page cost checks account for
+  the resources inherited by shared forms and Type 3 glyph procedures.
+
 ## [0.8.0] - 2026-11-18
 
 0.7.0 was tagged but not published. Its changes are released in 0.8.0.

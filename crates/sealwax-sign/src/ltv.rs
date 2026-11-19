@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use sealwax_core::{Dict, Document, ObjId, Object, OpenOptions, Stream};
+use sealwax_core::{Dict, Document, ObjId, Object, Stream};
 
 use crate::pki::{self, Cert, Hash, PathFault};
 use crate::revocation::{self, Refusal};
@@ -126,7 +126,8 @@ fn gather(
     contents: &[u8],
     validation: &Validation<'_>,
     now: u64,
-) -> Result<Gathered, ValidationError> {
+    doc: &mut Document,
+) -> Result<Gathered> {
     let signed = signed_data::read(contents, true).map_err(ValidationError::Malformed)?;
     let trust = validation.trust;
     let signer = signed
@@ -185,9 +186,10 @@ fn gather(
             return Err(ValidationError::Incomplete {
                 certificate: cert.subject(),
                 limit: MAX_COVERED,
-            });
+            }
+            .into());
         }
-        match vouch(&cert, &issuer, validation.fetcher, now)? {
+        match vouch(&cert, &issuer, validation.fetcher, now, doc)? {
             Proof::Ocsp(response, responder) => {
                 if !ocsp_responses.contains(&response) {
                     ocsp_responses.push(response);
@@ -226,14 +228,16 @@ fn vouch(
     issuer: &Cert,
     fetcher: &dyn RevocationFetcher,
     now: u64,
-) -> Result<Proof, ValidationError> {
+    doc: &mut Document,
+) -> Result<Proof> {
     let revoked = || ValidationError::Revoked {
         certificate: cert.subject(),
     };
     let mut reasons = Vec::new();
     if let Some(request) = revocation::ocsp_request(cert, issuer) {
         for url in cert.ocsp_urls() {
-            let response = match fetcher.ocsp(&url, &request) {
+            doc.check_time()?;
+            let response = match doc.external_call(|| fetcher.ocsp(&url, &request)) {
                 Ok(response) => response,
                 Err(error) => {
                     reasons.push(format!("OCSP {url}: {error}"));
@@ -242,13 +246,14 @@ fn vouch(
             };
             match revocation::check_ocsp(&response, cert, issuer, now) {
                 Ok(responder) => return Ok(Proof::Ocsp(response, responder.map(Box::new))),
-                Err(Refusal::Revoked) => return Err(revoked()),
+                Err(Refusal::Revoked) => return Err(revoked().into()),
                 Err(refusal) => reasons.push(format!("OCSP {url}: {refusal}")),
             }
         }
     }
     for url in cert.crl_urls() {
-        let crl = match fetcher.crl(&url) {
+        doc.check_time()?;
+        let crl = match doc.external_call(|| fetcher.crl(&url)) {
             Ok(crl) => crl,
             Err(error) => {
                 reasons.push(format!("CRL {url}: {error}"));
@@ -257,7 +262,7 @@ fn vouch(
         };
         match revocation::check_crl(&crl, cert, issuer, now) {
             Ok(()) => return Ok(Proof::Crl(crl)),
-            Err(Refusal::Revoked) => return Err(revoked()),
+            Err(Refusal::Revoked) => return Err(revoked().into()),
             Err(refusal) => reasons.push(format!("CRL {url}: {refusal}")),
         }
     }
@@ -267,7 +272,8 @@ fn vouch(
     Err(ValidationError::Unavailable {
         certificate: cert.subject(),
         reasons: reasons.join("; "),
-    })
+    }
+    .into())
 }
 
 /// A dictionary, direct or by reference, and its object number if indirect.
@@ -287,11 +293,15 @@ fn dict_at(doc: &Document, value: Option<&Object>) -> Result<(Option<ObjId>, Dic
 fn known_streams(doc: &Document, array: &[Object]) -> Result<HashMap<Vec<u8>, ObjId>> {
     let mut known = HashMap::new();
     for item in array {
+        doc.check_time()?;
         if let Object::Ref(id) = item
             && let Some(Object::Stream(stream)) = doc.object(*id)?
             && !stream.dict.contains_key(b"Filter")
         {
-            known.insert(Hash::Sha256.digest(&stream.data), *id);
+            known.insert(
+                Hash::Sha256.digest_parts(&[&stream.data], doc.limits())?,
+                *id,
+            );
         }
     }
     Ok(known)
@@ -316,7 +326,7 @@ fn add_to_store(
     let mut known = known_streams(doc, &array)?;
     let mut references = Vec::new();
     for blob in blobs {
-        let digest = Hash::Sha256.digest(blob);
+        let digest = Hash::Sha256.digest_parts(&[blob], doc.limits())?;
         let id = match known.get(&digest) {
             Some(id) => *id,
             None => {
@@ -350,73 +360,88 @@ pub fn add_validation_data(
     field_name: &str,
     validation: &Validation<'_>,
 ) -> Result<(Vec<u8>, Coverage)> {
-    let mut doc = Document::open(pdf.to_vec(), &OpenOptions::default())?;
-    let contents = pdf::signature_contents(&doc, field_name)?
-        .ok_or(Error::Validation(ValidationError::NotSigned))?;
-    // Validation data proves nothing for a signature that is not intact.
-    if let Some(check) = crate::verify_signatures(pdf)?
-        .into_iter()
-        .find(|check| check.field == field_name)
-        && let crate::Integrity::Broken(problem) = check.integrity
-    {
-        return Err(Error::BrokenSignature {
-            field: check.field,
-            problem,
-        });
-    }
-    let time = validation.time.unwrap_or_else(date::now);
-    let now = u64::try_from(time).unwrap_or(0);
-    let gathered = gather(&contents, validation, now).map_err(Error::Validation)?;
+    crate::SigningInput::open(pdf.to_vec(), None)?.add_validation_data(field_name, validation)
+}
 
-    let catalog_id = doc.catalog_id();
-    let Some(Object::Dict(mut catalog)) = doc.object(catalog_id)? else {
-        return Err(Error::Pdf(sealwax_core::Error::Malformed));
-    };
-    let (store_id, mut store) = dict_at(&doc, catalog.get(b"DSS"))?;
-    let certificates = add_to_store(&mut doc, &mut store, "Certs", &gathered.certificates)?;
-    let ocsp_responses = add_to_store(&mut doc, &mut store, "OCSPs", &gathered.ocsp_responses)?;
-    let crls = add_to_store(&mut doc, &mut store, "CRLs", &gathered.crls)?;
+impl crate::SigningInput {
+    /// Gather validation data under the document limits, excluding OCSP and CRL waits.
+    pub fn add_validation_data(
+        self,
+        field_name: &str,
+        validation: &Validation<'_>,
+    ) -> Result<(Vec<u8>, Coverage)> {
+        let doc = &self.doc;
+        let contents = pdf::signature_contents(doc, field_name)?
+            .ok_or(Error::Validation(ValidationError::NotSigned))?;
+        // Validation data proves nothing for a signature that is not intact.
+        if let Some(check) = self
+            .verify_signatures()?
+            .into_iter()
+            .find(|check| check.field == field_name)
+            && let crate::Integrity::Broken(problem) = check.integrity
+        {
+            return Err(Error::BrokenSignature {
+                field: check.field,
+                problem,
+            });
+        }
+        let time = validation.time.unwrap_or_else(date::now);
+        let now = u64::try_from(time).unwrap_or(0);
+        let mut doc = self.doc;
+        let gathered = gather(&contents, validation, now, &mut doc)?;
+        doc.check_time()?;
 
-    // The signature's entry, named by the SHA-1 of its /Contents as the file holds it.
-    let mut entry = Dict::new();
-    for (key, references) in [
-        ("Cert", &certificates),
-        ("OCSP", &ocsp_responses),
-        ("CRL", &crls),
-    ] {
-        if !references.is_empty() {
-            entry.insert(key, references.clone());
+        let catalog_id = doc.catalog_id();
+        let Some(Object::Dict(mut catalog)) = doc.object(catalog_id)? else {
+            return Err(Error::Pdf(sealwax_core::Error::Malformed));
+        };
+        let (store_id, mut store) = dict_at(&doc, catalog.get(b"DSS"))?;
+        let certificates = add_to_store(&mut doc, &mut store, "Certs", &gathered.certificates)?;
+        let ocsp_responses = add_to_store(&mut doc, &mut store, "OCSPs", &gathered.ocsp_responses)?;
+        let crls = add_to_store(&mut doc, &mut store, "CRLs", &gathered.crls)?;
+
+        // The signature's entry, named by the SHA-1 of its /Contents as the file holds it.
+        let mut entry = Dict::new();
+        for (key, references) in [
+            ("Cert", &certificates),
+            ("OCSP", &ocsp_responses),
+            ("CRL", &crls),
+        ] {
+            if !references.is_empty() {
+                entry.insert(key, references.clone());
+            }
         }
-    }
-    entry.insert("TU", Object::String(date::pdf_date(time).into_bytes()));
-    let key: String = Hash::Sha1
-        .digest(&contents)
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect();
-    let (vri_id, mut vri) = dict_at(&doc, store.get(b"VRI"))?;
-    vri.insert(key.as_str(), entry);
-    match vri_id {
-        Some(id) => doc.set_object(id, Object::Dict(vri)),
-        None => {
-            store.insert("VRI", vri);
+        entry.insert("TU", Object::String(date::pdf_date(time).into_bytes()));
+        let key: String = Hash::Sha1
+            .digest_parts(&[&contents], doc.limits())?
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        let (vri_id, mut vri) = dict_at(&doc, store.get(b"VRI"))?;
+        vri.insert(key.as_str(), entry);
+        match vri_id {
+            Some(id) => doc.set_object(id, Object::Dict(vri)),
+            None => {
+                store.insert("VRI", vri);
+            }
         }
-    }
-    match store_id {
-        Some(id) => doc.set_object(id, Object::Dict(store)),
-        None => {
-            let id = doc.add_object(Object::Dict(store))?;
-            catalog.insert("DSS", id);
-            doc.set_object(catalog_id, Object::Dict(catalog));
+        match store_id {
+            Some(id) => doc.set_object(id, Object::Dict(store)),
+            None => {
+                let id = doc.add_object(Object::Dict(store))?;
+                catalog.insert("DSS", id);
+                doc.set_object(catalog_id, Object::Dict(catalog));
+            }
         }
+        let data = doc.save_incremental()?;
+        doc.check_time()?;
+        Ok((
+            data,
+            Coverage {
+                certificates: certificates.len(),
+                ocsp_responses: ocsp_responses.len(),
+                crls: crls.len(),
+            },
+        ))
     }
-    let data = doc.save_incremental()?;
-    Ok((
-        data,
-        Coverage {
-            certificates: certificates.len(),
-            ocsp_responses: ocsp_responses.len(),
-            crls: crls.len(),
-        },
-    ))
 }

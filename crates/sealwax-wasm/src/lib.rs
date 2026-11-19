@@ -1905,7 +1905,8 @@ impl Document {
         Ok(object)
     }
 
-    /// Words in page content order, including annotation appearances when requested.
+    /// Words in current page content order, including annotation appearances when requested.
+    /// Character boxes outside the page crop or the bounds of a graphics clip are omitted.
     ///
     /// # Errors
     /// A page or limit error as for `glyphs`.

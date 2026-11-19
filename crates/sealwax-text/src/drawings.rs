@@ -123,6 +123,8 @@ pub fn drawings(
     page_index: usize,
     annotations: bool,
 ) -> sealwax_core::Result<Drawings> {
+    let current = doc.reopened_if_modified()?;
+    let doc = current.as_deref().unwrap_or(doc);
     if page_index >= doc.hayro().pages().len() {
         return Err(sealwax_core::Error::InvalidArgument { what: "page index" });
     }

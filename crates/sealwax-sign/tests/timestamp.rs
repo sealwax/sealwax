@@ -691,3 +691,72 @@ fn a_document_timestamp_covers_the_document() {
     let checks = verify_signatures(&changed).unwrap();
     assert!(checks.iter().any(|c| !c.is_intact()), "{checks:?}");
 }
+
+#[test]
+fn a_key_vault_signature_has_the_same_timestamp_in_both_signing_apis() {
+    use sealwax_sign::{Algorithm, Signer, prepare};
+
+    struct Vault(TestSigner);
+    impl Signer for Vault {
+        fn certificate(&self) -> &[u8] {
+            self.0.certificate()
+        }
+        fn chain(&self) -> &[Vec<u8>] {
+            self.0.chain()
+        }
+        fn algorithm(&self) -> Algorithm {
+            self.0.algorithm()
+        }
+        fn sign(&self, message: &[u8], digest: &[u8]) -> Result<Vec<u8>, String> {
+            #[derive(Sequence)]
+            struct Pair {
+                r: der::asn1::Uint,
+                s: der::asn1::Uint,
+            }
+            let pair = Pair::from_der(&self.0.sign(message, digest)?).unwrap();
+            let mut raw = [0u8; 64];
+            for (value, slot) in [pair.r, pair.s].iter().zip(raw.chunks_mut(32)) {
+                let value = value.as_bytes();
+                slot[32 - value.len()..].copy_from_slice(value);
+            }
+            Ok(raw.to_vec())
+        }
+    }
+    let signer = Vault(TestSigner::new());
+    let authority = Authority::new(Some(TIME_STAMPING), false);
+    let trust = authority.trust();
+    let client = Client {
+        authority: &authority,
+        behaviour: Behaviour::default(),
+    };
+    let stamping = Timestamping {
+        client: &client,
+        trust: &trust,
+        policy: Policy::Required,
+    };
+    let pdf = document();
+    let options = Options::new("Approval", Kind::Approval);
+    let one = sign(&pdf, &signer, &options, Some(&stamping)).unwrap().pdf;
+    let prepared = prepare(
+        &pdf,
+        signer.certificate(),
+        signer.chain(),
+        signer.algorithm(),
+        &options,
+    )
+    .unwrap();
+    let raw = signer
+        .sign(&prepared.message().unwrap(), prepared.digest())
+        .unwrap();
+    let request = prepared.timestamp_request(&raw).unwrap();
+    let token = request
+        .check_response(&client.timestamp(request.to_der()).unwrap(), &trust)
+        .unwrap()
+        .token;
+    let two = prepared.finalize(&raw, Some(&token)).unwrap();
+    for signed in [one, two] {
+        let check = verify_signatures(&signed).unwrap().remove(0);
+        assert!(check.is_intact());
+        assert!(check.timestamp_time.is_some());
+    }
+}

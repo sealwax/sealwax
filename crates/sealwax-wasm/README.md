@@ -122,7 +122,10 @@ word indices. `textBlocks(pageIndex)` returns the same words grouped into lines
 and blocks. `search(pageIndex, needle)` returns an array per occurrence, with
 one quad per matched line. Its four points are top-left, top-right, bottom-left
 and bottom-right relative to the writing direction. All three methods accept a
-final boolean to include annotation appearances (default `false`).
+final boolean to include annotation appearances (default `false`). They read the current
+page and omit character boxes outside the page crop or the bounding boxes of active
+clipping paths, including form and annotation appearance boxes. Invisible OCR text
+inside these bounds remains searchable.
 
 ## Limits and panics
 

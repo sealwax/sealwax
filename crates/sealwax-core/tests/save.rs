@@ -610,3 +610,39 @@ fn new_object_numbers_stay_below_the_ceiling_and_their_search_ends() {
         doc.save_incremental().unwrap();
     }
 }
+
+#[test]
+fn appended_pages_are_attached_in_incremental_table_and_stream_updates() {
+    for format in [XrefFormat::Table, XrefFormat::Stream] {
+        let original = save(&open(sample()), format);
+        let mut doc = open(original.clone());
+        let count = doc.page_count();
+        doc.add_page(150.0, 175.0).unwrap();
+        let bytes = doc.save_incremental().unwrap();
+        assert!(bytes.starts_with(&original));
+        let saved = open(bytes);
+        assert_eq!(saved.page_count(), count + 1);
+        assert_eq!(saved.geometry()[count].media_box.width(), 150.0);
+    }
+}
+
+#[test]
+fn a_new_page_keeps_its_own_geometry_on_an_inherited_page_tree() {
+    let original = pdf(
+        &[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            (
+                2,
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 /CropBox [10 10 60 60] /Rotate 90 >>",
+            ),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>"),
+        ],
+        false,
+    );
+    let mut doc = open(original);
+    doc.add_page(150.0, 175.0).unwrap();
+    assert_eq!(
+        open(doc.save_incremental().unwrap()).geometry(),
+        doc.geometry()
+    );
+}
