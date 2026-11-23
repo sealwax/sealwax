@@ -184,7 +184,7 @@ sealwax glyphs in.pdf --out glyphs.jsonl
 |---|---|
 | `crates/sealwax` | The facade crate: the document model, with `annots`, `compose`, `pdfa`, `raster`, `sign` and `text` modules |
 | `crates/sealwax-*` | One crate per area. `sealwax-cli` is the command line, `sealwax-py` the Python bindings, `sealwax-wasm` the npm package |
-| `crates/sealwax-convert` | Other formats converted to PDF: DOCX laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by `sealwax-compose`. Shipped in the Python package (`docx_to_pdf`), not on crates.io: it takes docxide-pdf's display list from a fork until docxide-pdf publishes one. Its layout reads the documents' fonts with ttf-parser, which is no longer maintained, and its time is not bounded: convert documents you do not trust with `sealwax.isolated`. Needs Rust 1.97 |
+| `crates/sealwax-convert` | Other formats converted to PDF: DOCX laid out by [docxide-pdf](https://github.com/sverrejb/docxide-pdf), written by `sealwax-compose`. Shipped in the Python package (`docx_to_pdf`), not on crates.io until `sealwax-compose` is. Its layout reads the documents' fonts with ttf-parser, which is no longer maintained, and its time is not bounded: convert documents you do not trust with `sealwax.isolated`. Needs Rust 1.97 |
 | `fuzz/` | `cargo-fuzz` targets, one per entry point |
 | `benchmark/` | Hostile-input bench, and judges that check outputs with veraPDF, pyHanko, PDFium and qpdf |
 

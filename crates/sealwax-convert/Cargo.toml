@@ -8,18 +8,15 @@ rust-version = "1.97"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Depends on docxide-pdf from git until it publishes its display list: crates.io refuses that.
+# Depends on sealwax-compose, which is not published yet.
 publish = false
 
 [dependencies]
 sealwax-core.workspace = true
 sealwax-compose.workspace = true
-# DOCX laid out to a display list (Apache-2.0): upstream since sverrejb/docxide-pdf#168, not yet
-# released; here with its marked content, structure tree, outline and PDF/UA claim, to be proposed
-# upstream from the fork's branch `display-tags`. Branch `sealwax-crate` of the fork holds snapshots
-# of the files docxide-pdf publishes on crates.io, without the repository's history (1.4 GB with
-# its fixtures).
-docxide-pdf = { git = "https://github.com/sboily/docxide-pdf", rev = "52246292e6c14afe294e7606de7d7d3770f1e101", default-features = false }
+# DOCX laid out to a display list (Apache-2.0), with its marked content, structure tree and
+# outline. `cli` (the default) is its command line.
+docxide-pdf = { version = "0.22.0", default-features = false }
 thiserror.workspace = true
 # The archive's parts and their sizes, read before the layout: the same crate docxide-pdf reads
 # them with, so both see the same parts.
