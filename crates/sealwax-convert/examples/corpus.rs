@@ -187,8 +187,8 @@ fn run_case(group: &str, name: &str, input: &Path, out: &Path) -> CaseResult {
     let options = DocxOptions::default().font_cache(false);
 
     let start = Instant::now();
-    let native = match docxide_pdf::convert_docx_bytes_to_pdf_bytes_with(&docx, &options) {
-        Ok(bytes) => bytes,
+    let native = match docxide_pdf::convert(&docx, &options) {
+        Ok(conversion) => conversion.pdf,
         Err(e) => {
             result.error = Some(format!("native: {e}"));
             return result;

@@ -6,6 +6,12 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- DOCX conversion (`docx_to_pdf` in Python) is laid out by docxide-pdf 0.22.0, from crates.io,
+  instead of a fork: the marked content, structure tree and bookmarks it hands over are now part
+  of docxide-pdf. The layout follows that release's changes.
+
 ### Fixed
 
 - Subsetting a TrueType font returns an error if its glyph count exceeds the OpenType limit.

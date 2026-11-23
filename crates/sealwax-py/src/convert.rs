@@ -27,8 +27,7 @@ fn docx_to_pdf<'py>(
     let bounds = limits
         .as_deref()
         .map_or_else(pdf::Limits::default, Limits::counted_from_now);
-    let mut options = sealwax_convert::DocxOptions::default();
-    options.font_dirs = font_dirs.unwrap_or_default();
+    let options = sealwax_convert::DocxOptions::default().font_dirs(font_dirs.unwrap_or_default());
     let (data, skipped, not_described) = run(py, || {
         let converted = sealwax_convert::docx_to_pdf(&docx_content, &options, &bounds)?;
         let data = converted

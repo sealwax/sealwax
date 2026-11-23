@@ -12,9 +12,8 @@
 //! bounded: convert documents you do not trust in a process you can stop. A panic in
 //! docxide-pdf is caught as a document it cannot lay out, unless the build aborts on panic.
 //!
-//! Not published on crates.io yet: docxide-pdf has the display list since
-//! sverrejb/docxide-pdf#168 but has not released it, and its marked content, structure and
-//! outline come from a fork until they are proposed and released upstream.
+//! Not published on crates.io yet: it depends on [`sealwax_compose`], which is not published
+//! yet either.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -84,13 +83,14 @@ pub fn layout_docx(
 ) -> Result<display::Document, Error> {
     limits.check_time().map_err(sealwax_compose::Error::from)?;
     check_unpacked(docx, limits)?;
+    let options = options.clone().display_list(true);
     // docxide-pdf does not promise not to panic on a hostile document. What it records is kept
     // per thread and put back as a panic unwinds, so a layout that panicked leaves nothing.
-    catch_unwind(AssertUnwindSafe(|| {
-        docxide_pdf::layout_docx_bytes_with(docx, options)
-    }))
-    .map_err(|_| Error::Layout)?
-    .map_err(|_| Error::Layout)
+    catch_unwind(AssertUnwindSafe(|| docxide_pdf::convert(docx, &options)))
+        .map_err(|_| Error::Layout)?
+        .map_err(|_| Error::Layout)?
+        .display
+        .ok_or(Error::Layout)
 }
 
 /// Check that `docx` unpacks to at most [`Limits::max_unpacked_bytes`], its parts at the sizes
