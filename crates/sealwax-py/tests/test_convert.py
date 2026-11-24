@@ -6,9 +6,13 @@ import pytest
 
 import sealwax
 
+CRATES = Path(__file__).parents[2]
 # Written by crates/sealwax-convert/tests/data/make_docx.py: a heading, a link and a list on the
-# first page, a paragraph on the second.
-TWO_PAGES = (Path(__file__).parents[2] / "sealwax-convert/tests/data/two-pages.docx").read_bytes()
+# first page, a paragraph on the second; and "Hi!" in the font Boxes, which no system has.
+TWO_PAGES = (CRATES / "sealwax-convert/tests/data/two-pages.docx").read_bytes()
+BOXES = (CRATES / "sealwax-convert/tests/data/boxes.docx").read_bytes()
+# Written by crates/sealwax-compose/tests/data/make_fonts.py: two faces of the family Boxes.
+BOXES_FONT = (CRATES / "sealwax-compose/tests/data/boxes.ttc").read_bytes()
 
 
 def text(doc: sealwax.Document, page_index: int) -> str:
@@ -17,7 +21,8 @@ def text(doc: sealwax.Document, page_index: int) -> str:
 
 def test_a_docx_becomes_a_pdf_with_its_pages_text_and_bookmarks():
     pdf, report = sealwax.docx_to_pdf(TWO_PAGES)
-    assert report == {"skipped": {}, "not_described": {}}
+    # Which fonts are missing depends on the system's.
+    assert report == {"skipped": {}, "not_described": {}, "missing_fonts": report["missing_fonts"]}
     doc = sealwax.Document.from_bytes(pdf)
     assert doc.page_count == 2
     assert text(doc, 0).startswith("AheadingHellofromasyntheticdocument.")
@@ -42,6 +47,26 @@ def test_font_dirs_are_searched_and_must_be_a_list():
     assert pdf.startswith(b"%PDF")
     with pytest.raises(TypeError):
         sealwax.docx_to_pdf(TWO_PAGES, font_dirs="/usr/share/fonts")  # type: ignore[arg-type]
+
+
+def test_a_font_no_face_provides_is_reported_until_supplied():
+    boxes = {"name": "Boxes", "bold": False, "italic": False, "replaces": None}
+    _, report = sealwax.docx_to_pdf(BOXES)
+    assert boxes in report["missing_fonts"]
+    # Data without a usable face is ignored.
+    _, report = sealwax.docx_to_pdf(BOXES, fonts=[b"not a font"])
+    assert boxes in report["missing_fonts"]
+    pdf, report = sealwax.docx_to_pdf(BOXES, fonts=[b"not a font", BOXES_FONT])
+    assert boxes not in report["missing_fonts"]
+    # Embedded as a subset: its name past the subset tag.
+    glyphs = sealwax.Document.from_bytes(pdf).glyphs(0)
+    assert [(g["text"], (g["font"] or "").split("+")[-1]) for g in glyphs] == [
+        ("H", "BoxesTT-Regular"),
+        ("i", "BoxesTT-Regular"),
+        ("!", "BoxesTT-Regular"),
+    ]
+    with pytest.raises(TypeError):
+        sealwax.docx_to_pdf(BOXES, fonts=BOXES_FONT)  # type: ignore[arg-type]
 
 
 def test_an_untrusted_document_converts_in_a_process_of_its_own():

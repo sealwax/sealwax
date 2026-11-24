@@ -1,6 +1,6 @@
 //! DOCX documents converted: laid out by docxide-pdf, written by sealwax-compose, read back by
 //! sealwax: pages, text, links, the structure of the document and its bookmarks.
-//! `data/two-pages.docx` is written by `data/make_docx.py`.
+//! `data/two-pages.docx` and `data/boxes.docx` are written by `data/make_docx.py`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -11,6 +11,8 @@ use sealwax_convert::{DocxOptions, Error, composition, display, docx_to_pdf, lay
 use sealwax_core::{Dict, Document, Limits, Object, OpenOptions, OutlineEntry, SaveOptions};
 
 const TWO_PAGES: &[u8] = include_bytes!("data/two-pages.docx");
+/// "Hi!" in the font Boxes, which no system has.
+const BOXES: &[u8] = include_bytes!("data/boxes.docx");
 
 fn converted(docx: &[u8]) -> Document {
     let converted = docx_to_pdf(docx, &DocxOptions::default(), &Limits::default()).unwrap();
@@ -124,6 +126,26 @@ fn a_plain_document_is_described_and_written_whole() {
     let converted = docx_to_pdf(TWO_PAGES, &DocxOptions::default(), &Limits::default()).unwrap();
     assert!(converted.not_described.is_empty());
     assert_eq!(converted.composed.skipped.iter().count(), 0);
+}
+
+#[test]
+fn the_fonts_no_face_provides_are_reported() {
+    // Without the system's fonts, what the document asks for is found nowhere.
+    let options = DocxOptions::default().system_fonts(false);
+    let converted = docx_to_pdf(BOXES, &options, &Limits::default()).unwrap();
+    let missing: Vec<_> = converted
+        .missing_fonts
+        .iter()
+        .map(|font| {
+            (
+                font.name.as_str(),
+                font.bold,
+                font.italic,
+                font.replaces.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(missing, [("Boxes", false, false, None)]);
 }
 
 #[test]

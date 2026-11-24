@@ -4,8 +4,12 @@
 
 two-pages.docx: a heading, a paragraph, a link to https://example.org/, a list of two bullet
 items, then a page break and a second paragraph. One style (the heading's, at outline level 1)
-and one numbering (bullets); no fonts: the layout falls back on its defaults. Entries are dated
-1980-01-01, so that the file is the same at every run.
+and one numbering (bullets); no fonts: the layout falls back on its defaults.
+
+boxes.docx: one paragraph, "Hi!", in the font Boxes, which no system has:
+sealwax-compose/tests/data/boxes.ttc provides it.
+
+Entries are dated 1980-01-01, so that the files are the same at every run.
 """
 
 import zipfile
@@ -16,7 +20,7 @@ PACKAGE = "http://schemas.openxmlformats.org/package/2006"
 WORDML = "application/vnd.openxmlformats-officedocument.wordprocessingml"
 DOCUMENT_TYPE = f"{WORDML}.document.main+xml"
 
-PARTS = {
+TWO_PAGES = {
     "[Content_Types].xml": f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="{PACKAGE}/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -68,6 +72,28 @@ PARTS = {
 </w:document>""",
 }
 
-with zipfile.ZipFile("two-pages.docx", "w", zipfile.ZIP_DEFLATED) as docx:
-    for name, text in PARTS.items():
-        docx.writestr(zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)), text, zipfile.ZIP_DEFLATED)
+BOXES = {
+    "[Content_Types].xml": f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="{PACKAGE}/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="{DOCUMENT_TYPE}"/>
+</Types>""",
+    "_rels/.rels": TWO_PAGES["_rels/.rels"],
+    "word/document.xml": f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{W}">
+<w:body>
+<w:p><w:r><w:rPr><w:rFonts w:ascii="Boxes" w:hAnsi="Boxes"/></w:rPr><w:t>Hi!</w:t></w:r></w:p>
+<w:sectPr>
+<w:pgSz w:w="11906" w:h="16838"/>
+<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
+</w:sectPr>
+</w:body>
+</w:document>""",
+}
+
+for file, parts in [("two-pages.docx", TWO_PAGES), ("boxes.docx", BOXES)]:
+    with zipfile.ZipFile(file, "w", zipfile.ZIP_DEFLATED) as docx:
+        for name, text in parts.items():
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            docx.writestr(info, text, zipfile.ZIP_DEFLATED)

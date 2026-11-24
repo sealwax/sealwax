@@ -159,9 +159,16 @@ class Metadata(TypedDict):
     pdfa: str | None
     info: dict[str, str]
 
+class MissingFont(TypedDict):
+    name: str
+    bold: bool
+    italic: bool
+    replaces: str | None
+
 class DocxReport(TypedDict):
     skipped: dict[str, int]
     not_described: dict[str, int]
+    missing_fonts: list[MissingFont]
 
 class PhotoPages(TypedDict):
     added: int
@@ -538,6 +545,7 @@ def docx_to_pdf(
     docx_content: bytes,
     *,
     font_dirs: list[str | PathLike[str]] | None = None,
+    fonts: list[bytes] | None = None,
     limits: Limits | None = None,
 ) -> tuple[bytes, DocxReport]: ...
 def pdfa_convert(
