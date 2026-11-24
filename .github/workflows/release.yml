@@ -39,8 +39,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # sealwax-py and sealwax-convert are not published.
-      - run: cargo package --workspace --exclude sealwax-py --exclude sealwax-convert
+      # sealwax-py is not published.
+      - run: cargo package --workspace --exclude sealwax-py
 
   wheels:
     name: Wheel (${{ matrix.name }})

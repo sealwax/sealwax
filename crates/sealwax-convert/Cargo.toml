@@ -8,7 +8,9 @@ rust-version = "1.97"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+readme.workspace = true
+keywords = ["pdf", "docx", "word", "converter", "tagged-pdf"]
+categories = ["text-processing", "rendering"]
 
 [dependencies]
 sealwax-core.workspace = true

@@ -6,6 +6,13 @@ All notable changes to sealwax are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sealwax-convert` is on crates.io. Its first version, 0.9.1, was published after the 0.9.1
+  release, with that release's code. It converts a DOCX document to PDF (`docx_to_pdf`), laid out
+  by docxide-pdf and written by `sealwax-compose`, tagged with its structure and bookmarks, and
+  reports what the conversion left out. It needs Rust 1.97.
+
 ## [0.9.1] - 2026-11-24
 
 ### Changed
