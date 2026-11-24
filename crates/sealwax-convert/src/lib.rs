@@ -12,9 +12,9 @@
 //! bounded: convert documents you do not trust in a process you can stop. A panic in
 //! docxide-pdf is caught as a document it cannot lay out, unless the build aborts on panic.
 //!
-//! [`display`] and [`DocxOptions`] are docxide-pdf's, re-exported: a docxide-pdf release that
-//! changes them comes with a new minor version of this crate. It needs Rust 1.97, as docxide-pdf
-//! does.
+//! [`display`], [`DocxOptions`] and [`MissingFont`] are docxide-pdf's, re-exported: a docxide-pdf
+//! release that changes them comes with a new minor version of this crate. It needs Rust 1.97, as
+//! docxide-pdf does.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -27,6 +27,7 @@ mod translate;
 pub use translate::{Translated, composition};
 
 pub use docxide_pdf::ConvertOptions as DocxOptions;
+pub use docxide_pdf::MissingFont;
 
 /// What a conversion can fail with.
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +51,9 @@ pub struct Converted {
     /// What the layout drew that the PDF lacks, by kind, with how many times: see
     /// [`Translated::not_described`].
     pub not_described: BTreeMap<&'static str, usize>,
+    /// The fonts the document asks for that no face provides, drawn with another: supplied with
+    /// [`DocxOptions::font`] or [`DocxOptions::font_dirs`], they are drawn as Word draws them.
+    pub missing_fonts: Vec<MissingFont>,
 }
 
 /// A DOCX document as a PDF document.
@@ -62,11 +66,13 @@ pub fn docx_to_pdf(
     options: &DocxOptions,
     limits: &Limits,
 ) -> Result<Converted, Error> {
-    let translated = composition(&layout_docx(docx, options, limits)?);
+    let (laid_out, missing_fonts) = layout(docx, options, limits)?;
+    let translated = composition(&laid_out);
     let composed = sealwax_compose::compose(&translated.composition, limits)?;
     Ok(Converted {
         composed,
         not_described: translated.not_described,
+        missing_fonts,
     })
 }
 
@@ -82,16 +88,27 @@ pub fn layout_docx(
     options: &DocxOptions,
     limits: &Limits,
 ) -> Result<display::Document, Error> {
+    Ok(layout(docx, options, limits)?.0)
+}
+
+/// [`layout_docx`], with the fonts the document asks for that no face provides.
+fn layout(
+    docx: &[u8],
+    options: &DocxOptions,
+    limits: &Limits,
+) -> Result<(display::Document, Vec<MissingFont>), Error> {
     limits.check_time().map_err(sealwax_compose::Error::from)?;
     check_unpacked(docx, limits)?;
     let options = options.clone().display_list(true);
     // docxide-pdf does not promise not to panic on a hostile document. What it records is kept
     // per thread and put back as a panic unwinds, so a layout that panicked leaves nothing.
-    catch_unwind(AssertUnwindSafe(|| docxide_pdf::convert(docx, &options)))
+    let conversion = catch_unwind(AssertUnwindSafe(|| docxide_pdf::convert(docx, &options)))
         .map_err(|_| Error::Layout)?
-        .map_err(|_| Error::Layout)?
-        .display
-        .ok_or(Error::Layout)
+        .map_err(|_| Error::Layout)?;
+    Ok((
+        conversion.display.ok_or(Error::Layout)?,
+        conversion.missing_fonts,
+    ))
 }
 
 /// Check that `docx` unpacks to at most [`Limits::max_unpacked_bytes`], its parts at the sizes

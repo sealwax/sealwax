@@ -12,6 +12,10 @@ All notable changes to sealwax are recorded here. The format follows
   release, with that release's code. It converts a DOCX document to PDF (`docx_to_pdf`), laid out
   by docxide-pdf and written by `sealwax-compose`, tagged with its structure and bookmarks, and
   reports what the conversion left out. It needs Rust 1.97.
+- DOCX conversion reports the fonts the document asks for that no face provides
+  (`Converted::missing_fonts` in `sealwax-convert`, `missing_fonts` in the report of Python's
+  `docx_to_pdf`). Python's `docx_to_pdf` takes fonts as file contents (`fonts`), looked for before
+  `font_dirs` and the system's: a host without the document's fonts installed can supply them.
 
 ## [0.9.1] - 2026-11-24
 
