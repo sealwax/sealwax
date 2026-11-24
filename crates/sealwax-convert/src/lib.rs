@@ -12,8 +12,7 @@
 //! bounded: convert documents you do not trust in a process you can stop. A panic in
 //! docxide-pdf is caught as a document it cannot lay out, unless the build aborts on panic.
 //!
-//! Not published on crates.io yet: it depends on [`sealwax_compose`], which is not published
-//! yet either.
+//! Not published on crates.io yet.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};

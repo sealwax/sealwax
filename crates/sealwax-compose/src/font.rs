@@ -273,7 +273,8 @@ impl EmbeddedFont {
     /// Writes the font at its object: the subset of the glyphs drawn, their widths, the text
     /// they stand for. `false`, and nothing written, when the subsetter cannot cut the program.
     ///
-    /// A panic in the subsetter is caught as a program it cannot cut, where panics unwind: in
+    /// The programs subsetter 0.2.6 is known to panic on are refused before it runs. Another
+    /// panic in the subsetter is caught as a program it cannot cut, where panics unwind: in
     /// WebAssembly, where they abort, the module stops.
     ///
     /// # Errors
@@ -281,6 +282,10 @@ impl EmbeddedFont {
     pub fn write(&self, doc: &mut Document) -> sealwax_core::Result<bool> {
         let drawn = self.drawn.borrow();
         let program = &self.program;
+        let originals: Vec<u16> = drawn.remapper.remapped_gids().collect();
+        if !crate::subset_guard::can_cut(&program.data, program.face, &originals) {
+            return Ok(false);
+        }
         let subset = catch_unwind(AssertUnwindSafe(|| {
             subsetter::subset(&program.data, program.face, &drawn.remapper).ok()
         }))
@@ -289,7 +294,6 @@ impl EmbeddedFont {
         let Some(subset) = subset else {
             return Ok(false);
         };
-        let originals: Vec<u16> = drawn.remapper.remapped_gids().collect();
         let tag = subset_tag(&originals, &program.name);
         let base_font = format!("{tag}+{}", program.name);
 

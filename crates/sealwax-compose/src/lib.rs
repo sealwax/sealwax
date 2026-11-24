@@ -21,6 +21,7 @@ mod fonts;
 mod metadata;
 mod model;
 mod structure;
+mod subset_guard;
 
 use std::collections::{BTreeMap, BTreeSet};
 

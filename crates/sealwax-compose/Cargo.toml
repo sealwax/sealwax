@@ -10,8 +10,6 @@ authors.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-# Resume publication when the subsetter fix is available on crates.io.
-publish = false
 
 [dependencies]
 sealwax-core.workspace = true
@@ -19,9 +17,9 @@ sealwax-core.workspace = true
 flate2 = "1"
 # Font programs read: tables, `cmap`, advances, names (MIT OR Apache-2.0); already in the tree.
 read-fonts = "0.46"
-# Cut TrueType and CFF fonts to the glyphs drawn (MIT OR Apache-2.0).
-# Return to crates.io once typst/subsetter#42 is released.
-subsetter = { git = "https://github.com/sboily/subsetter", rev = "3cd654aafd4b855c1628cd34bf2cede3d86e2d17" }
+# Cut TrueType and CFF fonts to the glyphs drawn (MIT OR Apache-2.0). What 0.2.6 panics on is
+# refused before it runs (`src/subset_guard.rs`).
+subsetter = "0.2.6"
 thiserror.workspace = true
 
 [dev-dependencies]

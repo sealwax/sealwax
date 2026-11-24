@@ -671,6 +671,21 @@ test("a font subsetting error leaves open documents usable", () => {
   assert.equal(applied.charactersReplaced, 0);
 });
 
+test("a font the subsetter would panic on is refused and open documents stay usable", () => {
+  // 256 glyphs, each with its own font dictionary: cutting them all overflows subsetter 0.2.6.
+  const font = readFileSync(new URL("../../sealwax-compose/tests/data/font-dicts.otf", import.meta.url));
+  const text = String.fromCodePoint(...Array.from({ length: 256 }, (_, i) => 0x100 + i));
+  const xfdf = sealwax.xfdfFor([
+    { kind: "freetext", pageIndex: 0, rect: [100, 600, 300, 630], name: "t1", text },
+  ]);
+  const doc = Document.fromBytes(form());
+  const other = Document.fromBytes(form());
+  assert.throws(() => doc.applyXfdf(xfdf, { defaultFont: font }), RangeError);
+  assert.equal(sealwax.isCrashed(), false);
+  assert.equal(doc.isModified(), false);
+  assert.equal(other.pageCount(), 1);
+});
+
 test("a drawn signature is written and drawn", () => {
   const xfdf = sealwax.xfdfFor([
     { kind: "ink", pageIndex: 0, name: "i1", strokes: [[[100, 600], [120, 630], [150, 615]], [[160, 605]]], width: 1.5 },
