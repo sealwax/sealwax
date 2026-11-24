@@ -40,7 +40,3 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = [
-    # Font subsetting until typst/subsetter#42 is released.
-    "https://github.com/sboily/subsetter",
-]

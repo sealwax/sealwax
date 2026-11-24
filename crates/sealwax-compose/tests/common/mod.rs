@@ -13,22 +13,35 @@ fn be32(out: &mut Vec<u8>, value: u32) {
 /// A TrueType program named `name` whose glyph `i + 1` is a box of width `500 + 10 i` for
 /// `characters[i]`, glyph 0 its `.notdef`. Advances differ, so that widths tell glyphs apart.
 pub fn program(name: &str, characters: &[char]) -> Vec<u8> {
-    program_with(name, characters, false, false)
+    program_with(name, characters, false, false, None)
 }
 
 /// [`program`], its table directory also holding a record (`zzzz`) that points far past the
 /// end of the file, as some fonts Word embeds have.
 pub fn program_with_bad_record(name: &str, characters: &[char]) -> Vec<u8> {
-    program_with(name, characters, true, false)
+    program_with(name, characters, true, false, None)
 }
 
 /// [`program`], its name record pointing past the names: the program reads (without its name),
 /// the subsetter refuses to cut it.
 pub fn program_with_bad_name(characters: &[char]) -> Vec<u8> {
-    program_with("Test", characters, false, true)
+    program_with("Test", characters, false, true, None)
 }
 
-fn program_with(name: &str, characters: &[char], bad_record: bool, bad_name: bool) -> Vec<u8> {
+/// [`program`], its glyph 1 a composite glyph whose components are the glyphs from 2 to `last`,
+/// which the program lacks: from `last` = 65,535, the subset of glyph 1 reaches 65,536 glyphs,
+/// which subsetter 0.2.6 panics on (typst/subsetter#35).
+pub fn program_with_fan(characters: &[char], last: u16) -> Vec<u8> {
+    program_with("Fan", characters, false, false, Some(last))
+}
+
+fn program_with(
+    name: &str,
+    characters: &[char],
+    bad_record: bool,
+    bad_name: bool,
+    fan: Option<u16>,
+) -> Vec<u8> {
     let mut unique: Vec<char> = Vec::new();
     for c in characters {
         if !unique.contains(c) {
@@ -65,6 +78,18 @@ fn program_with(name: &str, characters: &[char], bad_record: bool, bad_name: boo
         }
         for dy in [0i16, 0, 700, 0] {
             g.extend_from_slice(&dy.to_be_bytes());
+        }
+        if let (1, Some(last)) = (glyph, fan) {
+            // A composite glyph: its header, then each component by index, with byte offsets.
+            g.clear();
+            for value in [-1i16, 50, 0, 550, 700] {
+                g.extend_from_slice(&value.to_be_bytes());
+            }
+            for component in 2..=last {
+                be16(&mut g, if component < last { 0x0022 } else { 0x0002 });
+                be16(&mut g, component);
+                g.extend_from_slice(&[0, 0]);
+            }
         }
         while g.len() % 4 != 0 {
             g.push(0);

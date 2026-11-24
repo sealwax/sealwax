@@ -8,7 +8,6 @@ rust-version = "1.97"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Depends on sealwax-compose, which is not published yet.
 publish = false
 
 [dependencies]

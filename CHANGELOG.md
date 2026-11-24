@@ -14,9 +14,10 @@ All notable changes to sealwax are recorded here. The format follows
 
 ### Fixed
 
-- Subsetting a TrueType font returns an error if its glyph count exceeds the OpenType limit.
-  CFF fonts can use all 256 font dictionaries. If a font is refused, `applyXfdf` leaves the
-  document intact and other open WebAssembly documents stay usable.
+- A font the subsetter would panic on no longer stops the WebAssembly module: it is left out as a
+  font that cannot be subset. These are TrueType fonts whose composite glyphs bring a subset past
+  65,535 glyphs, and CID-keyed CFF fonts with 256 font dictionaries. If a font is refused,
+  `applyXfdf` leaves the document intact and other open WebAssembly documents stay usable.
 
 ## [0.9.0] - 2026-11-19
 

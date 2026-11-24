@@ -20,10 +20,6 @@ sealwax-sign = { path = "../crates/sealwax-sign" }
 sealwax-compose = { path = "../crates/sealwax-compose" }
 sealwax-convert = { path = "../crates/sealwax-convert" }
 
-[patch.crates-io]
-# Use the same subsetter for docxide-pdf and sealwax-compose.
-subsetter = { git = "https://github.com/sboily/subsetter", rev = "3cd654aafd4b855c1628cd34bf2cede3d86e2d17" }
-
 [[bin]]
 name = "open"
 path = "fuzz_targets/open.rs"
