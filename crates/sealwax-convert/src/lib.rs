@@ -12,7 +12,9 @@
 //! bounded: convert documents you do not trust in a process you can stop. A panic in
 //! docxide-pdf is caught as a document it cannot lay out, unless the build aborts on panic.
 //!
-//! Not published on crates.io yet.
+//! [`display`] and [`DocxOptions`] are docxide-pdf's, re-exported: a docxide-pdf release that
+//! changes them comes with a new minor version of this crate. It needs Rust 1.97, as docxide-pdf
+//! does.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
